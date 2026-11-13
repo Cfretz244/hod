@@ -145,7 +145,7 @@ def read_coverage(path):
                 census = []
                 if len(fs) >= 11 and fs[10] != "-":
                     census = [c.replace("\\,", ",") for c in re.split(r"(?<!\\),", fs[10])]
-                out.append({"outcome": fs[0], "reason": fs[1], "output": fs[4], "us": int(fs[6]) if fs[6].isdigit() else 0, "census": census})
+                out.append({"outcome": fs[0], "reason": fs[1], "output": fs[4], "bytes": int(fs[3]) if fs[3].isdigit() else -1, "us": int(fs[6]) if fs[6].isdigit() else 0, "census": census})
     except FileNotFoundError:
         pass
     return out

@@ -239,6 +239,16 @@ def functions_with(ll, reason):
     return out
 
 
+def census_of(tree):
+    """{(output, bytes): census reasons} from a tree's coverage log: every
+    reason hod found in each refused module (HOD_CENSUS=1)."""
+    out = {}
+    for c in projects.read_coverage(os.path.join(tree, "coverage.log")):
+        if c["outcome"] != "hod":
+            out.setdefault((c["output"], c["bytes"]), set()).update(x for x in c["census"] + [c["reason"]] if x and x != "-")
+    return out
+
+
 def cmd_collect(a):
     oss, findings = roots()
     findings = target_findings(findings)
@@ -246,33 +256,46 @@ def cmd_collect(a):
     for fl in FLAVOURS:
         for m in ("hod", "strict"):
             tree = os.path.join(trees(oss), a.project, f"{fl}-{m}")
+            cen = census_of(tree)
             for meta in sorted(glob.glob(os.path.join(tree, "declined", "*", "*.json"))):
                 with open(meta, encoding="utf-8") as f:
                     rec = json.load(f)
                 ll = meta[: -len(".json")] + ".ll"
                 if not os.path.exists(ll):
                     continue
-                d = os.path.join(findings, a.project, safe(rec.get("reason")))
-                os.makedirs(d, exist_ok=True)
-                have = sorted(glob.glob(os.path.join(d, "*.ll")))
+                first = rec.get("reason")
+                # The module is kept under its first reason and under every
+                # other reason of its census (WP-191: a reason that is never
+                # a module's first still gets its modules).
+                others = sorted(cen.get((rec.get("output"), rec.get("bytes")), set()) - {first})
                 src = next((x for x in rec.get("kiln_argv", []) if x.endswith((".cc", ".cpp", ".cxx", ".c", ".C"))), "?")
-                if len(have) >= KEEP or kept_source(d, src):
-                    continue
-                n = len(have) + 1
-                shutil.copyfile(ll, os.path.join(d, f"{n}.ll"))
-                if not rec.get("function"):
-                    fns = functions_with(ll, rec.get("reason") or "")
-                    if fns:
-                        rec["function"] = ", ".join(fns[:3]) + (" ..." if len(fns) > 3 else "")
-                with open(os.path.join(d, f"{n}.cmd"), "w", encoding="utf-8") as f:
-                    f.write(f"# flavour {fl}, mode {m}; cwd {rec.get('kiln_cwd')}\n")
-                    f.write(" ".join(rec.get("kiln_argv", [])) + " \n")
-                    f.write("# hod " + " ".join(rec.get("hod_args", [])) + "\n")
-                    f.write("# " + (rec.get("diag") or "") + "\n")
-                desc = f"{n}: `{rec.get('reason')}`" + (f" in `{rec['function']}`" if rec.get("function") else "") + f" ({os.path.basename(src)}, {fl}, {m})"
-                with open(os.path.join(d, "README.md"), "a", encoding="utf-8") as f:
-                    f.write(desc + "\n")
-                kept += 1
+                for reason in [first] + others:
+                    d = os.path.join(findings, a.project, safe(reason))
+                    os.makedirs(d, exist_ok=True)
+                    have = sorted(glob.glob(os.path.join(d, "*.ll")))
+                    have = [h for h in have if os.path.basename(h) != "min.ll"]
+                    if len(have) >= KEEP or kept_source(d, src):
+                        continue
+                    n = len(have) + 1
+                    shutil.copyfile(ll, os.path.join(d, f"{n}.ll"))
+                    fn = rec.get("function") if reason == first else None
+                    if not fn:
+                        fns = functions_with(ll, reason or "")
+                        if fns:
+                            fn = ", ".join(fns[:3]) + (" ..." if len(fns) > 3 else "")
+                    with open(os.path.join(d, f"{n}.cmd"), "w", encoding="utf-8") as f:
+                        f.write(f"# flavour {fl}, mode {m}; cwd {rec.get('kiln_cwd')}\n")
+                        f.write(" ".join(rec.get("kiln_argv", [])) + " \n")
+                        f.write("# hod " + " ".join(rec.get("hod_args", [])) + "\n")
+                        if reason == first:
+                            f.write("# " + (rec.get("diag") or "") + "\n")
+                        else:
+                            f.write(f"# census: {reason} (the module's first refusal: {first})\n")
+                    how = "" if reason == first else f", census; first `{first}`"
+                    desc = f"{n}: `{reason}`" + (f" in `{fn}`" if fn else "") + f" ({os.path.basename(src)}, {fl}, {m}{how})"
+                    with open(os.path.join(d, "README.md"), "a", encoding="utf-8") as f:
+                        f.write(desc + "\n")
+                    kept += 1
     print(f"oss-report: {kept} modules kept under {os.path.join(findings, a.project)}")
 
 
