@@ -58,7 +58,6 @@ def load_cov(path, tus):
     cov = {}
     if not os.path.exists(path):
         return cov
-    cwds = {os.path.dirname(k) for k in tus}
     by_rel = collections.defaultdict(list)
     for k, r in tus.items():
         by_rel[r["output"]].append(k)
@@ -74,7 +73,6 @@ def load_cov(path, tus):
             key = ks[-1] if ks else out
         cov[key] = {"outcome": f[0], "reason": f[1], "reasons": [] if f[10] == "-" else split_reasons(f[10]),
                     "hod_us": f[6], "fallback_status": f[9]}
-    del cwds
     return cov
 
 
@@ -90,6 +88,8 @@ def load_stats(path):
         try:
             r = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if r.get("output_kind") == "link" or r.get("input") is None:
             continue
         last[r.get("input")] = r
     backends = collections.Counter()
@@ -155,7 +155,9 @@ def main():
       f"{', '.join(f'{k} {v}' for k, v in sorted(langs.items()))})")
     p(f"- links: {sum(links.values())} ({', '.join(f'{k} {v}' for k, v in sorted(links.items()))})")
     p(f"- modules hod built: {outcomes['hod']}")
-    p(f"- modules that fell back: {outcomes['fallback']}; hod errors: {outcomes['error']}")
+    p(f"- modules hod did not build: {outcomes['error'] + outcomes['fallback']} (kiln runs hod with "
+      f"--strict, so a decline is outcome `error` and kiln falls back to llc: {outcomes['error']}; "
+      f"outcome `fallback`: {outcomes['fallback']})")
     p(f"- compiled TUs without a coverage line (kiln did not hand the module to hod): {len(no_cov)}")
     for k in no_cov[:5]:
         p(f"  - `{os.path.relpath(k, a.tree)}`")
