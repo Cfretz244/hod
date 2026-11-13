@@ -41,4 +41,9 @@ nice -n 10 cmake --fresh -S "$HOD_OSS_SRC/llvm" -B "$tree/build" -G Ninja \
   -DLLVM_PARALLEL_LINK_JOBS=1 \
   -DLLVM_LIT_ARGS="-sv -j 4" \
   > "$tree/logs/configure.log" 2>&1
+# The configure's own compiles (try_compile) are not the build's: keep
+# their statistics and coverage lines apart (tu.jsonl has a phase field).
+for f in stats.jsonl coverage.tsv; do
+  [ -f "$tree/logs/$f" ] && cat "$tree/logs/$f" >> "$tree/logs/configure-$f" && rm -f "$tree/logs/$f"
+done
 echo "configured $tree/build"

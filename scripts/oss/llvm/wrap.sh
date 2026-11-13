@@ -13,6 +13,7 @@
 # $KILN_OSS_LOG) with these settings:
 #
 #   KILN_OSS_LOG      $HOD_OSS_ROOT/llvm-<flavour>/logs/tu.jsonl
+#   KILN_STATS_LOG    $HOD_OSS_ROOT/llvm-<flavour>/logs/stats.jsonl
 #   HOD_COVERAGE_LOG  $HOD_OSS_ROOT/llvm-hod/logs/coverage.tsv (hod only)
 #   HOD_CENSUS        1 (hod only): every refusal name of a module
 #   KILN_HOD          $HOD_OSS_ROOT/llvm-hod/bin/hod (a frozen copy)
@@ -36,6 +37,10 @@ tree="$HOD_OSS_ROOT/llvm-$flavour"
 mkdir -p "$tree/logs"
 export KILN_OSS_LOG="$tree/logs/tu.jsonl"
 export KILN_OSS_PHASE="${HOD_OSS_PHASE:-build}"
+# kiln's compile statistics log (kiln spec/driver.md): one JSON line per
+# front-end job with its opt triggers and what the back end did
+# (`backend`: llvm | hod | hod-declined | hod-failed; `hod_reason`).
+export KILN_STATS_LOG="$tree/logs/stats.jsonl"
 export KILN_OSS_CXX="$HOD_OSS_KILN/kiln++" KILN_OSS_CC="$HOD_OSS_KILN/kiln"
 if [ "$flavour" = hod ]; then
   export KILN_BACKEND=hod KILN_HOD="$tree/bin/hod"

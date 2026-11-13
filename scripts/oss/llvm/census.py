@@ -78,6 +78,37 @@ def load_cov(path, tus):
     return cov
 
 
+def load_stats(path):
+    """kiln's compile statistics log (KILN_STATS_LOG): the back end of the
+    last job of each input, and why a job with backend `llvm` was not
+    offered to hod (its opt triggers other than `alwaysinline`, else the
+    static cause: output kind, -O level, LTO)."""
+    if not os.path.exists(path):
+        return None
+    last = {}
+    for line in open(path, encoding="utf-8", errors="replace"):
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        last[r.get("input")] = r
+    backends = collections.Counter()
+    not_offered = collections.Counter()
+    examples = {}
+    for inp, r in last.items():
+        b = r.get("backend") or "none"
+        backends[b] += 1
+        if b == "llvm":
+            trig = [t for t in r.get("triggers") or [] if t != "alwaysinline"]
+            if trig:
+                cause = "triggers: " + ",".join(sorted(trig))
+            else:
+                cause = f"output {r.get('output_kind')}, -O{r.get('opt_level')}, lto {r.get('lto')}"
+            not_offered[cause] += 1
+            examples.setdefault(cause, inp)
+    return backends, not_offered, examples
+
+
 def split_reasons(s):
     out, cur, esc = [], [], False
     for ch in s:
@@ -117,6 +148,7 @@ def main():
             census[r] += 1
             census_tus[r].append(ent)
     no_cov = [k for k, r in tus.items() if r.get("kind") == "ok" and k not in cov]
+    stats = load_stats(os.path.join(a.tree, "logs", "stats.jsonl"))
     p = print
     p(f"### Census{(' after ' + a.stage) if a.stage else ''}\n")
     p(f"- TUs compiled: {len(tus)} ({', '.join(f'{k} {v}' for k, v in sorted(kinds.items()))}; "
@@ -127,6 +159,12 @@ def main():
     p(f"- compiled TUs without a coverage line (kiln did not hand the module to hod): {len(no_cov)}")
     for k in no_cov[:5]:
         p(f"  - `{os.path.relpath(k, a.tree)}`")
+    if stats:
+        backends, not_offered, examples = stats
+        p(f"- kiln's statistics log (front-end jobs, last per input): "
+          f"{', '.join(f'{k} {v}' for k, v in sorted(backends.items()))}")
+        for cause, n in sorted(not_offered.items(), key=lambda kv: -kv[1]):
+            p(f"  - not offered to hod, `{cause}`: {n} (e.g. `{examples[cause]}`)")
     p("")
     if groups:
         p("| reason (field 2) | modules | example TUs |")
