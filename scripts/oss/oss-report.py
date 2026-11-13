@@ -162,7 +162,8 @@ def census_rows(reps, findings=None):
         fcell = ", ".join(f"`{f[:60]}`" for f, _ in fns) or "-"
         row = f"| `{name}` | {a['first']} | {a['modules']} | {', '.join(sorted(a['where']))} | {fcell} |"
         if findings:
-            d = sorted(glob.glob(os.path.join(findings, "*", safe(name))))
+            mine = {p for p, _, _ in reps}
+            d = sorted(x for x in glob.glob(os.path.join(findings, "*", safe(name))) if os.path.basename(os.path.dirname(x)) in mine)
             row += f" {', '.join(os.path.relpath(x, findings) for x in d) or '-'} |"
         out.append(row)
     return out
