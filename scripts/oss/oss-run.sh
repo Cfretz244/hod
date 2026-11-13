@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oss-run.sh <project>... [--flavours "O0 O0g"] [--target aarch64|x86_64] [--keep]
+# oss-run.sh <project>... [--flavours "O0 O0g"] [--target aarch64|x86_64] [--strict] [--keep]
 #
 # The lane's whole procedure for each project (spec/harness.md "Real
 # projects"), one build at a time: for each flavour, the hybrid build
@@ -10,7 +10,10 @@
 # page rewritten (<findings>/CENSUS.md). Source scripts/env.sh first.
 # `--target x86_64` (WP-191) runs the cross lane (oss-build.sh --target):
 # its trees under <root>/x64-build/, its findings under <findings>/x64/,
-# its census page <findings>/X64-CENSUS.md.
+# its census page <findings>/X64-CENSUS.md. `--strict` runs the strict
+# build even when the hybrid build fell back (its compiles of the refused
+# modules fail, `make -k` builds the rest and the tests that link run).
+# Each kept refusal is then reduced to its smallest module (oss-reduce.py).
 #
 # It runs from a copy of scripts/oss taken when it starts
 # (<root>/lane-<pid>/, removed at exit), and bash parses this file whole
@@ -23,11 +26,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
 FINDINGS="${HOD_OSS_FINDINGS:-$BROOT/findings/oss}"
-FLAVOURS="O0 O0g" TARGET=aarch64 KEEP="" PROJECTS=()
+FLAVOURS="O0 O0g" TARGET=aarch64 STRICT="" KEEP="" PROJECTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --flavours) FLAVOURS="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
+    --strict) STRICT=1; shift ;;
     --keep) KEEP=1; shift ;;
     -*) echo "oss-run: unknown option $1" >&2; exit 2 ;;
     *) PROJECTS+=("$1"); shift ;;
@@ -42,7 +46,7 @@ esac
 mkdir -p "$FINDINGS" "$(dirname "$REGS")" "$OSS"
 SNAP="$OSS/lane-$$"
 mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projects.py "$HERE"/projects.toml \
-  "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$SNAP"/ || exit 2
+  "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$HERE"/oss-reduce.py "$SNAP"/ || exit 2
 trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
 HERE="$SNAP"
 
@@ -82,12 +86,13 @@ for p in "${PROJECTS[@]}"; do
     one "$p" "$fl" llc
     one "$p" "$fl" hod
     n="$(fell_back "$OSS/${TP}build/$p/$fl-hod/report.json")"
-    if [ "$n" = 0 ]; then
+    if [ "$n" = 0 ] || [ -n "$STRICT" ]; then
       one "$p" "$fl" strict
     else
       echo "oss-run: $p $fl: $n objects hod declined or failed in the hybrid build: no strict build"
     fi
     python3 "$HERE/oss-report.py" --target "$TARGET" collect "$p"
+    python3 "$HERE/oss-reduce.py" "$(dirname "$REGS")" --project "$p" --hod "${HOD_OSS_HOD:-$CARGO_TARGET_DIR/release/hod}"
     python3 "$HERE/oss-report.py" --target "$TARGET" census --out "$CENSUS" > /dev/null
   done
 done
