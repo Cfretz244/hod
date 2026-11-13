@@ -60,6 +60,11 @@ def load_reports(oss):
                 r = json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
+        # The per-test results from the log, as this projects.py reads it
+        # (a report written by an older one is read alike).
+        log = os.path.join(os.path.dirname(path), "test.log")
+        if r.get("test_rc") is not None and os.path.exists(log):
+            r["test_status"] = projects.test_results(log)[2]
         reps[(r["project"], r["flavour"], r["mode"])] = r
     return reps
 
@@ -302,7 +307,12 @@ def main():
     if a.cmd == "status":
         write(page(reps, "Real projects through kiln and hod", intro), a.out)
     else:
-        write(page(reps, "Real-project census (WP-177, live)", intro + ["", f"kiln: {kiln}"], findings), a.out)
+        text = page(reps, "Real-project census (live)", intro + ["", f"kiln: {kiln}"], findings)
+        notes = os.path.join(findings, "NOTES.md")  # the lane's own remarks, by hand
+        if os.path.exists(notes):
+            with open(notes, encoding="utf-8") as f:
+                text += "\n" + f.read()
+        write(text, a.out)
 
 
 if __name__ == "__main__":

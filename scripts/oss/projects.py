@@ -33,7 +33,7 @@ VMEM_MAX_KB = 6000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
-CTEST_LINE_RE = re.compile(r"^\s*\d+/\d+ Test\s+#\d+: (\S+) \.+\s*(\*{3})?(\S.*?)\s+[\d.]+ sec\s*$")
+CTEST_LINE_RE = re.compile(r"^\s*\d+/\d+ Test\s+#\d+: (\S+) \.+\s*(\S.*?)\s+[\d.]+ sec\s*$")
 # The reason name of a hod refusal as a directory name (hod-shim's rule).
 SAFE_RE = re.compile(r"[^A-Za-z0-9:_.+-]")
 
@@ -214,7 +214,7 @@ def test_results(log_path):
     for line in lines:
         m = CTEST_LINE_RE.match(line)
         if m:
-            per[m.group(1)] = "Passed" if not m.group(2) else m.group(3).strip()
+            per[m.group(1)] = m.group(2).lstrip("*").strip()
     for line in reversed(lines):
         m = CTEST_RE.search(line)
         if m:
