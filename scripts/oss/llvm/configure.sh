@@ -19,13 +19,23 @@ mkdir -p "$tree/logs" "$tree/bin"
 for n in kiln-$flavour-cxx kiln-$flavour-cc; do ln -sf "$HOD_OSS_SCRIPTS/wrap.sh" "$tree/bin/$n"; done
 if [ "$flavour" = hod ]; then
   hod="${2:-${CARGO_TARGET_DIR:?source scripts/env.sh or name the hod executable}/release/hod}"
-  cp "$hod" "$tree/bin/hod"
+  [ "$hod" -ef "$tree/bin/hod" ] || cp "$hod" "$tree/bin/hod"
   "$tree/bin/hod" --version > "$tree/logs/hod-version.txt"
 fi
 "$HOD_OSS_KILN/kiln++" --version > "$tree/logs/kiln-version.txt"
 export HOD_OSS_PHASE=configure
 cd "$tree"
-nice -n 10 cmake --fresh -S "$HOD_OSS_SRC/llvm" -B "$tree/build" -G Ninja \
+# A second configure of a built tree (another HOD_OSS_PROJECTS) keeps the
+# cache, so the objects already built stay valid, and keeps the build's
+# statistics and coverage lines: only the lines this configure adds are
+# moved aside.
+fresh=--fresh
+[ -f "$tree/build/CMakeCache.txt" ] && fresh=
+declare -A before
+for f in stats.jsonl coverage.tsv; do
+  before[$f]=$( [ -f "$tree/logs/$f" ] && wc -l < "$tree/logs/$f" || echo 0)
+done
+nice -n 10 cmake $fresh -S "$HOD_OSS_SRC/llvm" -B "$tree/build" -G Ninja \
   -DCMAKE_CXX_COMPILER="$tree/bin/kiln-$flavour-cxx" \
   -DCMAKE_C_COMPILER="$tree/bin/kiln-$flavour-cc" \
   -DCMAKE_CXX_STANDARD=17 \
@@ -40,10 +50,13 @@ nice -n 10 cmake --fresh -S "$HOD_OSS_SRC/llvm" -B "$tree/build" -G Ninja \
   -DLLVM_USE_LINKER="${HOD_OSS_LINKER:-mold}" \
   -DLLVM_PARALLEL_LINK_JOBS=1 \
   -DLLVM_LIT_ARGS="-sv -j 4" \
-  > "$tree/logs/configure.log" 2>&1
+  > "$tree/logs/configure${HOD_OSS_PROJECTS:+-$HOD_OSS_PROJECTS}.log" 2>&1
 # The configure's own compiles (try_compile) are not the build's: keep
 # their statistics and coverage lines apart (tu.jsonl has a phase field).
 for f in stats.jsonl coverage.tsv; do
-  [ -f "$tree/logs/$f" ] && cat "$tree/logs/$f" >> "$tree/logs/configure-$f" && rm -f "$tree/logs/$f"
+  [ -f "$tree/logs/$f" ] || continue
+  n=${before[$f]}
+  tail -n +$((n + 1)) "$tree/logs/$f" >> "$tree/logs/configure-$f"
+  head -n "$n" "$tree/logs/$f" > "$tree/logs/$f.keep" && mv "$tree/logs/$f.keep" "$tree/logs/$f"
 done
 echo "configured $tree/build"
