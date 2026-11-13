@@ -29,6 +29,9 @@ REQUIRED = ("url", "tag", "build", "cxx_std", "test")
 BUILDS = ("cmake",)
 MODES = ("llc", "hod", "strict")
 FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
+# What a build is for (oss-build.sh --target): aarch64 native, x86_64
+# cross-built and its tests run under qemu (WP-191).
+TARGETS = ("aarch64", "x86_64")
 VMEM_MAX_KB = 6000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
@@ -238,6 +241,7 @@ def cmd_report_json(a):
         "flavour": a.flavour,
         "flags": FLAVOURS[a.flavour],
         "host": platform.machine(),
+        "target": a.target,
         "compiler_path": a.compiler_path,
         "hod_path": a.hod_path,
         "url": p["url"],
@@ -273,6 +277,7 @@ def main():
     r.add_argument("--project", required=True)
     r.add_argument("--mode", choices=MODES, required=True)
     r.add_argument("--flavour", choices=sorted(FLAVOURS), required=True)
+    r.add_argument("--target", choices=TARGETS, default="aarch64")
     r.add_argument("--compiler-path", required=True)
     r.add_argument("--hod-path", default="")
     r.add_argument("--build-dir", required=True)

@@ -208,6 +208,26 @@ under `findings/oss/<project>/<reason>/` in the build root, with their
 command lines. The hosted form is `.github/workflows/oss.yml` (x86-64 and
 AArch64 runners; by hand or on an `oss/**` branch).
 
+The same lane runs for x86-64 on the AArch64 host (`--target x86_64`,
+`spec/landed/harness/WP-191.md`): kiln is given
+`--target=x86_64-unknown-linux-gnu` and finds the cross GCC and its
+system root itself, CMake is told it cross-compiles and runs every test
+program under `qemu-x86_64 -L /usr/x86_64-linux-gnu`
+(`CMAKE_CROSSCOMPILING_EMULATOR`, which ctest honours), and the trees,
+findings and census are the cross lane's own:
+
+```
+scripts/oss/oss-run.sh fmt googletest abseil re2 --target x86_64
+python3 scripts/oss/oss-report.py --target x86_64 census --out <findings>/X64-CENSUS.md
+```
+
+Trees under `oss/x64-build/` and `oss/x64-install/`, findings under
+`findings/oss/x64/<project>/<reason>/`. A test that runs an x86-64
+program itself rather than through ctest (a death test re-executing
+`/proc/self/exe`, a python test script) fails in all three builds alike
+under qemu: the comparison with the control still holds, the absolute
+pass count does not.
+
 ### Linker matrix
 
 Every linking test runs with each of: GNU ld, lld, mold, and wild once it

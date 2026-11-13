@@ -2,7 +2,7 @@
 """oss-report.py: the reports of hod's real-project lane (spec/harness.md
 "Real projects").
 
-  oss-report.py collect <project>   copy the modules hod refused in the
+  oss-report.py [--target T] collect <project>   copy the modules hod refused in the
                                     project's hod and strict trees into
                                     <findings>/<project>/<reason>/ (at most
                                     three per reason per project), each
@@ -16,7 +16,9 @@
 Reads <root>/build/<project>/<flavour>-<mode>/report.json (written by
 oss-build.sh through projects.py). The root is $HOD_OSS_ROOT, else
 <build root>/oss beside $CARGO_TARGET_DIR; the findings are
-$HOD_OSS_FINDINGS, else <build root>/findings/oss.
+$HOD_OSS_FINDINGS, else <build root>/findings/oss. `--target x86_64`
+(WP-191, before the command) reads the cross trees instead,
+<root>/x64-build/, and keeps their findings under <findings>/x64/.
 """
 
 import argparse
@@ -49,9 +51,22 @@ def roots():
     return oss or os.path.join(broot, "oss"), findings or os.path.join(broot, "findings", "oss")
 
 
+# A target's trees and findings (oss-build.sh's TP prefix).
+PREFIX = {"aarch64": "", "x86_64": "x64-"}
+TARGET = "aarch64"
+
+
+def trees(oss):
+    return os.path.join(oss, PREFIX[TARGET] + "build")
+
+
+def target_findings(findings):
+    return findings if TARGET == "aarch64" else os.path.join(findings, "x64")
+
+
 def load_reports(oss):
     reps = {}
-    for path in sorted(glob.glob(os.path.join(oss, "build", "*", "*", "report.json"))):
+    for path in sorted(glob.glob(os.path.join(trees(oss), "*", "*", "report.json"))):
         tree = os.path.basename(os.path.dirname(path))
         if tree.endswith("-dep"):
             continue
@@ -226,10 +241,11 @@ def functions_with(ll, reason):
 
 def cmd_collect(a):
     oss, findings = roots()
+    findings = target_findings(findings)
     kept = 0
     for fl in FLAVOURS:
         for m in ("hod", "strict"):
-            tree = os.path.join(oss, "build", a.project, f"{fl}-{m}")
+            tree = os.path.join(trees(oss), a.project, f"{fl}-{m}")
             for meta in sorted(glob.glob(os.path.join(tree, "declined", "*", "*.json"))):
                 with open(meta, encoding="utf-8") as f:
                     rec = json.load(f)
@@ -280,6 +296,7 @@ def write(text, out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--target", choices=sorted(PREFIX), default="aarch64")
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect")
     c.add_argument("project")
@@ -287,9 +304,12 @@ def main():
         s = sub.add_parser(n)
         s.add_argument("--out")
     a = ap.parse_args()
+    global TARGET
+    TARGET = a.target
     if a.cmd == "collect":
         return cmd_collect(a)
     oss, findings = roots()
+    nfind = target_findings(findings)
     reps = load_reports(oss)
     kiln = next((r.get("compiler_path") for r in reps.values()), "?")
     intro = [
@@ -303,12 +323,14 @@ def main():
     ]
     hosts = sorted({r.get("host", "") for r in reps.values()} - {""})
     if hosts:
-        intro += ["", f"Host: {', '.join(hosts)}."]
+        intro += ["", f"Host: {', '.join(hosts)}; target: {TARGET}" + (
+            " (cross-built, tests under qemu-x86_64)." if TARGET != "aarch64" else ".")]
     if a.cmd == "status":
         write(page(reps, "Real projects through kiln and hod", intro), a.out)
     else:
-        text = page(reps, "Real-project census (live)", intro + ["", f"kiln: {kiln}"], findings)
-        notes = os.path.join(findings, "NOTES.md")  # the lane's own remarks, by hand
+        title = "Real-project census (live)" if TARGET == "aarch64" else f"Real-project census, {TARGET} (live)"
+        text = page(reps, title, intro + ["", f"kiln: {kiln}"], nfind)
+        notes = os.path.join(nfind, "NOTES.md")  # the lane's own remarks, by hand
         if os.path.exists(notes):
             with open(notes, encoding="utf-8") as f:
                 text += "\n" + f.read()
