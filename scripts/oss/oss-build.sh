@@ -248,6 +248,7 @@ if [ "$CONF_RC" = 0 ]; then
     export KILN_OSS_PHASE=test
     # Per-tree test scratch, so the builds of one project never share it.
     TTMP="$BUILD/test-tmp"; mkdir -p "$TTMP" && find "$TTMP" -mindepth 1 -delete
+    [ "$TARGET" = aarch64 ] || python3 "$HERE/projects.py" emulate-tests "$BUILD" "$X64_QEMU" -L "$X64_SYSROOT" > "$BUILD/emulate.log" 2>&1
     (cd "$BUILD" && ulimit -v "$KILN_OSS_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
       TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?

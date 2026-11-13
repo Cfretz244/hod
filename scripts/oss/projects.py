@@ -10,6 +10,8 @@ and the project's per-test results.
   projects.py list [--json]              project names, one per line
   projects.py shell <project>            the project's table as bash assignments
   projects.py report-json <args...>      write report.json for one build tree
+  projects.py emulate-tests <build dir> <emulator>...
+                                         run ctest's x86-64 test programs under the emulator
 """
 
 import argparse
@@ -227,6 +229,49 @@ def test_results(log_path):
     return last, None, per
 
 
+# One ctest test whose command is a path (CTestTestfile.cmake, as CMake
+# writes it): `add_test([=[name]=] "/path/prog" ...)`.
+ADD_TEST_RE = re.compile(r'^(\s*add_test\((?:\[(=*)\[.*?\]\2\]|"[^"]*"|\S+)\s+)"([^"]+)"')
+
+
+def is_x86_64_elf(path):
+    """An ELF file for x86-64 (e_machine 62)."""
+    try:
+        with open(path, "rb") as f:
+            h = f.read(20)
+    except OSError:
+        return False
+    return len(h) == 20 and h[:4] == b"\x7fELF" and h[5] == 1 and int.from_bytes(h[18:20], "little") == 62
+
+
+def cmd_emulate_tests(a):
+    """A cross build's tests (WP-191): CMake puts the crosscompiling
+    emulator before a test whose COMMAND names a target, but not before a
+    path (`$<TARGET_FILE:t>`, as googletest's own tests are declared).
+    Every CTestTestfile.cmake under the build dir gets the emulator before
+    each test command that is an x86-64 program; a second run changes
+    nothing."""
+    emu = " ".join('"' + x.replace('"', '\\"') + '"' for x in a.emulator)
+    n = 0
+    for root, _dirs, files in os.walk(a.build_dir):
+        if "CTestTestfile.cmake" not in files:
+            continue
+        path = os.path.join(root, "CTestTestfile.cmake")
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        out = []
+        for line in lines:
+            m = ADD_TEST_RE.match(line)
+            if m and is_x86_64_elf(m.group(3)):
+                line = f'{m.group(1)}{emu} "{m.group(3)}"{line[m.end():]}'
+                n += 1
+            out.append(line)
+        if out != lines:
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(out)
+    print(f"projects.py: {n} test commands put under {a.emulator[0]}")
+
+
 def cmd_report_json(a):
     recs = read_jsonl(os.path.join(a.build_dir, "compile.jsonl"))
     s = summarize(recs)
@@ -273,6 +318,9 @@ def main():
     l.add_argument("--json", action="store_true")
     s = sub.add_parser("shell")
     s.add_argument("project")
+    e = sub.add_parser("emulate-tests")
+    e.add_argument("build_dir")
+    e.add_argument("emulator", nargs=argparse.REMAINDER)
     r = sub.add_parser("report-json")
     r.add_argument("--project", required=True)
     r.add_argument("--mode", choices=MODES, required=True)
@@ -303,6 +351,8 @@ def main():
         print("P_BUILD_TARGETS=(" + " ".join(q(x) for x in p["build_targets"]) + ")")
         print("P_DEPS=(" + " ".join(q(x) for x in p["deps"]) + ")")
         print("P_INSTALL_CONFIGURE=(" + " ".join(q(x) for x in p["install_configure"]) + ")")
+    elif a.cmd == "emulate-tests":
+        cmd_emulate_tests(a)
     elif a.cmd == "report-json":
         cmd_report_json(a)
 
