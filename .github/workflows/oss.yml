@@ -1,0 +1,136 @@
+name: oss
+# hod's real-project lane (docs/VALIDATION.md "Real projects (L9)",
+# spec/harness.md "Real projects"), natively on GitHub's x86-64 and AArch64
+# runners in the CI lane's container (Debian 13): each row of
+# scripts/oss/projects.toml in the list below built through its own build
+# system with kiln at -O0 and -O0 -g, three ways (scripts/oss/oss-run.sh):
+# kiln with llc (the control), kiln with hod falling back to llc (the
+# census of hod's refusals), and kiln with hod strict when the hybrid build
+# fell back nowhere; the project's tests in each, compared with the
+# control.
+#   build K      per runner: hod_cli in release, uploaded; kiln++ at the
+#                revision in .github/kiln-revision (or the `kiln` input)
+#   oss A P      the project P on runner A (the reports, logs and the
+#                refused modules are uploaded; build trees are pruned)
+#   summary      scripts/oss/oss-report.py status and census over every
+#                report; it fails when a test passes under llc and not
+#                under hod
+# It never gates a merge. Start it by pushing an `oss/<name>` branch or
+# with workflow_dispatch. A newer push of the same ref cancels the older.
+on:
+  workflow_dispatch:
+    inputs:
+      kiln:
+        description: kiln's commit (empty is .github/kiln-revision)
+        type: string
+        default: ""
+      projects:
+        description: the rows to build, a JSON list (empty is the lane's default list)
+        type: string
+        default: ""
+  push:
+    branches: ["oss/**"]
+permissions:
+  contents: read
+concurrency:
+  group: oss-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: never
+defaults:
+  run: { shell: bash }
+jobs:
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: buildpack-deps:trixie
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: "ci-${{ matrix.arch == 'aarch64' && 'arm' || 'x86_64' }}" }
+      - uses: ./.github/actions/kiln
+        with: { revision: "${{ inputs.kiln }}", build: "true" }
+      - name: cargo build --release -p hod_cli
+        run: |
+          cargo build --release -p hod_cli
+          mkdir -p oss-bin && cp "$CARGO_TARGET_DIR/release/hod" oss-bin/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hod-${{ matrix.arch }}
+          path: oss-bin/hod
+          if-no-files-found: error
+          retention-days: 7
+
+  oss:
+    name: oss ${{ matrix.arch }} ${{ matrix.project }}
+    needs: [build]
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    container: buildpack-deps:trixie
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        # x86-64 first: it is the target that matters most.
+        arch: [x86_64, aarch64]
+        project: ${{ fromJSON(inputs.projects || '["fmt","googletest","abseil","re2","protobuf","spdlog","catch2","nlohmann_json","yaml_cpp","glog","leveldb","benchmark","cli11","doctest","simdjson"]') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/hod-ci
+        with: { cache-key: "ci-${{ matrix.arch == 'aarch64' && 'arm' || 'x86_64' }}" }
+      - uses: ./.github/actions/kiln
+        with: { revision: "${{ inputs.kiln }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "hod-${{ matrix.arch }}", path: oss-bin }
+      - name: cmake
+        run: apt-get install -y -qq --no-install-recommends cmake > /dev/null && cmake --version | head -1
+      - name: scripts/oss/oss-run.sh ${{ matrix.project }}
+        env:
+          PROJECT: ${{ matrix.project }}
+        run: |
+          chmod +x oss-bin/hod
+          export HOD_OSS_HOD="$PWD/oss-bin/hod" KILN_OSS_CXX=/opt/kiln/bin/kiln++
+          export HOD_OSS_ROOT="$GITHUB_WORKSPACE/oss-out" HOD_OSS_FINDINGS="$GITHUB_WORKSPACE/oss-out/findings"
+          export MAKEFLAGS=-j4
+          scripts/oss/oss-run.sh "$PROJECT"
+          # The reports and logs only (the trees are pruned by oss-run.sh;
+          # a tree kept for a test regression is uploaded whole).
+          rm -rf oss-out/src oss-out/install
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: oss-${{ matrix.arch }}-${{ matrix.project }}
+          path: oss-out/
+          if-no-files-found: error
+          retention-days: 14
+
+  summary:
+    name: summary
+    needs: [oss]
+    if: ${{ !cancelled() && needs.oss.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: "oss-${{ matrix.arch }}-*", path: oss-out, merge-multiple: true }
+      - name: the status and census (fails when a test passes under llc and not under hod)
+        run: |
+          set -o pipefail
+          export HOD_OSS_ROOT="$PWD/oss-out" HOD_OSS_FINDINGS="$PWD/oss-out/findings"
+          python3 -I scripts/oss/oss-report.py census | tee oss-summary-${{ matrix.arch }}.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -s oss-out/findings/TEST-REGRESSIONS.txt ]; then
+            echo "tests that pass under llc and not under hod:"; cat oss-out/findings/TEST-REGRESSIONS.txt; exit 1
+          fi
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with: { name: "oss-summary-${{ matrix.arch }}", path: "oss-summary-${{ matrix.arch }}.md" }

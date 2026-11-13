@@ -35,7 +35,7 @@
 # jobserver): KILN_OSS_CXX (kiln++; default
 # <build root>/target-kiln/release/kiln++), KILN_OSS_CC (the kiln C driver;
 # default `kiln` beside kiln++), KILN_RESOURCE_DIR (default
-# <workspace>/kiln/resource), HOD_OSS_HOD (hod; default
+# <workspace>/kiln/resource when it exists), HOD_OSS_HOD (hod; default
 # $CARGO_TARGET_DIR/release/hod), HOD_OSS_ROOT (default <build root>/oss),
 # KILN_OSS_VMEM_KB (the cap, default the row's vmem_kb).
 set -uo pipefail
@@ -98,8 +98,11 @@ if [ "$MODE" != llc ]; then
   [ -x "$HOD" ] || { echo "oss-build: no hod at $HOD (cargo build --release -p hod_cli, or set HOD_OSS_HOD)" >&2; exit 2; }
   HOD="$(cd "$(dirname "$HOD")" && pwd)/$(basename "$HOD")"
 fi
-export KILN_RESOURCE_DIR="${KILN_RESOURCE_DIR:-$(dirname "$BROOT")/kiln/resource}"
-[ -d "$KILN_RESOURCE_DIR" ] || { echo "oss-build: no kiln resource directory $KILN_RESOURCE_DIR (set KILN_RESOURCE_DIR)" >&2; exit 2; }
+# A kiln++ built in a kiln checkout needs the checkout's resource
+# directory; an installed one (kiln's dist) finds its own.
+if [ -z "${KILN_RESOURCE_DIR:-}" ] && [ -d "$(dirname "$BROOT")/kiln/resource" ]; then
+  export KILN_RESOURCE_DIR="$(dirname "$BROOT")/kiln/resource"
+fi
 # C TUs: kiln-cc over the kiln C driver for a `c = "kiln"` row, else the
 # row's c_compiler directly (unlogged, the same in every mode).
 CC_REAL="$(command -v "$P_C_COMPILER" || echo "$P_C_COMPILER")"

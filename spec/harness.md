@@ -3616,3 +3616,106 @@ for gcc-torture).
 Tests: `x64census::tests::{arguments, majors_and_reasons,
 a_ready_module, several_modules_are_units}` (a module the front half takes whole is refused by the
 code generator alone and runs to its exit status).
+
+## Real projects
+
+The lane of `docs/VALIDATION.md` "Real projects (L9)" (WP-177): open-source
+projects built through their own build systems with kiln as the compiler
+and hod as kiln's back end, their own tests run, against kiln with `llc`.
+It is scripts, not an `xtask` command: `scripts/oss/`, a port of kiln's
+open-source project harness (kiln's `scripts/oss/`,
+`spec/landed/harness/WP-666.md` there), each file saying so in its header.
+It needs the network (it clones) and never runs in the gate.
+
+**Rows.** `scripts/oss/projects.toml` has kiln's format: a row copied
+from kiln's file works unchanged (the keys the lane does not use are
+accepted and ignored), but only `build = "cmake"` rows are driven; any
+other build system is an error naming the row.
+
+**One build** (`oss-build.sh <project> --mode M --flavour F`) is a tree
+`<root>/build/<project>/<F>-<M>/` (`<root>`: `$HOD_OSS_ROOT`, else
+`oss/` in the build root beside `$CARGO_TARGET_DIR`; the checkout is
+`<root>/src/<checkout>`, shared by every build of a project):
+
+- **Flavour** `O0` is `-O0 -g0`, `O0g` is `-O0 -g`. CMake is configured
+  with `CMAKE_BUILD_TYPE=Debug` and the flavour as the Debug flags of
+  C and C++, and the compiler wrapper (`kiln-cxx`, `kiln-cc`) appends the
+  flavour's flags to every compile (an argv with `-c`) after the
+  project's own, so no build type or flag of the project raises the
+  level: kiln offers hod only `-O0` modules.
+- **Mode** `llc`: `KILN_BACKEND=llvm` (the control). `hod`:
+  `KILN_BACKEND=hod`, `KILN_HOD=scripts/oss/hod-shim`, `HOD_CENSUS=1`,
+  `HOD_COVERAGE_LOG=<tree>/coverage.log`; kiln falls back to `opt` and
+  `llc` where hod declines or fails. `strict`: as `hod`, with
+  `KILN_HOD_STRICT=1` and `HOD_OSS_STRICT=1`: the shim answers 1 for
+  hod's 2, so a declined module fails its compile (kiln falls back from a
+  decline even under `KILN_HOD_STRICT=1`).
+- **Phases.** Configure runs with `KILN_BACKEND=llvm` in every mode and
+  writes none of the logs below: the three builds of a project configure
+  alike, so a feature test hod declines changes nothing that is built.
+  The build (`make -k`, the shared jobserver, else `-j 4`) and the tests
+  run in the mode. Every compile runs under the row's address-space cap
+  (`vmem_kb`, `KILN_OSS_VMEM_KB`) and a 600 s limit (the wrapper's); the
+  tests run under the same cap, under the row's `test_timeout`, ctest
+  with `CTEST_PARALLEL_LEVEL` 4 unless set, with `TMPDIR` and
+  `TEST_TMPDIR` in the tree.
+- **C.** A `c = "kiln"` row compiles its C through `kiln-cc` and kiln's
+  C driver in every mode (hod in the hod modes); a `c = "clang"` row
+  gives C to `c_compiler` directly, unlogged.
+- **Dependencies** (`deps`) are built and installed with the same flavour
+  and mode into `<root>/install/<dep>-<F>-<M>/`, once; their trees end
+  in `-dep` and are pruned.
+- **Logs** of the tree: `compile.jsonl` (the wrapper's line per
+  invocation, kiln's schema unchanged), `kiln-stats.jsonl`
+  (`KILN_STATS_LOG`: kiln's line per job, with `backend` and
+  `triggers`), `coverage.log` (hod's, `spec/cli.md` "Coverage log"),
+  `hod-shim.jsonl` and `declined/` (below), `configure.log`,
+  `build.log`, `test.log`.
+
+**The shim** (`hod-shim`) runs `$HOD_OSS_REAL_HOD` with kiln's arguments
+and input and passes its standard error and status through (but for
+strict mode's 2 to 1). For a status other than 0 it appends a line to
+`hod-shim.jsonl` with the reason and function of hod's diagnostic
+(`unsupported construct '<reason>' in function '<f>'`), the compile
+command of the kiln process (from `/proc`) and its directory, and keeps
+the module as `declined/<reason>/<n>.ll` with `<n>.json`, `n` from 1 to
+`$HOD_OSS_KEEP` (3): the first modules of each reason, claimed with an
+exclusive create.
+
+**report.json** (by `projects.py report-json`): kiln's fields (`tus`,
+`tus_by_lang`, `links`, `configure_rc`, `build_rc`, `test_rc`,
+`test_summary`, `tests`) and `mode`, `flavour`, `flags`, `host`,
+`failed_tus` (at most 50), `test_status` (each ctest test's result) and,
+in the hod modes, `hod`: `objects` (kiln's object jobs), `backends`
+(those jobs by kiln's `backend`: `hod`, `hod-declined`, `hod-failed`,
+`llvm` for one kiln did not offer), `not_offered` (the `llvm` jobs by
+their `opt` triggers, `-` for a static reason), `hod_runs`, `hod_built`,
+`hod_refused`, `hod_s` (from the coverage log) and `refusals`: per
+reason, `first` (modules refused for it, from the shim), `modules`
+(modules where the census found it), `functions` (the ten most frequent)
+and `examples`.
+
+**The run** (`oss-run.sh <project>...`), one build at a time, per
+flavour: `llc`, then `hod`, then `strict` when no module was declined
+or failed in `hod`; a `hod` or `strict` tree is pruned to its logs,
+report and kept modules unless a test that passes under `llc` does not
+pass in it (that tree is kept whole and the test is listed in
+`<findings>/TEST-REGRESSIONS.txt`). Then `oss-report.py collect` copies
+the kept modules into `<findings>/<project>/<reason>/<n>.ll` (at most
+three per reason per project) with `<n>.cmd` (the compile command, its
+directory, hod's arguments and diagnostic) and a `README.md` line per
+module, and `oss-report.py census` rewrites `<findings>/CENSUS.md`.
+`<findings>` is `$HOD_OSS_FINDINGS`, else `findings/oss/` in the build
+root.
+
+**Pages.** `oss-report.py status` prints `docs/status/oss.md`: a row per
+project and flavour (TUs, objects, built by hod, fell back, not offered,
+the hybrid and strict builds, passed/total tests per mode, the tests that
+do worse or better than the control), then the refusal census of the
+hybrid builds (per reason: `first`, `census`, the builds, the most
+frequent functions) and the objects kiln did not offer, by trigger.
+
+**Hosted.** `.github/workflows/oss.yml` runs `oss-run.sh` per project on
+the `ubuntu-24.04` and `ubuntu-24.04-arm` runners (by hand or on an
+`oss/**` branch; never a required check) and fails its summary when a
+test passes under `llc` and not under hod.

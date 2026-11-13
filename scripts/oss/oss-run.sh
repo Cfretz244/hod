@@ -8,7 +8,13 @@
 # refused modules are kept as findings (oss-report.py collect), the build
 # trees pruned to their logs and reports (unless --keep), and the census
 # page rewritten (<findings>/CENSUS.md). Source scripts/env.sh first.
+#
+# It runs from a copy of scripts/oss taken when it starts
+# (<root>/lane-<pid>/, removed at exit), and bash parses this file whole
+# before running it (the braces): editing the lane while a run is going
+# never changes the running one.
 set -uo pipefail
+{
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${CARGO_TARGET_DIR:?oss-run: source scripts/env.sh first}"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
@@ -24,7 +30,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ ${#PROJECTS[@]} -gt 0 ] || { sed -n '2p' "$0" | sed 's/^# //' >&2; exit 2; }
-mkdir -p "$FINDINGS"
+mkdir -p "$FINDINGS" "$OSS"
+SNAP="$OSS/lane-$$"
+mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projects.py "$HERE"/projects.toml \
+  "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$SNAP"/ || exit 2
+trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
+HERE="$SNAP"
 
 fell_back() {  # the hybrid report's fallbacks: declined + failed (not offered is kiln's choice)
   python3 -c "import json,sys; c=json.load(open(sys.argv[1]))['hod'] or {}; b=c.get('backends',{}); print(b.get('hod-declined',0)+b.get('hod-failed',0))" "$1" 2>/dev/null || echo 1
@@ -71,3 +82,5 @@ for p in "${PROJECTS[@]}"; do
     python3 "$HERE/oss-report.py" census --out "$FINDINGS/CENSUS.md" > /dev/null
   done
 done
+exit 0
+}
