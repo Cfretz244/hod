@@ -191,9 +191,10 @@ def census(build_dir):
             if name and name != "-":
                 census_counts[name] = census_counts.get(name, 0) + 1
     for name, n in census_counts.items():
-        refusals.setdefault(name, {"modules": 0, "first": 0, "functions": {}, "examples": []})["modules"] = max(
-            n, refusals[name]["modules"]
-        )
+        # A reason found only by the census (never a module's first) has
+        # no entry yet: make it before reading it.
+        e = refusals.setdefault(name, {"modules": 0, "first": 0, "functions": {}, "examples": []})
+        e["modules"] = max(n, e["modules"])
     for e in refusals.values():
         e["functions"] = dict(sorted(e["functions"].items(), key=lambda kv: -kv[1])[:10])
     return {
