@@ -3663,8 +3663,9 @@ other build system is an error naming the row.
   C driver in every mode (hod in the hod modes); a `c = "clang"` row
   gives C to `c_compiler` directly, unlogged.
 - **Dependencies** (`deps`) are built and installed with the same flavour
-  and mode into `<root>/install/<dep>-<F>-<M>/`, once; their trees end
-  in `-dep` and are pruned.
+  and mode into `<root>/install/<dep>-<F>-<M>/`, once (a strict build
+  takes the `hod` build's: a dependency's refusals are its own row's
+  census); their trees end in `-dep` and are pruned.
 - **Logs** of the tree: `compile.jsonl` (the wrapper's line per
   invocation, kiln's schema unchanged), `kiln-stats.jsonl`
   (`KILN_STATS_LOG`: kiln's line per job, with `backend` and

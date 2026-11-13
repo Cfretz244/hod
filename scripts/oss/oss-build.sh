@@ -26,8 +26,9 @@
 #   not change what is built); the modes differ from the build on;
 # - the tests run under the row's address-space cap too, ctest at most 4
 #   at a time;
-# - dependencies are built and installed with the same flavour and mode,
-#   into <root>/install/<dep>-<flavour>-<mode>/ (their trees pruned);
+# - dependencies are built and installed with the same flavour and mode
+#   (`hod` for a strict build), into <root>/install/<dep>-<flavour>-<mode>/
+#   (their trees pruned);
 # - `--prune` deletes the build tree but its logs, its report and the kept
 #   modules afterwards; `--prune-only` does only that, building nothing.
 #
@@ -115,13 +116,16 @@ fi
 export KILN_OSS_CXX="$CXX" HOD_OSS_CFLAGS="$FLAGS"
 echo "oss-build: $PROJECT $P_TAG, mode $MODE, flavour $FLAVOUR ($FLAGS), kiln $CXX${HOD:+, hod $HOD}; C TUs (c = $P_C) with $CC_REAL"
 
-# Dependencies: built with this flavour and mode, installed once.
+# Dependencies: built with this flavour and mode, installed once; a
+# strict build takes the hybrid build's (a dependency's refusals are its
+# own row's census, and strict is about this project's modules).
 PREFIXES=()
+DEP_MODE="$MODE"; [ "$MODE" != strict ] || DEP_MODE=hod
 for dep in "${P_DEPS[@]}"; do
-  pre="$OSS/install/$dep-$FLAVOUR-$MODE"
+  pre="$OSS/install/$dep-$FLAVOUR-$DEP_MODE"
   if [ ! -f "$pre/.oss-installed" ]; then
     echo "oss-build: dependency $dep -> $pre"
-    "$0" "$dep" --mode "$MODE" --flavour "$FLAVOUR" --jobs "$JOBS" --install "$pre" --prune || { echo "oss-build: dependency $dep failed" >&2; exit 1; }
+    "$0" "$dep" --mode "$DEP_MODE" --flavour "$FLAVOUR" --jobs "$JOBS" --install "$pre" --prune || { echo "oss-build: dependency $dep failed" >&2; exit 1; }
   fi
   PREFIXES+=("$pre")
 done
