@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oss-run.sh <project>... [--flavours "O0 O0g"] [--keep]
+# oss-run.sh <project>... [--flavours "O0 O0g"] [--modes "llc hod strict"] [--keep]
 #
 # The lane's whole procedure for each project (spec/harness.md "Real
 # projects"), one build at a time: for each flavour, the hybrid build
@@ -7,7 +7,9 @@
 # build (`--mode strict`) when the hybrid build fell back nowhere; then the
 # refused modules are kept as findings (oss-report.py collect), the build
 # trees pruned to their logs and reports (unless --keep), and the census
-# page rewritten (<findings>/CENSUS.md). Source scripts/env.sh first.
+# page rewritten (<findings>/CENSUS.md). `--modes` runs only the modes
+# named (strict still only after an existing hybrid report with no
+# fallback). Source scripts/env.sh first.
 #
 # It runs from a copy of scripts/oss taken when it starts
 # (<root>/lane-<pid>/, removed at exit), and bash parses this file whole
@@ -20,10 +22,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
 FINDINGS="${HOD_OSS_FINDINGS:-$BROOT/findings/oss}"
-FLAVOURS="O0 O0g" KEEP="" PROJECTS=()
+FLAVOURS="O0 O0g" MODES="llc hod strict" KEEP="" PROJECTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --flavours) FLAVOURS="$2"; shift 2 ;;
+    --modes) MODES="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     -*) echo "oss-run: unknown option $1" >&2; exit 2 ;;
     *) PROJECTS+=("$1"); shift ;;
@@ -70,13 +73,13 @@ one() {
 
 for p in "${PROJECTS[@]}"; do
   for fl in $FLAVOURS; do
-    one "$p" "$fl" llc
-    one "$p" "$fl" hod
+    case " $MODES " in *" llc "*) one "$p" "$fl" llc ;; esac
+    case " $MODES " in *" hod "*) one "$p" "$fl" hod ;; esac
     n="$(fell_back "$OSS/build/$p/$fl-hod/report.json")"
-    if [ "$n" = 0 ]; then
-      one "$p" "$fl" strict
-    else
+    if [ "$n" != 0 ]; then
       echo "oss-run: $p $fl: $n objects hod declined or failed in the hybrid build: no strict build"
+    elif [ "${MODES#*strict}" != "$MODES" ]; then
+      one "$p" "$fl" strict
     fi
     python3 "$HERE/oss-report.py" collect "$p"
     python3 "$HERE/oss-report.py" census --out "$FINDINGS/CENSUS.md" > /dev/null
