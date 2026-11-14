@@ -2225,3 +2225,61 @@ fn avx512_names_agree_with_llc_on_hardware() {
     // A runner whose CPU has no AVX-512 is no evidence.
     assert!(!last.starts_with("compared 0 "), "the runner's CPU has no AVX-512: {last}");
 }
+
+/// The `rbp` displacement of `line`'s memory operand, as `llvm-objdump`
+/// prints it (`[rbp - 0x50]`), if it has one.
+fn rbp_displacement(line: &str) -> Option<i64> {
+    let rest = &line[line.find("[rbp")? + 4..];
+    let rest = &rest[..rest.find(']')?];
+    let (sign, digits) = match rest.trim() {
+        "" => return Some(0),
+        r if r.starts_with('-') => (-1, r[1..].trim()),
+        r if r.starts_with('+') => (1, r[1..].trim()),
+        _ => return None,
+    };
+    i64::from_str_radix(digits.trim_start_matches("0x"), 16).ok().map(|v| sign * v)
+}
+
+/// §5.6.17 and §5.6.35: an EVEX access to a frame local keeps its
+/// `disp32` when the frame is laid out. A raw `disp8` there would be
+/// scaled by the instruction's `N` (`disp8*N`) and address another place:
+/// so every slot the EVEX moves (`vmovdqu64`) read or write in hod's
+/// functions, plainly and under every stress option, is one the
+/// non-EVEX code around them fills or empties, at the same displacement,
+/// and some of them are within a byte of `rbp` (where the shortening
+/// would have applied).
+#[test]
+fn evex_frame_locals_keep_their_displacement() {
+    if hod_testutil::tool("llvm-objdump").is_none() {
+        return;
+    }
+    let cases = all_cases();
+    let scratch = Scratch::new("x64-avx512-locals");
+    let (mut evex, mut near) = (0, 0);
+    let mut wrong = Vec::new();
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let object = hod_object(&cases, "", stress).unwrap();
+        let object = scratch.write(&format!("hod-{mode}.o"), object);
+        for (name, listing) in listings(&object) {
+            let (moves, others): (Vec<&String>, Vec<&String>) =
+                listing.iter().partition(|l| l.trim_start().starts_with("vmovdqu64"));
+            let known: Vec<i64> = others.iter().filter_map(|l| rbp_displacement(l)).collect();
+            for line in moves {
+                let Some(d) = rbp_displacement(line) else { continue };
+                evex += 1;
+                near += usize::from(i8::try_from(d).is_ok());
+                if !known.contains(&d) {
+                    wrong.push(format!("{mode} {name}: {}", line.trim()));
+                }
+            }
+        }
+    }
+    eprintln!("avx512 frame locals: {evex} EVEX accesses, {near} within a byte of rbp");
+    assert!(near > 0, "no EVEX access the shortening would have reached");
+    assert!(
+        wrong.is_empty(),
+        "{} EVEX accesses elsewhere:\n{}",
+        wrong.len(),
+        wrong[..wrong.len().min(12)].join("\n")
+    );
+}

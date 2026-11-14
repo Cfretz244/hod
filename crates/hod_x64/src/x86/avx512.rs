@@ -46,13 +46,11 @@ use hod_cg::{CgResult, Class, FnCx};
 use hod_ir::{FnStr, Inst, Intrinsic, SymbolKind, TypeId, TypeKind, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{
-    E2, E2Imm, E3, E3Imm, ECmp, EMov, EShift, EStore, Masking, Mem, Round, Size, Vl, Xmm, Zmm,
+    E2, E2Imm, E3, E3Imm, ECmp, EMov, EShift, EStore, Masking, Round, Size, Vl, Xmm, Zmm,
 };
 
 use super::SIGNATURE;
-use crate::common::{
-    R11, XMM15, deferred_first, frame_address, frame_inst, gp, put, unsupported, value_ty, xm,
-};
+use crate::common::{R11, XMM15, deferred_first, frame_inst, gp, put, unsupported, value_ty, xm};
 use crate::features::{Avx512, evex512_off};
 use crate::intrinsic::const_int;
 use crate::target::X64;
@@ -774,15 +772,6 @@ fn emit(cx: &mut FnCx<'_, X64>, inst: Option<mc::Inst>) -> CgResult<()> {
     }
 }
 
-/// The memory operand of frame slot `slot` for an EVEX instruction:
-/// `[r11]`, its address put there (`lea`). A local's `[rbp + disp32]` is
-/// shortened to a `disp8` once the frame is laid out (§5.6.17), which an
-/// EVEX instruction would scale by its `N` (`disp8*N`).
-fn slot_mem(cx: &mut FnCx<'_, X64>, slot: hod_cg::FrameRef) -> Mem {
-    frame_address(cx, R11, slot);
-    Mem::base(R11, 0)
-}
-
 /// Copies vector `value` into `z`, pinning nothing: from its register
 /// (given back at once) or its frame slot.
 fn load(cx: &mut FnCx<'_, X64>, value: Value, z: Zmm, bytes: u32) -> CgResult<()> {
@@ -793,8 +782,8 @@ fn load(cx: &mut FnCx<'_, X64>, value: Value, z: Zmm, bytes: u32) -> CgResult<()
         cx.free_temp(r);
     } else {
         let slot = cx.use_mem(value)?;
-        let m = slot_mem(cx, slot);
-        put(cx, mc::emov_rm(EMov::Movdqu64, vl_of(bytes), Masking::NONE, z, m));
+        let vl = vl_of(bytes);
+        frame_inst(cx, slot, |m| mc::emov_rm(EMov::Movdqu64, vl, Masking::NONE, z, m));
     }
     Ok(())
 }
@@ -1063,8 +1052,8 @@ fn store<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, out: Zmm, bytes: u32) -> Cg
         return cx.finish(inst, rd);
     }
     let slot = cx.def_mem(inst)?;
-    let m = slot_mem(cx, slot);
-    put(cx, mc::emov_mr(EMov::Movdqu64, vl_of(bytes), mc::K::K0, m, out));
+    let vl = vl_of(bytes);
+    frame_inst(cx, slot, |m| mc::emov_mr(EMov::Movdqu64, vl, mc::K::K0, m, out));
     Ok(())
 }
 

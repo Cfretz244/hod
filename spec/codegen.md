@@ -3484,7 +3484,13 @@ code, so the instruction stays whole; prefixes (`66`, `F2`, `F3`, REX,
 `lock`) and the opcode come before the `ModRM` and are untouched. A
 recorded field whose preceding byte is not the `[rbp + disp32]` `ModRM`
 (`mod` 10, `rm` 101) keeps its `disp32`; no access emitted today has
-another shape. `Incoming(n)` and `Outgoing(n)` places, RIP-relative
+another shape. **An EVEX instruction's field keeps its `disp32`**
+(WP-208): its `disp8` is scaled by the instruction's `N` (`disp8*N`,
+`spec/mc-x64.md`), so the raw byte would address another place.
+`frame_inst` marks the field when the instruction's first byte is `62`
+(the EVEX escape: nothing else in 64-bit mode, and hod writes no prefix
+before it), and `bias_local_sites` only biases a marked field. Every
+other instruction's bytes are as before. `Incoming(n)` and `Outgoing(n)` places, RIP-relative
 operands, `SIB` forms and the coroutine stubs' own frame words are
 emitted at their final displacement and were already the shortest form
 (`hod_mc_x64` picks it); `FrameRef::Coro` is `[rbx + o]`, not a local.
@@ -4415,9 +4421,8 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    - each distinct vector operand is copied into its own register from
      `zmm17` up (`vmovdqu64`, from its `xmm` or its slot), the result is
      computed into `zmm16` and copied to its `xmm` or its slot. A slot is
-     addressed as `[r11]` after `lea`: a local's `[rbp + disp32]` is
-     shortened to a raw `disp8` once the frame is laid out (§5.6.17),
-     which EVEX would scale by `N`. hod's pool holds no value in
+     the `vmovdqu64`'s own operand `[rbp + disp32]` (§5.6.17: an EVEX
+     access to a local is never shortened to `disp8`). hod's pool holds no value in
      `zmm16`..`zmm31` or an opmask register; all are caller-saved, and
      `vzeroupper` is not written (no value of hod's lives in an upper
      half);
@@ -4476,6 +4481,12 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    executes AVX-512 (QEMU's user mode models none), so the variable is
    the one way to run it, on an AVX-512 host:
    `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
+   **Evidence by name.**
+
+   | Names | Executed | Dataflow against `llc` only |
+   |---|---|---|
+   | `llvm.masked.load`, `.store`, `.expandload`, `.compressstore` (1) | yes (`qemu-x86_64`) | |
+   | the 174 `llvm.x86.avx512.*` names of (2), F, VL, BW, DQ and the VBMI2 compresses | | yes, until an AVX-512 host runs the command above |
 
 ## 6. Control flow
 
