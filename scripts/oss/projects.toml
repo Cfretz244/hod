@@ -284,6 +284,7 @@ url = "https://github.com/google/highway"
 tag = "1.4.0"
 build = "cmake"
 cxx_std = 17
+vmem_kb = 6000000  # kiln -O0 -g on convert_test and memory_test needs more than 3 GB
 configure = ["-DHWY_ENABLE_TESTS=ON", "-DHWY_ENABLE_CONTRIB=OFF", "-DHWY_ENABLE_EXAMPLES=OFF", "-DHWY_ENABLE_INSTALL=OFF", "-DHWY_WARNINGS_ARE_ERRORS=OFF", "-DHWY_SYSTEM_GTEST=OFF", "-DBUILD_TESTING=ON", "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"]
 build_targets = ["base_test", "highway_test", "targets_test", "aligned_allocator_test", "arithmetic_test", "blockwise_test", "cast_test", "combine_test", "compare_test", "compress_test", "convert_test", "crypto_test", "demote_test", "div_test", "float_test", "fma_test", "interleaved_test", "logical_test", "mask_test", "memory_test", "minmax_test", "mul_test", "reduction_test", "saturated_test", "shift_test", "shuffle4_test", "swizzle_test", "table_test"]
 # One ctest test per test program (gtest_discover_tests would make one
