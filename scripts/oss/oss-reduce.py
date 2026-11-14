@@ -31,6 +31,8 @@ import sys
 sys.dont_write_bytecode = True
 LLVM = os.environ.get("HOD_OSS_LLVM_BIN", "/usr/lib/llvm-22/bin")
 MAX_REDUCE_BYTES = 16 * 1024 * 1024
+# A kept module larger than this is replaced by its reduction.
+KEEP_WHOLE_BYTES = 5 * 1024 * 1024
 DIAG_RE = re.compile(r"in function '((?:[^'\\]|\\.)*)'")
 
 # The interestingness test llvm-reduce runs: hod refuses the file with
@@ -147,6 +149,12 @@ def main():
                 shutil.copyfile(got, os.path.join(d, "min.ll"))
                 lines = sum(1 for _ in open(got, encoding="utf-8", errors="replace"))
                 note = f"min.ll: `{reason}`, {lines} lines ({how}; `hod --strict -O0 -filetype=obj -o /dev/null min.ll` refuses it)"
+                # A large module is kept only as its reduction (WP-200); 1.cmd
+                # says how to make it again.
+                big = os.path.getsize(os.path.join(d, "1.ll"))
+                if big > KEEP_WHOLE_BYTES:
+                    os.unlink(os.path.join(d, "1.ll"))
+                    note += f"; 1.ll ({big} bytes) dropped, 1.cmd rebuilds it"
             else:
                 note = f"min.ll: none ({how})"
             with open(os.path.join(d, "README.md"), "a", encoding="utf-8") as f:

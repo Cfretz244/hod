@@ -4,8 +4,8 @@
 
   oss-report.py [--target T] collect <project>   copy the modules hod refused in the
                                     project's hod and strict trees into
-                                    <findings>/<project>/<reason>/ (at most
-                                    three per reason per project), each
+                                    <findings>/<project>/<reason>/ (one
+                                    per reason per project, WP-200), each
                                     with its command line and a one-line
                                     description
   oss-report.py status [--out F]    docs/status/oss.md from every report
@@ -35,7 +35,7 @@ import projects  # noqa: E402
 
 FLAVOURS = ("O0", "O0g")
 MODES = ("llc", "hod", "strict")
-KEEP = 3
+KEEP = 1
 
 
 def roots():
@@ -295,7 +295,8 @@ def cmd_collect(a):
                     os.makedirs(d, exist_ok=True)
                     have = sorted(glob.glob(os.path.join(d, "*.ll")))
                     have = [h for h in have if os.path.basename(h) != "min.ll"]
-                    if len(have) >= KEEP or kept_source(d, src):
+                    # A reduced reason (min.ll, its 1.ll dropped) is kept already.
+                    if len(have) >= KEEP or os.path.exists(os.path.join(d, "min.ll")) or kept_source(d, src):
                         continue
                     n = len(have) + 1
                     # A hard link, not a copy: one module is kept under each of
