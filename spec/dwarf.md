@@ -906,6 +906,8 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 111 | `formal_parameter` (of abstract, location list): `location` (0, a `sec_offset`), `abstract_origin` | 2 | 11522 | WP-162 |
 | 112 | `variable` (of abstract, location list): likewise | 2 | 11524 | WP-162 |
 | 113 | `subprogram` (member declaration, explicit, qualified, §6.24): `linkage_name` (0), `name`, decl (1), `type` (2), `virtuality` and `vtable_elem_location` (3), `declaration`, `external` (4), `reference` (5), `rvalue_reference` (6), `accessibility` (7), `explicit`, `deleted` (8), `containing_type` (3), children optional | 1024 | 11526 | WP-189 |
+| 114 | `variable` (static member, declaration, wide value, §6.27): 54's slots with `const_value` always a `block1`: `name`, `type`, decl (0), `external`, `declaration`, `artificial` (1), `accessibility` (2), `const_value`, `alignment` (3) | 16 | 12550 | WP-210 |
+| 115 | `member` (static, wide value, §6.27): 114's slots | 16 | 12566 | WP-210 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -921,7 +923,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 12550 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062; 11526 after WP-162, whose families 107 to 112 follow WP-163's 106; 12550 after WP-189's 113). Since the core families come last, their codes take
+`CODE_END` is 12582 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062; 11526 after WP-162, whose families 107 to 112 follow WP-163's 106; 12550 after WP-189's 113; 12582 after WP-210's 114 and 115). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -2984,6 +2986,27 @@ a function's static takes (`static_parent`: `check_inlined`, then
 a type local to a block, or to a subprogram that is not a definition of
 this unit, and every case `check_inlined` refuses (retained variables,
 another unit's subprogram).
+
+### 6.27 A static member's value wider than 64 bits (implemented, WP-210)
+
+libc++'s `numeric_limits<__int128>` (and of `unsigned __int128`) has
+static data members whose constant is an `i128`
+(`__libcpp_numeric_limits<__int128>::__min`, reached by every
+translation unit that names `numeric_limits` with `-g`); a
+`static constexpr long double` member's is an `fp128` (AArch64) or an
+`x86_fp80` (x86-64). They were `debug:die-unsupported` ("a static
+member's value wider than 64 bits"). `llc` 19 and 22 write such a
+value with `addIntAsBlock`: `DW_AT_const_value` as a `DW_FORM_block1`
+of the value's low `width / 8` bytes, least significant first, signed
+or not (16 bytes for `i128` and `fp128`, 10 for `x86_fp80`, whose
+`bitcastToAPInt` is 80 bits wide). hod writes the same, in families 114
+(`DW_TAG_variable`, DWARF 5) and 115 (`DW_TAG_member`), which are 54
+and 55 with that one form; version 4 writes 114 as `DW_TAG_member`
+(§6.20; compared with `llc`'s version 4 output, `dwarf4.rs`
+`checked_later`). A value of at most 64 bits keeps 40, 54 and 55.
+Test: `crates/hod/tests/debug_libcxx_wp210.rs` (`i128` signed and
+unsigned, `long double`, an aligned member; DWARF 5 with both tags and
+DWARF 4; both targets; tree equal to `llc` 22's).
 
 ## 7. Speed and memory
 

@@ -68,6 +68,9 @@ const LAST_CHECKED: usize = fam::SUBPROGRAM_EMPTY;
 /// compared with `llc`'s all the same (WP-189: §6.24).
 const fn checked_later(family: usize) -> bool {
     family == fam::METHOD_EXPLICIT_QUALIFIED
+        // WP-210: §6.27.
+        || family == fam::STATIC_VARIABLE_WIDE
+        || family == fam::STATIC_MEMBER_WIDE
 }
 
 // WP-150: the GNU call-site forms of version 4 (`spec/dwarf.md` §6.21).
@@ -199,7 +202,7 @@ const fn form4(f: u8) -> u8 {
 /// declaration as `DW_TAG_member` before version 5.
 const fn tag4(family: usize) -> u16 {
     match family {
-        fam::STATIC_MEMBER | fam::STATIC_VARIABLE_ANY => tag::MEMBER,
+        fam::STATIC_MEMBER | fam::STATIC_VARIABLE_ANY | fam::STATIC_VARIABLE_WIDE => tag::MEMBER,
         fam::CALL_SITE => DW_TAG_GNU_CALL_SITE, // WP-150: §6.21
         f => FAMILIES[f].tag,
     }
@@ -570,6 +573,15 @@ impl Out {
                 self.copy(src, from, *pos);
             }
             form::FLAG_PRESENT => {}
+            form::BLOCK1 => {
+                // WP-210: a wide constant (§6.27), copied as it is.
+                let len = *src.get(*pos).ok_or_else(bad)?;
+                *pos += 1 + usize::from(len);
+                if *pos > src.len() {
+                    return Err(bad());
+                }
+                self.copy(src, from, *pos);
+            }
             form::DATA1 | form::DATA2 | form::DATA4 | form::ADDR => {
                 *pos += match slot.form {
                     form::DATA1 => 1,
@@ -878,6 +890,8 @@ mod tests {
         assert!(keeps(at::NAME) && keeps(at::RANGES));
         assert_eq!(tag4(fam::STATIC_MEMBER), tag::MEMBER);
         assert_eq!(tag4(fam::STATIC_VARIABLE_ANY), tag::MEMBER);
+        assert_eq!(tag4(fam::STATIC_VARIABLE_WIDE), tag::MEMBER);
+        assert_eq!(tag4(fam::STATIC_MEMBER_WIDE), tag::MEMBER);
         assert_eq!(tag4(fam::GLOBAL_VARIABLE), tag::VARIABLE);
     }
 

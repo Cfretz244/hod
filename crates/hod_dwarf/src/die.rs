@@ -140,6 +140,9 @@ pub struct UnitPlan<'a> {
     pub(crate) aux: Vec<(u32, u32)>,
     /// `(DIE, value, signed)`, sorted: a static member's constant.
     pub(crate) values: Vec<(u32, u64, bool)>,
+    /// `(DIE, bytes)`, sorted: a static member's constant wider than 64
+    /// bits, as `llc` writes it (§6.27).
+    pub(crate) wide_values: Vec<(u32, Vec<u8>)>,
     /// The `__ARRAY_SIZE_TYPE__` DIE, or `NONE`.
     pub(crate) index_die: u32,
     /// While the plan is built: the type graph's work (§6.8).
@@ -307,6 +310,7 @@ impl<'a> UnitPlan<'a> {
             consts,
             aux: Vec::new(),
             values: Vec::new(),
+            wide_values: Vec::new(),
             index_die: NONE,
             build: crate::types::Build::default(),
             sealed: false,

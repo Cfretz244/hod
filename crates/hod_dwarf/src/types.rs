@@ -29,6 +29,14 @@ const DW_CC_PASS_BY_VALUE: u8 = 0x05;
 const DW_VIRTUALITY_VIRTUAL: u8 = 0x01;
 const INDEX_TYPE: &[u8] = b"__ARRAY_SIZE_TYPE__";
 
+/// A static member's value as `llc` writes it (§6.8, §6.27).
+enum StaticValue {
+    /// At most 64 bits: `(bits, signed)`, `udata` or `sdata`.
+    Data(u64, bool),
+    /// Wider: the bytes of a `block1`.
+    Block(Vec<u8>),
+}
+
 /// What a node is made into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Want {
@@ -252,6 +260,7 @@ impl UnitPlan<'_> {
         }
         self.aux.sort_unstable();
         self.values.sort_unstable_by_key(|v| v.0);
+        self.wide_values.sort_unstable_by_key(|v| v.0);
         for i in 0..self.dies.len() {
             if self.dies[i].kind == Kind::Method {
                 let a = method_attrs(self, i as u32);
@@ -280,6 +289,11 @@ impl UnitPlan<'_> {
     fn value_of(&self, die: u32) -> Option<(u64, bool)> {
         let i = self.values.binary_search_by_key(&die, |v| v.0).ok()?;
         Some((self.values[i].1, self.values[i].2))
+    }
+
+    fn wide_value_of(&self, die: u32) -> Option<&[u8]> {
+        let i = self.wide_values.binary_search_by_key(&die, |v| v.0).ok()?;
+        Some(&self.wide_values[i].1)
     }
 
     fn scope_field(&self, node: DiId) -> Option<DiId> {
@@ -476,10 +490,12 @@ impl UnitPlan<'_> {
                 }
                 let parent = self.context(t, d.scope, true)?;
                 let die = self.push(t, parent, Kind::StaticMember);
-                if let Some(c) = d.extra_data
-                    && let Some(v) = self.constant(t, c, d.base_type.unwrap_or(DiId::NONE))?
-                {
-                    self.values.push((die, v.0, v.1));
+                if let Some(c) = d.extra_data {
+                    match self.constant(t, c, d.base_type.unwrap_or(DiId::NONE))? {
+                        Some(StaticValue::Data(v, signed)) => self.values.push((die, v, signed)),
+                        Some(StaticValue::Block(bytes)) => self.wide_values.push((die, bytes)),
+                        None => {}
+                    }
                 }
                 self.open(die, work);
             }
@@ -654,9 +670,9 @@ impl UnitPlan<'_> {
         Err(Error::TypeCycle { node: t.raw() })
     }
 
-    /// A static member's value: `(bits, signed)`, or `None` for a
-    /// constant `llc` does not write (not an integer or a float).
-    fn constant(&self, member: DiId, c: DiId, ty: DiId) -> Result<Option<(u64, bool)>, Error> {
+    /// A static member's value, or `None` for a constant `llc` does not
+    /// write (not an integer or a float).
+    fn constant(&self, member: DiId, c: DiId, ty: DiId) -> Result<Option<StaticValue>, Error> {
         let DiNode::Constant(k) = self.node_of(member, "extraData", c)? else {
             return Err(bad(member, "extraData"));
         };
@@ -670,16 +686,24 @@ impl UnitPlan<'_> {
         Ok(match consts.get(k.value) {
             Const::Int { ty: it, value } => {
                 if unsigned {
-                    Some((value, false))
+                    Some(StaticValue::Data(value, false))
                 } else {
                     let bits = types.int_bits(it).unwrap_or(64).clamp(1, 64);
                     let shift = 64 - bits;
-                    Some(((((value << shift) as i64) >> shift) as u64, true))
+                    Some(StaticValue::Data((((value << shift) as i64) >> shift) as u64, true))
                 }
             }
-            Const::Float { bits, .. } => Some((bits, false)),
-            Const::WideInt { .. } | Const::WideFloat { .. } => {
-                return Err(unsupported(member, "a static member's value wider than 64 bits"));
+            Const::Float { bits, .. } => Some(StaticValue::Data(bits, false)),
+            // `addIntAsBlock`: the bit pattern's low `width / 8` bytes,
+            // least significant first (§6.27), signed or not.
+            Const::WideInt { ty: it, words } => {
+                let width = types.int_bits(it).ok_or_else(|| bad(member, "extraData"))?;
+                let bytes = words.iter().flat_map(|w| w.to_le_bytes());
+                Some(StaticValue::Block(bytes.take(width as usize / 8).collect()))
+            }
+            Const::WideFloat { ty: ft, bits } => {
+                let width = if ft == hod_ir::TypeId::X86_FP80 { 10 } else { 16 };
+                Some(StaticValue::Block(bits.to_le_bytes()[..width].to_vec()))
             }
             _ => None,
         })
@@ -1144,9 +1168,23 @@ impl<'a> Writer<'a> {
                 let acc = access(m.flags);
                 let art = has(m.flags, DiFlags::ARTIFICIAL);
                 let value = plan.value_of(die);
-                let reserved =
-                    m.tag == tag::VARIABLE && !art && m.align == 0 && value.is_none_or(|v| v.1);
-                if reserved {
+                let wide = plan.wide_value_of(die);
+                let reserved = m.tag == tag::VARIABLE
+                    && !art
+                    && m.align == 0
+                    && wide.is_none()
+                    && value.is_none_or(|v| v.1);
+                if wide.is_some() {
+                    // §6.27: 54 and 55 with the value a `block1`.
+                    let family = if m.tag == tag::VARIABLE {
+                        fam::STATIC_VARIABLE_WIDE
+                    } else {
+                        fam::STATIC_MEMBER_WIDE
+                    };
+                    let mask =
+                        b(decl.is_some()) | b(art) << 1 | b(acc != 0) << 2 | b(m.align >= 8) << 3;
+                    self.abbrev(code(family, mask, false));
+                } else if reserved {
                     let mask =
                         b(decl.is_some()) | 1 << 1 | b(acc != 0) << 2 | b(value.is_some()) << 3;
                     self.abbrev(code(fam::STATIC_MEMBER, mask, false));
@@ -1168,10 +1206,15 @@ impl<'a> Writer<'a> {
                 self.opt_ref(plan, n, m.base_type)?;
                 self.decl(decl);
                 self.opt_byte(acc);
-                match value {
-                    Some((v, true)) => write_sleb(&mut self.info, v as i64),
-                    Some((v, false)) => write_uleb(&mut self.info, v),
-                    None => {}
+                match (wide, value) {
+                    (Some(bytes), _) => {
+                        let len = u8::try_from(bytes.len()).map_err(|_| bad(n, "extraData"))?;
+                        self.info.push(len);
+                        self.info.extend_from_slice(bytes);
+                    }
+                    (None, Some((v, true))) => write_sleb(&mut self.info, v as i64),
+                    (None, Some((v, false))) => write_uleb(&mut self.info, v),
+                    (None, None) => {}
                 }
                 if !reserved {
                     self.opt_uleb(u64::from(m.align / 8));

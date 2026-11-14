@@ -160,6 +160,8 @@ pub mod form {
     pub const RNGLISTX: u8 = 0x23;
     // WP-162: a split unit's location list (`split.rs`).
     pub const LOCLISTX: u8 = 0x22;
+    // WP-210: a constant wider than 64 bits (`spec/dwarf.md` §6.27).
+    pub const BLOCK1: u8 = 0x0a;
 }
 
 /// Whether a family's DIEs have children.
@@ -225,8 +227,8 @@ const fn fam(
 
 use Children::{No, Optional, Yes};
 use form::{
-    ADDR, ADDRX, DATA1, DATA2, DATA4, EXPRLOC, FLAG_PRESENT, REF4, RNGLISTX, SDATA, SEC_OFFSET,
-    STRX, UDATA,
+    ADDR, ADDRX, BLOCK1, DATA1, DATA2, DATA4, EXPRLOC, FLAG_PRESENT, REF4, RNGLISTX, SDATA,
+    SEC_OFFSET, STRX, UDATA,
 };
 
 /// The index of a family in [`FAMILIES`].
@@ -365,6 +367,10 @@ pub mod fam {
     // WP-189: an explicit member function with a ref-qualifier
     // (`spec/dwarf.md` §6.24).
     pub const METHOD_EXPLICIT_QUALIFIED: usize = 113;
+    // WP-210: a static member whose value is wider than 64 bits
+    // (`spec/dwarf.md` §6.27): 54 and 55 with `const_value` a block.
+    pub const STATIC_VARIABLE_WIDE: usize = 114;
+    pub const STATIC_MEMBER_WIDE: usize = 115;
 }
 
 /// Every family, in code order (`spec/dwarf.md` §6.1 has the same table).
@@ -1809,6 +1815,26 @@ pub const FAMILIES: &[Family] = &[
             o(3, at::CONTAINING_TYPE, REF4),
         ],
     ),
+    // WP-210: 114 and 115, families 54 and 55 with a value wider than 64
+    // bits, which `llc`'s `addIntAsBlock` writes as a `block1` of its
+    // bytes (`spec/dwarf.md` §6.27).
+    fam("member (static, declaration, wide value)", tag::VARIABLE, No, 16, "WP-210", STATIC_WIDE),
+    fam("member (static, DW_TAG_member, wide value)", tag::MEMBER, No, 16, "WP-210", STATIC_WIDE),
+];
+
+/// The slots of the static-member families with a wide value (114,
+/// 115): [`STATIC_ANY`]'s, `const_value` always a `block1`.
+const STATIC_WIDE: &[Slot] = &[
+    s(at::NAME, STRX),
+    s(at::TYPE, REF4),
+    o(0, at::DECL_FILE, UDATA),
+    o(0, at::DECL_LINE, UDATA),
+    s(at::EXTERNAL, FLAG_PRESENT),
+    s(at::DECLARATION, FLAG_PRESENT),
+    o(1, at::ARTIFICIAL, FLAG_PRESENT),
+    o(2, at::ACCESSIBILITY, DATA1),
+    s(at::CONST_VALUE, BLOCK1),
+    o(3, at::ALIGNMENT, UDATA),
 ];
 
 /// The slots of the general static-member families (54, 55), in `llc`'s
@@ -1988,7 +2014,11 @@ mod tests {
         // WP-162 appended families 107 to 112.
         assert_eq!(BASES[fam::FORMAL_PARAMETER_LIST], 11482);
         assert_eq!(BASES[fam::VARIABLE_OF_ABSTRACT_LIST], 11524);
-        assert_eq!(CODE_END, 12550);
+        // WP-189 appended family 113, WP-210 families 114 and 115.
+        assert_eq!(BASES[fam::METHOD_EXPLICIT_QUALIFIED], 11526);
+        assert_eq!(BASES[fam::STATIC_VARIABLE_WIDE], 12550);
+        assert_eq!(BASES[fam::STATIC_MEMBER_WIDE], 12566);
+        assert_eq!(CODE_END, 12582);
         for (index, name) in [
             (fam::CONST_TYPE, "const_type"),
             (fam::TYPEDEF, "typedef"),
