@@ -8,14 +8,26 @@ Host: aarch64.
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | fmt | O0 | 50 | 50 | 50 | 0 | 0 | ok | ok | 21/21 | 21/21 | 21/21 | same |
 | fmt | O0g | 50 | 50 | 50 | 0 | 0 | ok | ok | 21/21 | 21/21 | 21/21 | same |
-| googletest | O0 | 85 | 85 | 79 | 6 | 0 | ok | - | 62/63 | 62/63 | - | same |
-| googletest | O0g | 85 | 85 | 79 | 6 | 0 | ok | - | 62/63 | 62/63 | - | same |
-| abseil | O0 | 413 | 413 | 407 | 6 | 0 | ok | - | 229/232 | 230/232 | - | hod: 1 better |
-| abseil | O0g | 413 | 413 | 405 | 8 | 0 | ok | - | 229/232 | 229/232 | - | same |
+| googletest | O0 | 85 | 85 | 85 | 0 | 0 | ok | ok | 62/63 | 62/63 | 62/63 | same |
+| googletest | O0g | 85 | 85 | 85 | 0 | 0 | ok | ok | 62/63 | 62/63 | 62/63 | same |
+| abseil | O0 | 413 | 413 | 413 | 0 | 0 | ok | ok | 229/232 | 229/232 | 229/232 | same |
+| abseil | O0g | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 230/232 | 230/232 | same |
 | re2 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same |
 | re2 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same |
-| protobuf | O0 | 653 | 653 | 649 | 4 | 0 | ok | - | 4/4 | 4/4 | - | same |
-| protobuf | O0g | 653 | 653 | 508 | 145 | 0 | ok | - | 4/4 | 4/4 | - | same |
+| protobuf | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 4/4 | 4/4 | same |
+| protobuf | O0g | 653 | 653 | 520 | 133 | 0 | ok | - | 4/4 | 4/4 | - | same |
+| spdlog | O0 | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 0/1 | strict: 1 worse (spdlog-utests) |
+| spdlog | O0g | 140 | 140 | 140 | 0 | 0 | ok | ok | 0/1 | 1/1 | 1/1 | hod: 1 better; strict: 1 better |
+| yaml_cpp | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same |
+| yaml_cpp | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same |
+| glog | O0 | 23 | 47 | 45 | 0 | 0 | ok | ok | 22/24 | 22/24 | 23/24 | strict: 1 better |
+| glog | O0g | 23 | 47 | 44 | 1 | 0 | ok | - | 23/24 | 22/24 | - | hod: 1 worse (logging) |
+| leveldb | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same |
+| leveldb | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same |
+| cli11 | O0 | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same |
+| cli11 | O0g | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same |
+| doctest | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same |
+| doctest | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same |
 
 ## Refusal census (hybrid builds)
 
@@ -25,8 +37,4 @@ Host: aarch64.
 |---|---|---|---|---|
 | `debug:variable-twice` | 100 | 100 | protobuf O0g | - |
 | `debug:local-static` | 33 | 33 | protobuf O0g | - |
-| `attr:disable-tail-calls` | 20 | 20 | abseil O0, abseil O0g, googletest O0, googletest O0g, protobuf O0, protobuf O0g | - |
-| `debug:template-address` | 9 | 9 | abseil O0g, protobuf O0g | - |
-| `asm:operand/sysreg` | 8 | 8 | abseil O0, abseil O0g, protobuf O0, protobuf O0g | `_ZN4absl12lts_2026010713base_internal18UnscaledCycleClock9Fr`, `_ZN4absl12lts_2026010712crc_internal10GetCpuTypeEv`, `_ZN4absl12lts_2025051213base_internal18UnscaledCycleClock9Fr` |
-| `alwaysinline:return-address` | 4 | 4 | abseil O0, abseil O0g | `_ZN12_GLOBAL__N_124CaptureBacktraceNoInlineERNS_10StackTrace`, `_Z21TestWithReturnAddressv` |
-| `debug:die-unsupported` | 1 | 1 | abseil O0g | - |
+| `debug:die-unsupported` | 1 | 1 | glog O0g | - |
