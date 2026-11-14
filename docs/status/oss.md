@@ -36,6 +36,8 @@ Host: aarch64; target: aarch64.
 | doctest | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 193/193 | 193/193 | 193/193 | same | `hod-77f1f69` | `21caaf874` |
 | simdjson | O0 | 135 | 169 | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `hod-3b14f8ff` | `21b9110a4` |
 | simdjson | O0g | 135 | 169 | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `hod-3b14f8ff` | `21b9110a4` |
+| magic_enum | O0 | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `hod-3b14f8ff` | `21b9110a4` |
+| magic_enum | O0g | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `hod-3b14f8ff` | `21b9110a4` |
 
 Notes:
 
@@ -81,3 +83,5 @@ No refusal: every module kiln offered hod in the hybrid builds was built by hod.
 | doctest | O0g | 121 | 121 | 0 | 0 | 0 | ok | 193/193 | - |
 | simdjson | O0 | 169 | 154 | 0 | 0 | 0 | ok | 117/117 | - |
 | simdjson | O0g | 169 | 154 | 0 | 0 | 0 | ok | 117/117 | - |
+| magic_enum | O0 | 22 | 22 | 0 | 0 | 0 | ok | 15/15 | - |
+| magic_enum | O0g | 22 | 22 | 0 | 0 | 0 | ok | 15/15 | - |
