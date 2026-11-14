@@ -259,7 +259,10 @@ build = "cmake"
 cxx_std = 17
 c = "kiln"
 configure = ["-DZLIB_BUILD_TESTING=ON"]
-test = "ctest --output-on-failure -E 'install|find_package|add_subdirectory' && for lvl in -1 -6 -9 -h -r -f; do test/minigzip $lvl -c < libz.a > \"$TMPDIR/z.gz\" && test/minigzip -d -c < \"$TMPDIR/z.gz\" | cmp - libz.a || exit 1; done && echo 'minigzip round trips ok'"
+# One test at a time: example and example64 (shared and static) write and
+# read the same file, foo.gz, in the same directory; run at once they fail
+# with "gzread err" under either back end.
+test = "ctest -j1 --output-on-failure -E 'install|find_package|add_subdirectory' && for lvl in -1 -6 -9 -h -r -f; do test/minigzip $lvl -c < libz.a > \"$TMPDIR/z.gz\" && test/minigzip -d -c < \"$TMPDIR/z.gz\" | cmp - libz.a || exit 1; done && echo 'minigzip round trips ok'"
 wave = 5
 verified = true
 notes = "WP-1277. The shared and static example/example64 programs and infcover through ctest (the install, find_package and add_subdirectory tests reconfigure CMake sub-builds with the default compilers: excluded), then a minigzip compress/decompress round trip of libz.a at levels 1, 6, 9 and the Huffman-only, RLE and filtered strategies."
