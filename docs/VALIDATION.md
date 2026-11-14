@@ -244,11 +244,16 @@ findings and census are the cross lane's own:
 
 ```
 scripts/oss/oss-run.sh fmt googletest abseil re2 --target x86_64
+scripts/oss/oss-run.sh abseil --target x86_64 --modes strict --strict   # a new hod: strict only, the control kept
 python3 scripts/oss/oss-report.py --target x86_64 census --out <findings>/X64-CENSUS.md
 ```
 
 Trees under `oss/x64-build/` and `oss/x64-install/`, findings under
-`findings/oss/x64/<project>/<reason>/`. A test that runs an x86-64
+`findings/oss/x64/<project>/<reason>/` (each with `min.ll`, the module
+reduced by `scripts/oss/oss-reduce.py` while hod still refuses it with
+that reason). A strict build is judged per object by the `backend` field
+of kiln's statistics log (the census page's "Strict builds"), not by the
+build's exit status. A test that runs an x86-64
 program itself rather than through ctest (a death test re-executing
 `/proc/self/exe`, a python test script) fails in all three builds alike
 under qemu: the comparison with the control still holds, the absolute
