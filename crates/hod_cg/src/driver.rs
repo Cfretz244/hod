@@ -238,6 +238,7 @@ impl<'a, T: Target> FnCx<'a, T> {
             indirect_br: false,
             frame_desc: FrameDesc::default(),
             island_align: 1,
+            aligned_code_end: 0,
             ret_attrs: ParamAttrs::NONE,
             lines: body.has_locs(),
             last_loc: None,

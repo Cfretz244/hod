@@ -17,6 +17,8 @@
 //!   the assembler of an inline-assembly body.
 //! - [`module`]: module-level assembly into sections, symbols and
 //!   relocations.
+//! - [`align`]: the operands of `.p2align`, `.balign` and `.align`, and
+//!   the padding they write (§17).
 //!
 //! Nothing here allocates per instruction beyond the output it returns.
 

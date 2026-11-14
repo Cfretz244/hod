@@ -789,9 +789,11 @@ fn emit<'a>(
         // `spec/asm.md` §17: an alignment directive pads to a boundary
         // counted from the function's start, which is at least as
         // aligned in its section; the body is assembled again at its
-        // place (the same statements: the references stay `syms`').
+        // place (the same statements: the references stay `syms`'). A
+        // prologue cut before it (a probed frame's unused room) refuses
+        // the function: `limit:aligned-code-moved`.
         asm::assemble_at(body, features(cx), start, code, &mut String::new()).map_err(refused)?;
-        cx.raise_align(code.align);
+        cx.raise_align(code.align, start + 4 * code.words.len() as u32);
     }
     let mut labels: Vec<(u32, asm::RefKind, u8)> = Vec::new();
     for word in &code.words {

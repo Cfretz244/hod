@@ -306,6 +306,10 @@ pub struct FnCx<'a, T: Target> {
     /// The largest alignment a data island, or code that pads from the
     /// function's start (`raise_align`), asked for.
     pub(crate) island_align: u32,
+    /// Where the last code that pads from the function's start ends
+    /// (`raise_align`); 0 when there is none. Shrinking may not remove
+    /// bytes before it.
+    pub(crate) aligned_code_end: u32,
     /// The attributes of the function's return value.
     pub(crate) ret_attrs: ParamAttrs,
     /// Whether line rows are recorded, and the location of the last
@@ -698,10 +702,14 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// two), for code that pads to a boundary counted from the
     /// function's start: an alignment directive in an inline-assembly
     /// template (`spec/asm.md` §17). The function then starts at an
-    /// offset of its section that is a multiple of `align`.
-    pub fn raise_align(&mut self, align: u32) {
+    /// offset of its section that is a multiple of `align`. `end` is
+    /// where that code ends: if shrinking the code (§5.6.15) would remove
+    /// bytes before it, the function is refused with
+    /// [`crate::LIMIT_ALIGNED_CODE_MOVED`].
+    pub fn raise_align(&mut self, align: u32, end: u32) {
         debug_assert!(align.is_power_of_two());
         self.island_align = self.island_align.max(align);
+        self.aligned_code_end = self.aligned_code_end.max(end);
     }
 
     /// Emits the data islands after the function's exit sequences

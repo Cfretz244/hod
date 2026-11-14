@@ -398,12 +398,12 @@ mod tests {
     /// §17: alignment directives pad from the origin `start` counts from.
     #[test]
     fn alignment() {
+        const B: u32 = 0x1400_0000;
         let at = |text: &str, start: u32| {
             let mut code = Code::default();
             assemble_at(text, Features::BASE, start, &mut code, &mut String::new())
                 .map(|()| (code.words, code.align))
         };
-        const B: u32 = 0x1400_0000;
         // `b 1f` over the padding to the label after it.
         assert_eq!(
             at("b 1f\n.p2align 4\n1: nop", 0).unwrap(),

@@ -272,3 +272,23 @@ fn one_text_section_is_aligned_as_llcs() {
     }
     assert!(aligns.iter().all(|&a| a == 64), "section alignments {aligns:?}");
 }
+
+// §17: a probed frame's prologue has room that is cut once the code is
+// complete (`spec/codegen.md` §5.6.15), which would move an aligned
+// template off the boundary its padding was counted for: the function
+// is refused. Without the probe it compiles.
+#[test]
+fn aligned_code_after_a_cut_is_refused() {
+    let function = |attrs: &str| {
+        format!(
+            "define void @f() #0 {{\n  %a = alloca [64 x i8]\n  \
+             call void asm sideeffect \"nop\\0A.p2align 5\\0Anop\", \"r\"(ptr %a)\n  \
+             ret void\n}}\nattributes #0 = {{ nounwind {attrs} }}\n"
+        )
+    };
+    common::assert_refused(&[(
+        &function("\"probe-stack\"=\"inline-asm\""),
+        hod_cg::LIMIT_ALIGNED_CODE_MOVED,
+    )]);
+    assert_eq!(common::compile_ll(&function("")), Ok(()));
+}
