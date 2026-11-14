@@ -16,7 +16,8 @@ unchanged, and appends one JSON line per invocation to `$KILN_OSS_LOG`
 (configure | build | test, recorded as `phase`), KILN_OSS_VMEM_KB (default
 3000000, the `ulimit -v`), KILN_OSS_TIMEOUT (seconds, default 600),
 KILN_OSS_STDLIB (`libc++` puts `-stdlib=libc++` first), KILN_OSS_VERSION_SHIM
-(meson's `--version` shim), HOD_OSS_CFLAGS, HOD_OSS_TARGET_TRIPLE (a
+(meson's `--version` shim), HOD_OSS_CFLAGS, HOD_OSS_DROP_FLAGS (arguments
+left out, one per line), HOD_OSS_TARGET_TRIPLE (a
 cross build, WP-191: `--target=<triple>` goes first, so a project's own
 `--target` still decides), KILN_OSS_LINK_VMEM_KB (the cap of an
 invocation without `-c`/`-S`/`-E`, a link: default KILN_OSS_VMEM_KB).
@@ -216,6 +217,11 @@ def main(lang="c++"):
             return rc
     # libc++ mode (WP-694): the flag goes first so a project's own
     # `-stdlib=` (the last one wins) still decides.
+    # A row's drop_flags (WP-200): arguments kiln does not accept that the
+    # project hard-codes, left out ($HOD_OSS_DROP_FLAGS, one per line).
+    drop = set(filter(None, (os.environ.get("HOD_OSS_DROP_FLAGS") or "").split("\n")))
+    if drop:
+        args = [a for a in args if a not in drop]
     triple = os.environ.get("HOD_OSS_TARGET_TRIPLE")
     cmd = [cxx, "-fno-crash-diagnostics"] + ([f"--target={triple}"] if triple else []) + (["-stdlib=libc++"] if stdlib == "libc++" else []) + args
     # The lane's flavour flags, last so they win (hod: -O0, with or without -g).

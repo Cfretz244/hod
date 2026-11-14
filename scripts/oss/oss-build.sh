@@ -158,6 +158,7 @@ if [ "$P_C" = kiln ]; then
   export KILN_OSS_CC="$CC_REAL"
 fi
 export KILN_OSS_CXX="$CXX" HOD_OSS_CFLAGS="$FLAGS"
+export HOD_OSS_DROP_FLAGS="$(printf '%s\n' "${P_DROP_FLAGS[@]}")"
 echo "oss-build: $PROJECT $P_TAG, target $TARGET, mode $MODE, flavour $FLAVOUR ($FLAGS), kiln $CXX${HOD:+, hod $HOD}; C TUs (c = $P_C) with $CC_REAL"
 
 # Dependencies: built with this flavour and mode, installed once; a

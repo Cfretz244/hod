@@ -63,6 +63,7 @@ def load(path=TOML):
         p.setdefault("notes", "")
         p.setdefault("deps", [])
         p.setdefault("install_configure", [])
+        p.setdefault("drop_flags", [])
         p.setdefault("checkout", name)
         p.setdefault("test_timeout", 1800)
         p.setdefault("vmem_kb", 3000000)
@@ -355,6 +356,7 @@ def main():
         print("P_BUILD_TARGETS=(" + " ".join(q(x) for x in p["build_targets"]) + ")")
         print("P_DEPS=(" + " ".join(q(x) for x in p["deps"]) + ")")
         print("P_INSTALL_CONFIGURE=(" + " ".join(q(x) for x in p["install_configure"]) + ")")
+        print("P_DROP_FLAGS=(" + " ".join(q(x) for x in p["drop_flags"]) + ")")
     elif a.cmd == "emulate-tests":
         cmd_emulate_tests(a)
     elif a.cmd == "report-json":
