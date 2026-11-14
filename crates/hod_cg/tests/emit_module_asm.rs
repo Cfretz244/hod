@@ -8,7 +8,8 @@
 //! section other than `.text` that the text creates alignment 1, LLVM 22
 //! gives it 4 (`hod` follows 22). What `hod_asm` does not read is
 //! refused by an `asm:*` name. Since WP-204 (`spec/asm.md` §14) the
-//! same holds on x86-64, with `.symver`.
+//! same holds on x86-64, with `.symver`; since WP-212 (§15) AArch64
+//! reads `.symver` too.
 
 mod borrow;
 mod elfview;
@@ -147,6 +148,20 @@ const CASES: &[(&str, &str, &str)] = &[
         "define void @D() {\n  ret void\n}\n@V = global i32 3\n",
     ),
     ("directives-on-declaration", ".weak U\n.text\nbl U\n", "declare void @U()\n"),
+    // WP-212 (`spec/asm.md` §15): `.symver` as on x86-64 (the case of
+    // the same name in [`X64_CASES`]).
+    (
+        "symver",
+        ".symver foo, foo@@V1\n.symver foo, foo@V0\n.symver bar, bar@V1\n.symver wk, wk@V3\n\
+         .symver hid, hid@V4\n.symver unused, unused@V5\n.text\n.globl tf\n.type tf,%function\n\
+         tf: mov w0, #7\nret\n.size tf, .-tf\n.symver tf, tf@@V2\n.symver loc, loc@V6\n\
+         .symver ext2, ext2@@@V7\n.symver ext3, ext3@V8\nbl ext3\nbl bar\nb ext2\n.weak tw\ntw:\nret\n\
+         .symver tw, tw@@@V9\n",
+        "define void @foo() { ret void }\ndefine weak void @wk() { ret void }\n\
+         define hidden void @hid() { ret void }\ndefine internal void @loc() { ret void }\n\
+         declare void @bar()\ndeclare void @ext2()\n\
+         define void @user() {\n  call void @loc()\n  ret void\n}\n",
+    ),
 ];
 
 /// `(module assembly, IR after it, the name hod refuses it by)`.
@@ -158,7 +173,7 @@ const REFUSED: &[(&str, &str, &str)] = &[
     (".section mine,\"aw\"", "", "asm:section"),
     (".section .data,\"ax\"", "", "asm:section"),
     (".cfi_startproc", "", "asm:directive/cfi_startproc"),
-    (".symver a, a@V1", "", "asm:directive/symver"),
+    (".symver u, u@@V1\n.text\nbl u", "", "asm:symbol"),
     (".internal U", "", "asm:directive/internal"),
     (".popsection", "", "asm:section"),
     (".text\nfoo x0", "", "asm:mnemonic/foo"),

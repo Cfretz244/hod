@@ -662,10 +662,7 @@ fn cfi_directive(name: &str, rest: &str) -> Result<Cfi, Refusal> {
     };
     // A CFA offset `llc` writes unsigned.
     let cfa = |text: &str| {
-        i32::try_from(cfi_offset(text)?)
-            .ok()
-            .filter(|&o| o >= 0)
-            .ok_or(Refusal(op_reason::RANGE))
+        i32::try_from(cfi_offset(text)?).ok().filter(|&o| o >= 0).ok_or(Refusal(op_reason::RANGE))
     };
     Ok(match name {
         ".cfi_remember_state" => {

@@ -16,8 +16,9 @@
 //!   symbol it does not define take effect (the rules of `spec/ir.md`
 //!   §2.3, as for text of symbol directives only).
 //!
-//! AArch64 and, since WP-204 (`spec/asm.md` §14), x86-64, whose text
-//! may also give `.symver` directives: in `finish`, each one adds the
+//! AArch64 and, since WP-204 (`spec/asm.md` §14), x86-64. The text
+//! may also give `.symver` directives (x86-64 since WP-204, AArch64
+//! since WP-212, §15): in `finish`, each one adds the
 //! versioned alias of a defined symbol, or renames the symbol (`@@@`,
 //! or an undefined one), as LLVM's assembler does. What the text does
 //! that `llc` resolves by a rule hod does not reproduce is refused by
