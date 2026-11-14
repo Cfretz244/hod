@@ -378,6 +378,9 @@ const NO_RELOCATION: &str = "no ELF relocation subtracts a symbol's address; `ll
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
 const ELF_COMDAT: &str = "ELF has `any` and `nodeduplicate` only; `llc` refuses it too";
 const GC: &str = "garbage-collection statepoints are refused by design";
+/// WP-209.
+const CODE_MODEL_OTHER: &str =
+    "not built: the large model does not cover it (`spec/codegen.md` §5.6.36)";
 
 const ON: SupportCell = SupportCell::SUPPORTED;
 
@@ -417,16 +420,36 @@ const fn a64(name: &'static str, by: &'static str, note: &'static str) -> Suppor
 
 // ---- the groups, in the order of `docs/status/support.md` ----
 
-const MODULE: [SupportRow; 24] = [
+const MODULE: [SupportRow; 25] = [
     both("module:pic", ON, "`PIC Level` is not 0"),
     both("module:pie", ON, "`PIE Level` is not 0"),
     // `CodeModel` order.
     a64("module:code-model-tiny", LATER, ""),
     both("module:code-model-small", ON, "the default of both targets: nothing changes"),
-    a64("module:code-model-kernel", LATER, ""),
-    a64("module:code-model-medium", LATER, ""),
-    a64("module:code-model-large", LATER, ""),
-    a64("module:large-data-threshold", LATER, ""),
+    // WP-209: the kernel and medium models are judged and left out
+    // (`spec/codegen.md` §5.6.36); the large one is built.
+    row("module:code-model-kernel", todo(LATER), todo(LATER), CODE_MODEL_OTHER),
+    row("module:code-model-medium", todo(LATER), todo(LATER), CODE_MODEL_OTHER),
+    row(
+        "module:code-model-large",
+        ON,
+        ON,
+        "x86-64: every reference 64-bit, `.ltext`/`.ldata`/`.lrodata`/`.lbss`; AArch64: \
+         `movz`/`movk` addresses outside PIC, 8-byte unwind tables (WP-209)",
+    ),
+    // WP-209: `llc`'s AArch64 large-model PIC is neither small PIC's code
+    // nor complete (it rejects thread-locals other than local exec).
+    row(
+        "module:code-model-large-pic",
+        todo(LATER),
+        ON,
+        "the large model with `PIC Level` not 0: AArch64's is refused by name (`spec/codegen.md` §5.6.36)",
+    ),
+    both(
+        "module:large-data-threshold",
+        ON,
+        "ignored, as `llc` ignores it (it reads the threshold from its command line only; WP-209)",
+    ),
     both("module:uwtable", ON, "the module's default unwind-table kind is not `none` (WP-049)"),
     both(
         "module:frame-pointer",
@@ -3962,6 +3985,7 @@ pub(crate) mod at {
     pub(crate) const MODULE_PIE: usize = find("module:pie");
     /// Plus `CodeModel as usize`.
     pub(crate) const MODULE_CODE_MODEL: usize = find("module:code-model-tiny");
+    pub(crate) const MODULE_LARGE_PIC: usize = find("module:code-model-large-pic");
     pub(crate) const MODULE_LARGE_DATA: usize = find("module:large-data-threshold");
     pub(crate) const MODULE_UWTABLE: usize = find("module:uwtable");
     pub(crate) const MODULE_FRAME_POINTER: usize = find("module:frame-pointer");

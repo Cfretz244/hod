@@ -20,7 +20,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 
 | group | constructs | aarch64 supported | not-implemented | rejected | x86_64 supported | not-implemented | rejected |
 |---|---|---|---|---|---|---|---|
-| `module` | 24 | 16 | 6 | 2 | 18 | 6 | 0 |
+| `module` | 25 | 18 | 5 | 2 | 21 | 4 | 0 |
 | `structor` | 2 | 2 | 0 | 0 | 2 | 0 | 0 |
 | `debug` | 5 | 4 | 1 | 0 | 4 | 1 | 0 |
 | `global` | 12 | 11 | 1 | 0 | 11 | 1 | 0 |
@@ -43,7 +43,7 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
 | `intrinsic` | 703 | 347 | 7 | 349 | 477 | 10 | 216 |
-| total | 1028 | 566 | 56 | 406 | 697 | 64 | 267 |
+| total | 1029 | 568 | 55 | 406 | 700 | 62 | 267 |
 
 ## `module`
 
@@ -55,10 +55,11 @@ Module properties (`ModuleProps`, §2.1) and module-level tables.
 | `module:pie` | supported | supported | `PIE Level` is not 0 |
 | `module:code-model-tiny` | not-implemented | not-implemented | unplanned |
 | `module:code-model-small` | supported | supported | the default of both targets: nothing changes |
-| `module:code-model-kernel` | not-implemented | not-implemented | unplanned |
-| `module:code-model-medium` | not-implemented | not-implemented | unplanned |
-| `module:code-model-large` | not-implemented | not-implemented | unplanned |
-| `module:large-data-threshold` | not-implemented | not-implemented | unplanned |
+| `module:code-model-kernel` | not-implemented | not-implemented | unplanned. not built: the large model does not cover it (`spec/codegen.md` §5.6.36) |
+| `module:code-model-medium` | not-implemented | not-implemented | unplanned. not built: the large model does not cover it (`spec/codegen.md` §5.6.36) |
+| `module:code-model-large` | supported | supported | x86-64: every reference 64-bit, `.ltext`/`.ldata`/`.lrodata`/`.lbss`; AArch64: `movz`/`movk` addresses outside PIC, 8-byte unwind tables (WP-209) |
+| `module:code-model-large-pic` | not-implemented | supported | unplanned. the large model with `PIC Level` not 0: AArch64's is refused by name (`spec/codegen.md` §5.6.36) |
+| `module:large-data-threshold` | supported | supported | ignored, as `llc` ignores it (it reads the threshold from its command line only; WP-209) |
 | `module:uwtable` | supported | supported | the module's default unwind-table kind is not `none` (WP-049) |
 | `module:frame-pointer` | supported | supported | any `frame-pointer` value: hod always keeps a frame pointer (`spec/codegen.md` §5) |
 | `module:branch-target-enforcement` | supported | supported | AArch64: the BTI bit of `.note.gnu.property`; x86-64: ignored, as `llc` (WP-185) |
