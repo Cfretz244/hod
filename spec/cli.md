@@ -569,6 +569,7 @@ The grammar is `llc`'s:
 | `-split-dwarf-file` | name | `split_dwarf_file` |
 | `-split-dwarf-output` | file | `split_dwarf_output` |
 | `-x86-branches-within-32B-boundaries` | flag | `x86_branches_within_32b` |
+| `-enable-tlsdesc` | flag | `tls_descriptors` (TLS descriptors for the dynamic TLS models on x86-64, what `clang -mtls-dialect=gnu2` passes; no effect on AArch64, as in `llc`: `spec/codegen.md` §5.6.37) |
 | `-time-trace` | flag | none: accepted and ignored |
 | `-time-trace-granularity` | unsigned integer | none: accepted and ignored |
 | `-time-trace-file` | file | none: accepted and ignored |

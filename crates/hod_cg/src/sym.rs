@@ -16,6 +16,13 @@ pub enum SymRef {
     /// `spec/codegen.md` "Coroutines"): a private constant that module
     /// emission places, with the function it points to, on first use.
     NoopCoroFrame,
+    /// `_TLS_MODULE_BASE_`: the start of the module's TLS block, whose
+    /// descriptor an x86-64 local-dynamic access calls (WP-213,
+    /// `spec/codegen.md` §5.6.37). Module emission maps it to the
+    /// module's own symbol of that name if it declares one, and to a new
+    /// undefined global `STT_TLS` symbol otherwise, as `llc` writes it;
+    /// the linker defines it.
+    TlsModuleBase,
 }
 
 macro_rules! runtime_fns {
@@ -705,6 +712,10 @@ runtime_fns! {
     AtomicFetchOr16 = "__atomic_fetch_or_16": (PTR, I128, I32) -> I128;
     /// `__atomic_fetch_xor_16(ptr, value, order)` (WP-144).
     AtomicFetchXor16 = "__atomic_fetch_xor_16": (PTR, I128, I32) -> I128;
+    /// `_GLOBAL_OFFSET_TABLE_`: not a function but the symbol x86-64's
+    /// large code model computes the GOT's address from
+    /// (`R_X86_64_GOTPC64`, WP-209, §5.6.36); never called.
+    GlobalOffsetTable = "_GLOBAL_OFFSET_TABLE_": () -> VOID;
 }
 
 // ---- Runtime routines keyed by (type, target): §7.3 (WP-117) ----

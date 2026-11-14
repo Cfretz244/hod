@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use hod_obj::elf::{
     SHF_ALLOC, SHF_EXECINSTR, SHF_GNU_RETAIN, SHF_MERGE, SHF_STRINGS, SHF_TLS, SHF_WRITE,
-    SHT_FINI_ARRAY, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PREINIT_ARRAY, SHT_PROGBITS,
+    SHF_X86_64_LARGE, SHT_FINI_ARRAY, SHT_INIT_ARRAY, SHT_NOBITS, SHT_NOTE, SHT_PREINIT_ARRAY,
+    SHT_PROGBITS,
 };
 use hod_obj::{SectionId, SectionKind};
 
@@ -61,13 +62,32 @@ impl Kind {
         }
     }
 
+    /// Whether a global of this kind goes to a large section (`.ltext`,
+    /// `.lrodata`, `.lbss`, `.ldata`) under x86-64's large code model:
+    /// every kind but the thread-local ones and `ReadOnlyWithRel`, which
+    /// `llc` 19 and 22 keep in `.data.rel.ro` (§9.7, WP-209).
+    pub(crate) const fn can_be_large(self) -> bool {
+        !matches!(self, Kind::ThreadData | Kind::ThreadBss | Kind::ReadOnlyWithRel)
+    }
+
     /// Without file space.
     pub(crate) const fn is_nobits(self) -> bool {
         matches!(self, Kind::Bss { .. } | Kind::ThreadBss)
     }
 
-    /// `getSectionPrefixForGlobal` (small code model).
-    const fn prefix(self) -> &'static [u8] {
+    /// `getSectionPrefixForGlobal`: `large` for a global in a large
+    /// section of x86-64 (§9.7, WP-209), where only the kinds of
+    /// [`Kind::can_be_large`] have a large prefix.
+    const fn prefix(self, large: bool) -> &'static [u8] {
+        if large {
+            match self {
+                Kind::Text => return b".ltext",
+                Kind::ReadOnly | Kind::CString(_) | Kind::Const(_) => return b".lrodata",
+                Kind::Bss { .. } => return b".lbss",
+                Kind::Data => return b".ldata",
+                _ => {}
+            }
+        }
         match self {
             Kind::Text => b".text",
             Kind::ReadOnly | Kind::CString(_) | Kind::Const(_) => b".rodata",
@@ -281,10 +301,14 @@ impl Sections {
     /// symbol), a section of its own named `<prefix>.<symbol>`. `name` is
     /// a scratch buffer that receives the name to create. `align` is the
     /// global's preferred alignment, which names a string section.
+    /// `large`: the global goes to a large section of x86-64 (§9.7,
+    /// WP-209): the `.l` prefix, `SHF_X86_64_LARGE`, and no standard
+    /// section (none of them is large).
     #[expect(clippy::too_many_arguments, reason = "the inputs of `SelectSectionForGlobal`")]
     pub(crate) fn implicit(
         &mut self,
         kind: Kind,
+        large: bool,
         unique: bool,
         retain: bool,
         group: u32,
@@ -292,8 +316,9 @@ impl Sections {
         align: u64,
         name: &mut Vec<u8>,
     ) -> Found {
+        let large = large && kind.can_be_large();
         name.clear();
-        name.extend_from_slice(kind.prefix());
+        name.extend_from_slice(kind.prefix(large));
         match kind {
             Kind::CString(size) => {
                 use std::io::Write as _;
@@ -309,6 +334,9 @@ impl Sections {
         if retain {
             flags |= SHF_GNU_RETAIN;
         }
+        if large {
+            flags |= SHF_X86_64_LARGE;
+        }
         let entry_size = kind.entry_size();
         // An implicit name never starts like a typed one (`.note`,
         // `.init_array`): the type is the kind's.
@@ -321,6 +349,17 @@ impl Sections {
             return match self.find(name, group, GENERIC) {
                 Some(section) => Found::Old(section),
                 None => Found::New(new(group), pending),
+            };
+        }
+        if large {
+            // No cache: the caches hold the small sections.
+            return match self.find(name, NO_GROUP, GENERIC) {
+                Some(section) => Found::Old(section),
+                // `own`, so that `created` does not cache it either.
+                None => Found::New(
+                    new(NO_GROUP),
+                    Pending { own: true, id: GENERIC, flags, entry_size, group: NO_GROUP },
+                ),
             };
         }
         let cached = match kind {
@@ -347,17 +386,22 @@ impl Sections {
     /// The section a global with the explicit section `name` goes to
     /// (`selectExplicitSectionGlobal`, `calcUniqueIDUpdateFlagsAndSize`).
     /// `kind` is the global's own kind (before the name refines it);
-    /// `align` its preferred alignment.
+    /// `align` its preferred alignment. `large`: the section is a large
+    /// one of x86-64 ([`is_large_name`]), with `SHF_X86_64_LARGE`.
     pub(crate) fn explicit(
         &mut self,
         name: &[u8],
         kind: Kind,
+        large: bool,
         retain: bool,
         group: u32,
         align: u64,
     ) -> Found {
         let kind = named_kind(name, kind);
         let mut flags = kind.flags();
+        if large {
+            flags |= SHF_X86_64_LARGE;
+        }
         let entry_size = kind.entry_size();
         let mergeable = flags & SHF_MERGE != 0;
         let id = if retain {
@@ -436,6 +480,17 @@ impl Sections {
     }
 }
 
+/// Whether an explicit section `name` is a large section of x86-64
+/// (`TargetMachine::isLargeGlobalValue`, in every code model): `.ltext`
+/// for a function, `.lbss`, `.ldata` or `.lrodata` for a variable, the
+/// name itself or followed by `.` (§9.7, WP-209).
+pub(crate) fn is_large_name(name: &[u8], function: bool) -> bool {
+    let is = |prefix: &[u8]| {
+        name.strip_prefix(prefix).is_some_and(|rest| rest.is_empty() || rest[0] == b'.')
+    };
+    if function { is(b".ltext") } else { is(b".lbss") || is(b".ldata") || is(b".lrodata") }
+}
+
 /// `MCContext::isELFImplicitMergeableSectionNamePrefix`.
 fn is_implicit_mergeable(name: &[u8]) -> bool {
     name.starts_with(b".rodata.str") || name.starts_with(b".rodata.cst")
@@ -444,7 +499,7 @@ fn is_implicit_mergeable(name: &[u8]) -> bool {
 /// The name `SelectSectionForGlobal` would give a mergeable kind.
 fn stem(kind: Kind, align: u64) -> Vec<u8> {
     use std::io::Write as _;
-    let mut name = kind.prefix().to_vec();
+    let mut name = kind.prefix(false).to_vec();
     match kind {
         Kind::CString(size) => {
             let _ = write!(name, ".str{size}.{align}");
@@ -480,7 +535,7 @@ mod tests {
         let mut sections = Sections::new();
         let mut next = 0;
         let mut get = |sections: &mut Sections, name: &[u8], kind| match sections
-            .explicit(name, kind, false, NO_GROUP, 1)
+            .explicit(name, kind, false, false, NO_GROUP, 1)
         {
             Found::Old(section) => section,
             Found::New(_, pending) => {
@@ -499,5 +554,35 @@ mod tests {
         // that names it gets a section of its own.
         let writable = get(&mut sections, b".data", Kind::Data);
         assert_ne!(writable, get(&mut sections, b".data", Kind::ReadOnly));
+    }
+
+    /// §9.7 (WP-209): the large sections of x86-64, as `llc` 19 and 22
+    /// name and flag them; an explicit name is large by its prefix.
+    #[test]
+    fn large_sections() {
+        let mut sections = Sections::new();
+        let mut name = Vec::new();
+        let mut get = |kind: Kind, unique: bool| match sections
+            .implicit(kind, true, unique, false, NO_GROUP, b"x", 1, &mut name)
+        {
+            Found::New(new, pending) => (name.clone(), new.kind, pending.flags),
+            Found::Old(_) => unreachable!("nothing was created"),
+        };
+        let l = SHF_X86_64_LARGE | SHF_ALLOC;
+        assert_eq!(get(Kind::Text, false).0, b".ltext");
+        assert_eq!(get(Kind::Text, false).2, l | SHF_EXECINSTR);
+        assert_eq!(get(Kind::Data, true).0, b".ldata.x");
+        assert_eq!(get(Kind::Bss { local: true }, false).0, b".lbss");
+        assert_eq!(get(Kind::ReadOnly, false).0, b".lrodata");
+        assert_eq!(get(Kind::CString(1), false).0, b".lrodata.str1.1");
+        assert_eq!(get(Kind::Const(8), false).2, l | SHF_MERGE);
+        // Thread-local data and `.data.rel.ro` are never large.
+        assert_eq!(get(Kind::ReadOnlyWithRel, false).0, b".data.rel.ro");
+        assert_eq!(get(Kind::ThreadData, false).2, SHF_ALLOC | SHF_WRITE | SHF_TLS);
+        let (_, kind, _) = get(Kind::Bss { local: false }, false);
+        assert!(kind.is_nobits());
+        assert!(is_large_name(b".ltext", true) && is_large_name(b".ltext.f", true));
+        assert!(!is_large_name(b".ltext", false) && !is_large_name(b".ldatax", false));
+        assert!(is_large_name(b".lbss.a", false) && is_large_name(b".lrodata", false));
     }
 }

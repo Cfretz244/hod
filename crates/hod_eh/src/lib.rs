@@ -50,7 +50,9 @@ use hod_obj::{
 use leb::{Sink, sleb, uleb};
 pub use leb::{uleb_len, write_sleb, write_uleb};
 pub use lsda::{CallSite, Clause, FuncLsda, LsdaOptions, NO_PAD, Pad, write_lsdas};
-pub use target::{AARCH64, CfiTarget, X86_64, for_arch, pe};
+pub use target::{
+    AARCH64, AARCH64_LARGE, CfiTarget, X86_64, X86_64_LARGE, for_arch, for_model, pe,
+};
 
 /// A DWARF call-frame instruction, as data (`spec/codegen.md` §9.3,
 /// `spec/eh.md` §4). Registers are DWARF register numbers; offsets are in
@@ -659,10 +661,23 @@ fn write_cie(
 /// The output depends only on the set of FDEs, not on the order of the
 /// slice (§5). On an error `obj` is unchanged.
 pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<SectionId>, Error> {
+    write_eh_frame_for(obj, fdes, for_arch(obj.arch()))
+}
+
+/// [`write_eh_frame`] with the encodings of `target`, which must be one
+/// of the object's architecture: [`X86_64_LARGE`] under x86-64's large
+/// code model (`spec/eh.md` §2.1, WP-209).
+///
+/// # Errors
+/// As [`write_eh_frame`].
+pub fn write_eh_frame_for(
+    obj: &mut Object,
+    fdes: &[Fde<'_>],
+    target: &CfiTarget,
+) -> Result<Option<SectionId>, Error> {
     if fdes.is_empty() {
         return Ok(None);
     }
-    let target = for_arch(obj.arch());
     let (sorted, cies) = layout(fdes)?;
     let rows: usize = fdes.iter().map(|f| f.rows.len()).sum();
     let with_lsda = fdes.iter().filter(|f| f.lsda.is_some()).count();
@@ -687,8 +702,9 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
             let mut stage = Staging::new();
             stage.bytes(&[0; 4]); // length, patched below
             stage.bytes(&pointer.to_le_bytes());
-            stage.bytes(&[0; 4]); // initial location, relocated
-            stage.bytes(&fde.size.to_le_bytes());
+            let fde_size = target.fde_size();
+            stage.bytes(&[0; 8][..fde_size]); // initial location, relocated
+            stage.bytes(&u64::from(fde.size).to_le_bytes()[..fde_size]);
             if personality.is_some() {
                 let size = usize::from(target.pointer_size);
                 stage.byte(size as u8); // augmentation length (ULEB128)

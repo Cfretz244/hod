@@ -400,6 +400,8 @@ OPTIONS (one or two dashes; a value is joined with '=' or is the next argument):
   --split-dwarf-file=<name>       The .dwo name recorded in the object
   --split-dwarf-output=<file>     Where the .dwo file is written
   --x86-branches-within-32B-boundaries
+  --enable-tlsdesc                TLS descriptors for the dynamic TLS models (x86-64;
+                                  AArch64 always uses them)
   --time-trace, --time-trace-granularity=<n>, --time-trace-file=<file>
                                   Accepted; hod itself writes no trace
   --version                       Print the version

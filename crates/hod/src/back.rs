@@ -456,6 +456,7 @@ fn cg_options(options: &Options) -> Result<hod_cg::Options, CompileError> {
         stress: hod_cg::Stress::default(),
         debug_compression: options.debug_compression,
         split_dwarf,
+        tls_descriptors: options.tls_descriptors,
     })
 }
 

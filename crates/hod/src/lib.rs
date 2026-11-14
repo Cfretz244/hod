@@ -136,6 +136,7 @@ pub enum FpContract {
 /// [`Options::default`] is `llc` run with no options: assembly output at
 /// `-O2`, everything else left to the module and the target.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "llc's independent flags, any combination")]
 pub struct Options {
     /// `-mtriple=`: overrides the module's `target triple`.
     pub triple: Option<String>,
@@ -159,6 +160,10 @@ pub struct Options {
     pub fp_contract: Option<FpContract>,
     /// `-x86-branches-within-32B-boundaries`.
     pub x86_branches_within_32b: bool,
+    /// `-enable-tlsdesc` (`clang -mtls-dialect=gnu2`): TLS descriptors
+    /// for the dynamic TLS models on x86-64; no effect on AArch64, which
+    /// always uses them (`spec/codegen.md` §5.6.37).
+    pub tls_descriptors: bool,
     /// `-debugger-tune=`.
     pub debugger_tuning: Option<DebuggerTuning>,
     /// `-split-dwarf-file=`: the `.dwo` name recorded in the skeleton unit.

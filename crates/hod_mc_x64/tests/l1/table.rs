@@ -553,6 +553,7 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     // tls
     ("tls_gd_lea", &["lea"]),
     ("tls_gd_call", &["call"]),
+    ("tlsdesc_call", &["call"]),
     // x87 (WP-119)
     ("fld_m", &["fld"]),
     ("fstp_m", &["fstp"]),
