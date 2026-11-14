@@ -42,7 +42,9 @@
 # programs under CMAKE_CROSSCOMPILING_EMULATOR ($HOD_OSS_X64_QEMU -L
 # <sysroot>, so ctest runs the tests under qemu), links get 16 GB of
 # address space (KILN_OSS_LINK_VMEM_KB: mold maps every archive), the test
-# timeout is the row's times $HOD_OSS_X64_TEST_SLOWDOWN (default 4), and
+# timeout is the row's times $HOD_OSS_X64_TEST_SLOWDOWN (default 4) and
+# its address-space cap $HOD_OSS_X64_TEST_VMEM_KB (default 16 GB: a guest
+# thread is a host thread of qemu's), and
 # the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
 # are shared).
 #
@@ -180,7 +182,14 @@ mkdir -p "$OSS/src" "$BUILD"
 P_TEST="${P_TEST//@SRC@/$SRC}"
 export KILN_OSS_LOG="$BUILD/compile.jsonl"
 export KILN_OSS_VMEM_KB="${KILN_OSS_VMEM_KB:-$P_VMEM_KB}"
-[ "$TARGET" = aarch64 ] || P_TEST_TIMEOUT=$((P_TEST_TIMEOUT * ${HOD_OSS_X64_TEST_SLOWDOWN:-4}))
+TEST_VMEM_KB="$KILN_OSS_VMEM_KB"
+if [ "$TARGET" != aarch64 ]; then
+  P_TEST_TIMEOUT=$((P_TEST_TIMEOUT * ${HOD_OSS_X64_TEST_SLOWDOWN:-4}))
+  # Under qemu every guest thread is a host thread whose stack counts
+  # against the cap: abseil's thread tests abort under 3 GB in the
+  # control too (WP-191).
+  TEST_VMEM_KB="${HOD_OSS_X64_TEST_VMEM_KB:-16000000}"
+fi
 : > "$KILN_OSS_LOG"
 rm -f "$BUILD/report.json" "$BUILD/configure.log" "$BUILD/build.log" "$BUILD/test.log" \
   "$BUILD/kiln-stats.jsonl" "$BUILD/coverage.log" "$BUILD/hod-shim.jsonl"
@@ -249,7 +258,7 @@ if [ "$CONF_RC" = 0 ]; then
     # Per-tree test scratch, so the builds of one project never share it.
     TTMP="$BUILD/test-tmp"; mkdir -p "$TTMP" && find "$TTMP" -mindepth 1 -delete
     [ "$TARGET" = aarch64 ] || python3 "$HERE/projects.py" emulate-tests "$BUILD" "$X64_QEMU" -L "$X64_SYSROOT" > "$BUILD/emulate.log" 2>&1
-    (cd "$BUILD" && ulimit -v "$KILN_OSS_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
+    (cd "$BUILD" && ulimit -v "$TEST_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
       TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?
     echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)"
