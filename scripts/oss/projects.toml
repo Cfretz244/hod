@@ -28,6 +28,9 @@
 #   source_subdir  optional: the CMake source dir inside the checkout
 #   test_timeout   seconds, default 1800
 #   vmem_kb        the address-space cap of one compile or test, default 3000000
+#   drop_flags     optional: compiler arguments the wrappers leave out of every
+#                  kiln command (a flag kiln does not accept that the project
+#                  hard-codes, e.g. highway's -fmerge-all-constants), in every mode
 #   notes          free text
 
 [fmt]
@@ -289,6 +292,8 @@ build_targets = ["base_test", "highway_test", "targets_test", "aligned_allocator
 test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in tests/*_test; do if [ -x \"$t\" ]; then echo \"add_test($(basename $t) $emu $PWD/$t)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure --timeout 3600"
 test_timeout = 7200
 c_compiler = "clang-19"
+# kiln does not accept it; highway adds it to every compile (an optimization only).
+drop_flags = ["-fmerge-all-constants"]
 notes = "WP-200. Portable SIMD with per-target code: each test is compiled once per attainable target (x86-64: SSE2, SSSE3, SSE4, AVX2, the AVX-512 variants; each in a `#pragma clang attribute push(__attribute__((target(...))))` region, HWY_BEFORE_NAMESPACE) and run for every target the CPU has (qemu-x86_64: up to AVX2). 28 of the core op tests (hwy/tests), each program run once as one test. Needs kiln 21caaf874 or later (the pragma); googletest is downloaded at configure time."
 
 [range_v3]
