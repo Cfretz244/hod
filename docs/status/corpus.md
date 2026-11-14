@@ -10,9 +10,9 @@ The corpus is the LLVM IR that hod's front ends really produce, captured by `car
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | `gcc-torture/llvm22` | 1,812 | 1,709 | 103 | 54,534,393 | Debian clang version 22.1.8 (1~deb13u4) | `6afcc4f6da931eb93f3ab001a0dd9650ea71d1ea` |
 | `gcc-torture/llvm19` | 1,812 | 1,711 | 101 | 54,404,675 | Debian clang version 19.1.7 (3+b1) | `6afcc4f6da931eb93f3ab001a0dd9650ea71d1ea` |
-| `kiln/llvm22` | 1,654 | 1,540 | 114 | 47,046,026 | kiln version 1.1.0 (C++26 frontend, LLVM IR backend) | `21caaf874ac8efc303e0ab5891df05e5a5d0fa77` |
-| `kiln/llvm19` | 1,654 | 1,500 | 154 | 46,489,055 | kiln version 1.1.0 (C++26 frontend, LLVM IR backend) | `21caaf874ac8efc303e0ab5891df05e5a5d0fa77` |
-| all | 6,932 | 6,460 | 472 | 202,474,149 |  |  |
+| `kiln/llvm22` | 1,655 | 1,540 | 115 | 47,046,026 | kiln version 1.1.0 (C++26 frontend, LLVM IR backend) | `21b9110a47c5bd4de15b38ce134bb02d69568b09` |
+| `kiln/llvm19` | 1,655 | 1,500 | 155 | 46,489,055 | kiln version 1.1.0 (C++26 frontend, LLVM IR backend) | `21b9110a47c5bd4de15b38ce134bb02d69568b09` |
+| all | 6,934 | 6,460 | 474 | 202,474,149 |  |  |
 
 The last capture that made each group anew, nothing reused (from `CAPTURE.tsv`; times are of one run on one shared machine):
 
@@ -20,8 +20,8 @@ The last capture that made each group anew, nothing reused (from `CAPTURE.tsv`; 
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `gcc-torture/llvm22` | 1,812 | 1,709 | 0 | 103 | 549.8 | 3 |
 | `gcc-torture/llvm19` | 1,812 | 1,711 | 0 | 101 | 417.0 | 3 |
-| `kiln/llvm22` | 1,654 | 1,540 | 0 | 114 | 1095.2 | 4 |
-| `kiln/llvm19` | 1,654 | 1,500 | 0 | 154 | 1003.1 | 4 |
+| `kiln/llvm22` | 1,655 | 1,540 | 0 | 115 | 1661.1 | 4 |
+| `kiln/llvm19` | 1,655 | 1,500 | 0 | 155 | 1091.9 | 4 |
 
 ### Skipped tests by reason
 
@@ -31,7 +31,7 @@ The last capture that made each group anew, nothing reused (from `CAPTURE.tsv`; 
 | `multi-file` |  |  | 1 | 1 | a test of several translation units whose build the capture does not replay (`pch:` in the header; modules that were given different `llc` arguments or would have one name; objects whose link order is not known) |
 | `needs-env` |  |  | 7 | 7 | the test needs an environment or input files the capture does not set up |
 | `requires` |  |  | 38 | 79 | a `requires:` line that this host or this LLVM does not meet |
-| `needs-toolchain` |  |  | 34 | 34 | `args:` use a placeholder the capture does not substitute (`%{gcc_toolchain}` and the like: a toolchain kiln's own suite locates) |
+| `needs-toolchain` |  |  | 35 | 35 | `args:` use a placeholder the capture does not substitute (`%{gcc_toolchain}` and the like: a toolchain kiln's own suite locates) |
 | `libc++` |  |  | 14 | 13 | `-stdlib=libc++`: the entry's link (`link: c++`) is against libstdc++ |
 | `link-flags` |  |  | 5 | 5 | a link option the entry's link cannot repeat (`-l...`, `-fuse-ld=`, `-static`) |
 | `opt-first-lto` |  |  | 3 | 3 | `-flto`: kiln++ gives llc nothing; the link runs the code generator |
@@ -2091,13 +2091,14 @@ A runner that does *not* honour the header fails on more: every test under `mult
 - `tests/conformance/temp.over.link/concept-ttp-requires-redeclaration.cpp` (LLVM 19): `requires: clang>=22`
 - `tests/stress/bool-vector-sieve.cpp` (LLVM 19): `requires: clang>=22`
 
-`needs-toolchain` (34):
+`needs-toolchain` (35):
 
 - `tests/conformance/basic.lookup.argdep/p3-meta-info-is-object.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/basic.lookup.argdep/p3-meta-info-std-meta.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/basic.splice/p3293-base-subobject.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/basic.types.general/consteval-only-namespace-scope-bool-run.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/dcl.struct.bind/consteval-only-static-run.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
+- `tests/conformance/expr.const.const/p2-constexpr-local-storage-run.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/expr.const/immediate-invocation-constant-init-reflection.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/expr.const/immediate-invocation-constant-init-static-array.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
 - `tests/conformance/expr.prim.splice/contract-constify-object.cpp` (LLVM 22, 19): `args use %{gcc_toolchain}`
