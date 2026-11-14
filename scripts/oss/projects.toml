@@ -281,11 +281,15 @@ url = "https://github.com/google/highway"
 tag = "1.4.0"
 build = "cmake"
 cxx_std = 17
-configure = ["-DHWY_ENABLE_TESTS=ON", "-DHWY_ENABLE_CONTRIB=OFF", "-DHWY_ENABLE_EXAMPLES=OFF", "-DHWY_ENABLE_INSTALL=OFF", "-DHWY_WARNINGS_ARE_ERRORS=OFF", "-DHWY_SYSTEM_GTEST=OFF", "-DBUILD_TESTING=ON"]
-test = "ctest --output-on-failure"
-test_timeout = 3600
+configure = ["-DHWY_ENABLE_TESTS=ON", "-DHWY_ENABLE_CONTRIB=OFF", "-DHWY_ENABLE_EXAMPLES=OFF", "-DHWY_ENABLE_INSTALL=OFF", "-DHWY_WARNINGS_ARE_ERRORS=OFF", "-DHWY_SYSTEM_GTEST=OFF", "-DBUILD_TESTING=ON", "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"]
+build_targets = ["base_test", "highway_test", "targets_test", "aligned_allocator_test", "arithmetic_test", "blockwise_test", "cast_test", "combine_test", "compare_test", "compress_test", "convert_test", "crypto_test", "demote_test", "div_test", "float_test", "fma_test", "interleaved_test", "logical_test", "mask_test", "memory_test", "minmax_test", "mul_test", "reduction_test", "saturated_test", "shift_test", "shuffle4_test", "swizzle_test", "table_test"]
+# One ctest test per test program (gtest_discover_tests would make one
+# per case and target, thousands of qemu starts): whole/CTestTestfile.cmake
+# runs each built program once, under the cross build's emulator if any.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in tests/*_test; do if [ -x \"$t\" ]; then echo \"add_test($(basename $t) $emu $PWD/$t)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure --timeout 3600"
+test_timeout = 7200
 c_compiler = "clang-19"
-notes = "WP-200. Portable SIMD with per-target code: every test is compiled once per attainable target (on x86-64 SSE2, SSSE3, SSE4, AVX2, AVX-512 variants, each through `target` attributes and foreach_target.h re-inclusion) and dispatched at run time (qemu-x86_64 has no AVX-512, so AVX2 is the best target the tests run). googletest is downloaded at configure time. Not built yet: every highway header opens with HWY_BEFORE_NAMESPACE(), a `#pragma clang attribute push(__attribute__((target(...))))` on clang, which kiln rejects on both targets ('#pragma clang attribute' is not supported yet); the row waits for kiln."
+notes = "WP-200. Portable SIMD with per-target code: each test is compiled once per attainable target (x86-64: SSE2, SSSE3, SSE4, AVX2, the AVX-512 variants; each in a `#pragma clang attribute push(__attribute__((target(...))))` region, HWY_BEFORE_NAMESPACE) and run for every target the CPU has (qemu-x86_64: up to AVX2). 28 of the core op tests (hwy/tests), each program run once as one test. Needs kiln 21caaf874 or later (the pragma); googletest is downloaded at configure time."
 
 [range_v3]
 url = "https://github.com/ericniebler/range-v3"
