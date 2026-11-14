@@ -307,3 +307,14 @@ build_targets = ["basicstuff", "packetmath", "vectorization_logic", "redux", "bl
 test = "ctest --output-on-failure -R '^(basicstuff|packetmath|vectorization_logic|redux|block|product_small|product_large|determinant|inverse|cholesky|lu|qr|qr_colpivoting|jacobisvd|eigensolver_generic|schur_real|householder|geo_quaternion|geo_transformations|sparse_basic|sparse_product|simplicial_cholesky|conjugate_gradient|sparselu|array_cwise|half_float|bfloat16_float|stl_iterators|indexed_view|reshape|dense_storage|special_numbers|fastmath|autodiff|matrix_function|splines|special_functions|cxx11_tensor_contraction|cxx11_tensor_broadcasting|cxx11_tensor_reduction|cxx11_tensor_morphing|cxx11_non_blocking_thread_pool)(_[0-9]+)?$'"
 c_compiler = "clang-19"
 notes = "WP-200. GitLab, not GitHub. 42 of the suite's tests across modules (core, packet math, decompositions, geometry, sparse, unsupported tensor and autodiff), from kiln's 132-test subset (kiln's eigen row); each test is split into parts (<name>_<n>), one executable each."
+
+[simdjson_haswell]
+url = "https://github.com/simdjson/simdjson"
+tag = "v4.2.4"
+checkout = "simdjson"
+build = "cmake"
+cxx_std = 20
+configure = ["-DSIMDJSON_DEVELOPER_MODE=ON", "-DSIMDJSON_ENABLE_THREADS=ON", "-DSIMDJSON_EXCEPTIONS=ON", "-DCMAKE_CXX_FLAGS=-march=haswell -DSIMDJSON_IMPLEMENTATION_ICELAKE=0"]
+test = "ctest --output-on-failure -E 'checkperf|fuzz'"
+c_compiler = "clang-19"
+notes = "WP-200, x86-64 only. The simdjson row's runtime dispatch puts each x86-64 kernel (westmere, haswell, icelake) in a `#pragma clang attribute push(__attribute__((target(...))))` region, which kiln rejects ('#pragma clang attribute' is not supported yet); built for Haswell (-march=haswell: AVX2, BMI1/2, PCLMUL, LZCNT, POPCNT in every function) with the icelake kernel off, the haswell kernel is the built-in one and needs no region. qemu-x86_64 runs AVX2."

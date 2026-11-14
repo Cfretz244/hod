@@ -263,8 +263,11 @@ def cmd_emulate_tests(a):
         out = []
         for line in lines:
             m = ADD_TEST_RE.match(line)
-            if m and is_x86_64_elf(m.group(3)):
-                line = f'{m.group(1)}{emu} "{m.group(3)}"{line[m.end():]}'
+            # A test of add_test's old signature (`add_test(name prog)`,
+            # simdjson's) names its program relative to its directory.
+            prog = m and os.path.join(root, m.group(3))
+            if m and is_x86_64_elf(prog):
+                line = f'{m.group(1)}{emu} "{prog}"{line[m.end():]}'
                 n += 1
             out.append(line)
         if out != lines:
