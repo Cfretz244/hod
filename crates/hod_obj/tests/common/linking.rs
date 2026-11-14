@@ -283,3 +283,93 @@ pub fn find_marker(file: &Path, marker: &str) -> Option<usize> {
     let bytes = std::fs::read(file).unwrap();
     bytes.windows(marker.len()).position(|window| window == marker.as_bytes())
 }
+
+/// A program header as `readelf -lW` prints it.
+#[derive(Clone, Copy, Debug)]
+pub struct Segment {
+    pub offset: u64,
+    pub vaddr: u64,
+    pub memsz: u64,
+    pub align: u64,
+}
+
+/// The `PT_LOAD` and `PT_GNU_RELRO` headers of a linked program, with the
+/// text `readelf -lW` printed; `None` when no `readelf` is installed.
+pub fn load_and_relro(program: &Path) -> Option<(Vec<Segment>, Vec<Segment>, String)> {
+    let readelf = find_tool("llvm-readelf").or_else(|| find_tool("readelf"))?;
+    let ran = run(readelf, [OsStr::new("-lW"), program.as_os_str()]);
+    assert!(ran.success(), "readelf -lW {}: {}", program.display(), ran.stderr_text());
+    let text = ran.stdout_text();
+    let (mut loads, mut relros) = (Vec::new(), Vec::new());
+    for line in text.lines() {
+        // `Type Offset VirtAddr PhysAddr FileSiz MemSiz Flg Align`; the
+        // flags may hold a space (`R E`), so the alignment is the last.
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let into = match fields.first() {
+            Some(&"LOAD") => &mut loads,
+            Some(&"GNU_RELRO") => &mut relros,
+            _ => continue,
+        };
+        let hex = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap();
+        into.push(Segment {
+            offset: hex(fields[1]),
+            vaddr: hex(fields[2]),
+            memsz: hex(fields[5]),
+            align: hex(fields[fields.len() - 1]),
+        });
+    }
+    Some((loads, relros, text))
+}
+
+/// Asserts what the native dynamic loader requires of a program's program
+/// headers and an emulator does not check: each `PT_LOAD`'s address and
+/// offset agree modulo its alignment, the `PT_LOAD`s ascend, and each
+/// `PT_GNU_RELRO` range, rounded to pages as `ld.so` rounds it (start and
+/// end down), lies in pages that `PT_LOAD`s map. glibc's `ld.so` leaves
+/// the address gaps between `PT_LOAD`s unmapped, so its `mprotect` of a
+/// RELRO range across a gap fails ("cannot apply additional memory
+/// protection after relocation: Cannot allocate memory"); `qemu-user`
+/// applies it page by page and lets it through. Checked for every page
+/// size the target's loader may run with that the file's alignment allows.
+pub fn check_loadable(program: &Path, target: Target) {
+    let Some((loads, relros, text)) = load_and_relro(program) else { return };
+    let shown = program.display();
+    assert!(!loads.is_empty(), "{shown}: no PT_LOAD\n{text}");
+    for (i, load) in loads.iter().enumerate() {
+        let align = load.align.max(1);
+        assert_eq!(
+            load.vaddr % align,
+            load.offset % align,
+            "{shown}: PT_LOAD {i}'s address and offset disagree modulo {align:#x}\n{text}"
+        );
+        if let Some(next) = loads.get(i + 1) {
+            assert!(load.vaddr < next.vaddr, "{shown}: PT_LOAD {i} does not ascend\n{text}");
+        }
+    }
+    let pages: &[u64] = match target {
+        Target::X86_64 => &[0x1000],
+        Target::Aarch64 => &[0x1000, 0x4000, 0x1_0000],
+    };
+    let min_align = loads.iter().map(|l| l.align).min().unwrap_or(0x1000);
+    for &page in pages.iter().filter(|&&page| page <= min_align.max(0x1000)) {
+        let down = |a: u64| a & !(page - 1);
+        let up = |a: u64| (a + page - 1) & !(page - 1);
+        let mapped: Vec<(u64, u64)> =
+            loads.iter().map(|l| (down(l.vaddr), up(l.vaddr + l.memsz))).collect();
+        for relro in &relros {
+            let (start, end) = (down(relro.vaddr), down(relro.vaddr + relro.memsz));
+            let mut at = start;
+            while at < end {
+                let Some(&(_, to)) = mapped.iter().find(|(from, to)| *from <= at && at < *to)
+                else {
+                    panic!(
+                        "{shown}: with {page:#x}-byte pages the loader's mprotect of \
+                         PT_GNU_RELRO [{start:#x}, {end:#x}) meets the unmapped page {at:#x} \
+                         (ENOMEM natively)\n{text}"
+                    );
+                };
+                at = to;
+            }
+        }
+    }
+}
