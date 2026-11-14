@@ -48,7 +48,7 @@ use crate::features::{self, FnFeatures};
 use crate::reg::{self, R8, R9, RAX, RBX, RDI, RDX, RSI, XMM0, XMM8, XMM13, XMM14, XMM15};
 use crate::{
     abi, aggr, atomic, barrier, call, control, coro, coro_body, float, fpintr, frame, int,
-    intrinsic, lanes, mask, mem, term, tls, vector, x87,
+    intrinsic, lanes, mask, mem, term, tls, unwind, vector, x87,
 };
 
 /// The x86-64 Linux target (System V AMD64 psABI): constants, and what
@@ -241,6 +241,12 @@ fn lower_call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, site: &CallSite<'a>) -
             | Intrinsic::CoroAwaitSuspendBool
             | Intrinsic::CoroAwaitSuspendHandle),
         ) => coro_body::intrinsic(cx, inst, which, site.args()),
+        Some(
+            which @ (Intrinsic::EhDwarfCfa
+            | Intrinsic::EhReturnI64
+            | Intrinsic::EhUnwindInit
+            | Intrinsic::AddressOfReturnAddress),
+        ) => unwind::intrinsic(cx, inst, which, site.args()),
         Some(which) if fpintr::is_fp(which) => fpintr::intrinsic(cx, inst, which, site.args()),
         Some(which) => intrinsic::intrinsic(cx, inst, which, site.args()),
     }
