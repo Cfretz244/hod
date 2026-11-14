@@ -103,8 +103,12 @@ def reduce_one(d, reason, hod, scratch, timeout):
     if os.path.getsize(start) > MAX_REDUCE_BYTES:
         return None, f"not reduced: {os.path.getsize(start)} bytes, no single function to extract"
     out = os.path.join(scratch, "min.ll")
-    # llvm-reduce passes the candidate as the test's last argument.
-    cmd = [f"{LLVM}/llvm-reduce", "-j", "1", f"--test={sys.executable}", f"--test-arg={test}", f"--test-arg={hod}",
+    # llvm-reduce passes the candidate as the test's last argument. Its
+    # `attributes` pass is skipped: without a function's target-features
+    # hod refuses a vector intrinsic for the missing feature, a different
+    # refusal under the same name (WP-200: reductions of AVX2 and AVX-512
+    # calls that hod builds in the real module).
+    cmd = [f"{LLVM}/llvm-reduce", "-j", "1", "--skip-delta-passes=attributes", f"--test={sys.executable}", f"--test-arg={test}", f"--test-arg={hod}",
            f"--test-arg={reason}", f"--test-arg={os.path.join(scratch, 'cov')}", "-o", out, start]
     try:
         subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=scratch)
