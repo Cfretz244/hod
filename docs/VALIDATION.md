@@ -229,7 +229,9 @@ scripts/oss/oss-build.sh re2 --mode strict --flavour O0g   # one build
 python3 scripts/oss/oss-report.py status --out docs/status/oss.md
 ```
 
-Results: `docs/status/oss.md` (generated). The refused modules are kept
+Results: `docs/status/oss.md` (generated); LLVM and Clang, built by their
+own scripts (`scripts/oss/llvm/`), are in `docs/status/oss-llvm.md`. The
+refused modules are kept
 under `findings/oss/<project>/<reason>/` in the build root, with their
 command lines. The hosted form is `.github/workflows/oss.yml` (x86-64 and
 AArch64 runners; by hand or on an `oss/**` branch).
