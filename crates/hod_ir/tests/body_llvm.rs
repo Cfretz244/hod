@@ -1639,6 +1639,97 @@ const INTRINSICS: &[(&str, &str)] = &[
         "llvm.x86.avx512fp16.vfmaddsub.ph.512",
         "<32 x half> (<32 x half>, <32 x half>, <32 x half>, i32)",
     ),
+    // WP-224: the AVX-512 gathers and scatters.
+    (
+        "llvm.x86.avx512.mask.gather.dpd.512",
+        "<8 x double> (<8 x double>, ptr, <8 x i32>, <8 x i1>, i32)",
+    ),
+    (
+        "llvm.x86.avx512.mask.gather.dps.512",
+        "<16 x float> (<16 x float>, ptr, <16 x i32>, <16 x i1>, i32)",
+    ),
+    (
+        "llvm.x86.avx512.mask.gather.qpd.512",
+        "<8 x double> (<8 x double>, ptr, <8 x i64>, <8 x i1>, i32)",
+    ),
+    (
+        "llvm.x86.avx512.mask.gather.qps.512",
+        "<8 x float> (<8 x float>, ptr, <8 x i64>, <8 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather.dpq.512", "<8 x i64> (<8 x i64>, ptr, <8 x i32>, <8 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather.dpi.512",
+        "<16 x i32> (<16 x i32>, ptr, <16 x i32>, <16 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather.qpq.512", "<8 x i64> (<8 x i64>, ptr, <8 x i64>, <8 x i1>, i32)"),
+    ("llvm.x86.avx512.mask.gather.qpi.512", "<8 x i32> (<8 x i32>, ptr, <8 x i64>, <8 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3div2.df",
+        "<2 x double> (<2 x double>, ptr, <2 x i64>, <2 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3div2.di", "<2 x i64> (<2 x i64>, ptr, <2 x i64>, <2 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3div4.df",
+        "<4 x double> (<4 x double>, ptr, <4 x i64>, <4 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3div4.di", "<4 x i64> (<4 x i64>, ptr, <4 x i64>, <4 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3div4.sf",
+        "<4 x float> (<4 x float>, ptr, <2 x i64>, <2 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3div4.si", "<4 x i32> (<4 x i32>, ptr, <2 x i64>, <2 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3div8.sf",
+        "<4 x float> (<4 x float>, ptr, <4 x i64>, <4 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3div8.si", "<4 x i32> (<4 x i32>, ptr, <4 x i64>, <4 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3siv2.df",
+        "<2 x double> (<2 x double>, ptr, <4 x i32>, <2 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3siv2.di", "<2 x i64> (<2 x i64>, ptr, <4 x i32>, <2 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3siv4.df",
+        "<4 x double> (<4 x double>, ptr, <4 x i32>, <4 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3siv4.di", "<4 x i64> (<4 x i64>, ptr, <4 x i32>, <4 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3siv4.sf",
+        "<4 x float> (<4 x float>, ptr, <4 x i32>, <4 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3siv4.si", "<4 x i32> (<4 x i32>, ptr, <4 x i32>, <4 x i1>, i32)"),
+    (
+        "llvm.x86.avx512.mask.gather3siv8.sf",
+        "<8 x float> (<8 x float>, ptr, <8 x i32>, <8 x i1>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.gather3siv8.si", "<8 x i32> (<8 x i32>, ptr, <8 x i32>, <8 x i1>, i32)"),
+    ("llvm.x86.avx512.mask.scatter.dpd.512", "void (ptr, <8 x i1>, <8 x i32>, <8 x double>, i32)"),
+    (
+        "llvm.x86.avx512.mask.scatter.dps.512",
+        "void (ptr, <16 x i1>, <16 x i32>, <16 x float>, i32)",
+    ),
+    ("llvm.x86.avx512.mask.scatter.qpd.512", "void (ptr, <8 x i1>, <8 x i64>, <8 x double>, i32)"),
+    ("llvm.x86.avx512.mask.scatter.qps.512", "void (ptr, <8 x i1>, <8 x i64>, <8 x float>, i32)"),
+    ("llvm.x86.avx512.mask.scatter.dpq.512", "void (ptr, <8 x i1>, <8 x i32>, <8 x i64>, i32)"),
+    ("llvm.x86.avx512.mask.scatter.dpi.512", "void (ptr, <16 x i1>, <16 x i32>, <16 x i32>, i32)"),
+    ("llvm.x86.avx512.mask.scatter.qpq.512", "void (ptr, <8 x i1>, <8 x i64>, <8 x i64>, i32)"),
+    ("llvm.x86.avx512.mask.scatter.qpi.512", "void (ptr, <8 x i1>, <8 x i64>, <8 x i32>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv2.df", "void (ptr, <2 x i1>, <2 x i64>, <2 x double>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv2.di", "void (ptr, <2 x i1>, <2 x i64>, <2 x i64>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv4.df", "void (ptr, <4 x i1>, <4 x i64>, <4 x double>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv4.di", "void (ptr, <4 x i1>, <4 x i64>, <4 x i64>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv4.sf", "void (ptr, <2 x i1>, <2 x i64>, <4 x float>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv4.si", "void (ptr, <2 x i1>, <2 x i64>, <4 x i32>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv8.sf", "void (ptr, <4 x i1>, <4 x i64>, <4 x float>, i32)"),
+    ("llvm.x86.avx512.mask.scatterdiv8.si", "void (ptr, <4 x i1>, <4 x i64>, <4 x i32>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv2.df", "void (ptr, <2 x i1>, <4 x i32>, <2 x double>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv2.di", "void (ptr, <2 x i1>, <4 x i32>, <2 x i64>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv4.df", "void (ptr, <4 x i1>, <4 x i32>, <4 x double>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv4.di", "void (ptr, <4 x i1>, <4 x i32>, <4 x i64>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv4.sf", "void (ptr, <4 x i1>, <4 x i32>, <4 x float>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv4.si", "void (ptr, <4 x i1>, <4 x i32>, <4 x i32>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv8.sf", "void (ptr, <8 x i1>, <8 x i32>, <8 x float>, i32)"),
+    ("llvm.x86.avx512.mask.scattersiv8.si", "void (ptr, <8 x i1>, <8 x i32>, <8 x i32>, i32)"),
 ];
 
 /// Names on the list that LLVM 22 upgrades to other IR on reading (so

@@ -85,6 +85,8 @@ pub const GROUPS: &[Group] = &[
     ("evex", evex::evex_forms),
     ("evex-memory-operands", evex::memory),
     ("opmask", evex::opmask),
+    // The EVEX gathers and scatters (WP-224).
+    ("evex-vsib", evex::vsib),
 ];
 
 fn check(group: &str) {
@@ -140,4 +142,6 @@ differential! {
     evex_matches_llvm => "evex";
     evex_memory_operands_match_llvm => "evex-memory-operands";
     opmask_matches_llvm => "opmask";
+    // WP-224.
+    evex_vsib_matches_llvm => "evex-vsib";
 }

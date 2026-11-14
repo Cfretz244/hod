@@ -3499,6 +3499,8 @@ const INTRINSIC_A64: &[SupportRow] = &[
 const AVX512: &str = "AVX-512 (WP-208)";
 /// The note of WP-220's.
 const AVX512_2: &str = "AVX-512 (WP-220)";
+/// The note of WP-224's: the gathers and scatters.
+const AVX512_3: &str = "AVX-512 (WP-224)";
 
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -4189,6 +4191,54 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.128", never(X64_ONLY), on(X86_SSE), AVX512_2),
     row("intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.256", never(X64_ONLY), on(X86_SSE), AVX512_2),
     row("intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.mask.gather.dpd.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.dps.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.qpd.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.qps.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.dpq.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.dpi.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.qpq.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather.qpi.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div2.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div2.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div4.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div4.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div4.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div4.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div8.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3div8.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv2.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv2.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv4.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv4.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv4.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv4.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv8.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.gather3siv8.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.dpd.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.dps.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.qpd.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.qps.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.dpq.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.dpi.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.qpq.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatter.qpi.512", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv2.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv2.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv4.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv4.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv4.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv4.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv8.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scatterdiv8.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv2.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv2.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv4.df", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv4.di", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv4.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv4.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv8.sf", never(X64_ONLY), on(X86_SSE), AVX512_3),
+    row("intrinsic:llvm.x86.avx512.mask.scattersiv8.si", never(X64_ONLY), on(X86_SSE), AVX512_3),
 ];
 
 /// The value classes of the masked memory intrinsics' signatures

@@ -1075,6 +1075,55 @@ intrinsics! {
     X86Avx512fp16VfmaddsubPh128 = "llvm.x86.avx512fp16.vfmaddsub.ph.128" [],
     X86Avx512fp16VfmaddsubPh256 = "llvm.x86.avx512fp16.vfmaddsub.ph.256" [],
     X86Avx512fp16VfmaddsubPh512 = "llvm.x86.avx512fp16.vfmaddsub.ph.512" [],
+    // The AVX-512 gathers and scatters (WP-224).
+    X86Avx512MaskGatherDpd512 = "llvm.x86.avx512.mask.gather.dpd.512" [],
+    X86Avx512MaskGatherDps512 = "llvm.x86.avx512.mask.gather.dps.512" [],
+    X86Avx512MaskGatherQpd512 = "llvm.x86.avx512.mask.gather.qpd.512" [],
+    X86Avx512MaskGatherQps512 = "llvm.x86.avx512.mask.gather.qps.512" [],
+    X86Avx512MaskGatherDpq512 = "llvm.x86.avx512.mask.gather.dpq.512" [],
+    X86Avx512MaskGatherDpi512 = "llvm.x86.avx512.mask.gather.dpi.512" [],
+    X86Avx512MaskGatherQpq512 = "llvm.x86.avx512.mask.gather.qpq.512" [],
+    X86Avx512MaskGatherQpi512 = "llvm.x86.avx512.mask.gather.qpi.512" [],
+    X86Avx512MaskGather3div2Df = "llvm.x86.avx512.mask.gather3div2.df" [],
+    X86Avx512MaskGather3div2Di = "llvm.x86.avx512.mask.gather3div2.di" [],
+    X86Avx512MaskGather3div4Df = "llvm.x86.avx512.mask.gather3div4.df" [],
+    X86Avx512MaskGather3div4Di = "llvm.x86.avx512.mask.gather3div4.di" [],
+    X86Avx512MaskGather3div4Sf = "llvm.x86.avx512.mask.gather3div4.sf" [],
+    X86Avx512MaskGather3div4Si = "llvm.x86.avx512.mask.gather3div4.si" [],
+    X86Avx512MaskGather3div8Sf = "llvm.x86.avx512.mask.gather3div8.sf" [],
+    X86Avx512MaskGather3div8Si = "llvm.x86.avx512.mask.gather3div8.si" [],
+    X86Avx512MaskGather3siv2Df = "llvm.x86.avx512.mask.gather3siv2.df" [],
+    X86Avx512MaskGather3siv2Di = "llvm.x86.avx512.mask.gather3siv2.di" [],
+    X86Avx512MaskGather3siv4Df = "llvm.x86.avx512.mask.gather3siv4.df" [],
+    X86Avx512MaskGather3siv4Di = "llvm.x86.avx512.mask.gather3siv4.di" [],
+    X86Avx512MaskGather3siv4Sf = "llvm.x86.avx512.mask.gather3siv4.sf" [],
+    X86Avx512MaskGather3siv4Si = "llvm.x86.avx512.mask.gather3siv4.si" [],
+    X86Avx512MaskGather3siv8Sf = "llvm.x86.avx512.mask.gather3siv8.sf" [],
+    X86Avx512MaskGather3siv8Si = "llvm.x86.avx512.mask.gather3siv8.si" [],
+    X86Avx512MaskScatterDpd512 = "llvm.x86.avx512.mask.scatter.dpd.512" [],
+    X86Avx512MaskScatterDps512 = "llvm.x86.avx512.mask.scatter.dps.512" [],
+    X86Avx512MaskScatterQpd512 = "llvm.x86.avx512.mask.scatter.qpd.512" [],
+    X86Avx512MaskScatterQps512 = "llvm.x86.avx512.mask.scatter.qps.512" [],
+    X86Avx512MaskScatterDpq512 = "llvm.x86.avx512.mask.scatter.dpq.512" [],
+    X86Avx512MaskScatterDpi512 = "llvm.x86.avx512.mask.scatter.dpi.512" [],
+    X86Avx512MaskScatterQpq512 = "llvm.x86.avx512.mask.scatter.qpq.512" [],
+    X86Avx512MaskScatterQpi512 = "llvm.x86.avx512.mask.scatter.qpi.512" [],
+    X86Avx512MaskScatterdiv2Df = "llvm.x86.avx512.mask.scatterdiv2.df" [],
+    X86Avx512MaskScatterdiv2Di = "llvm.x86.avx512.mask.scatterdiv2.di" [],
+    X86Avx512MaskScatterdiv4Df = "llvm.x86.avx512.mask.scatterdiv4.df" [],
+    X86Avx512MaskScatterdiv4Di = "llvm.x86.avx512.mask.scatterdiv4.di" [],
+    X86Avx512MaskScatterdiv4Sf = "llvm.x86.avx512.mask.scatterdiv4.sf" [],
+    X86Avx512MaskScatterdiv4Si = "llvm.x86.avx512.mask.scatterdiv4.si" [],
+    X86Avx512MaskScatterdiv8Sf = "llvm.x86.avx512.mask.scatterdiv8.sf" [],
+    X86Avx512MaskScatterdiv8Si = "llvm.x86.avx512.mask.scatterdiv8.si" [],
+    X86Avx512MaskScattersiv2Df = "llvm.x86.avx512.mask.scattersiv2.df" [],
+    X86Avx512MaskScattersiv2Di = "llvm.x86.avx512.mask.scattersiv2.di" [],
+    X86Avx512MaskScattersiv4Df = "llvm.x86.avx512.mask.scattersiv4.df" [],
+    X86Avx512MaskScattersiv4Di = "llvm.x86.avx512.mask.scattersiv4.di" [],
+    X86Avx512MaskScattersiv4Sf = "llvm.x86.avx512.mask.scattersiv4.sf" [],
+    X86Avx512MaskScattersiv4Si = "llvm.x86.avx512.mask.scattersiv4.si" [],
+    X86Avx512MaskScattersiv8Sf = "llvm.x86.avx512.mask.scattersiv8.sf" [],
+    X86Avx512MaskScattersiv8Si = "llvm.x86.avx512.mask.scattersiv8.si" [],
 }
 
 /// The most overload types an intrinsic on the list has.
@@ -1165,7 +1214,55 @@ impl<'a> Intrinsic<'a> {
             | I::X86Avx2GatherQPs
             | I::X86Avx2GatherQPs256
             | I::X86Avx2GatherQPd
-            | I::X86Avx2GatherQPd256 => &[4],
+            | I::X86Avx2GatherQPd256
+            | I::X86Avx512MaskGatherDpd512
+            | I::X86Avx512MaskGatherDps512
+            | I::X86Avx512MaskGatherQpd512
+            | I::X86Avx512MaskGatherQps512
+            | I::X86Avx512MaskGatherDpq512
+            | I::X86Avx512MaskGatherDpi512
+            | I::X86Avx512MaskGatherQpq512
+            | I::X86Avx512MaskGatherQpi512
+            | I::X86Avx512MaskGather3div2Df
+            | I::X86Avx512MaskGather3div2Di
+            | I::X86Avx512MaskGather3div4Df
+            | I::X86Avx512MaskGather3div4Di
+            | I::X86Avx512MaskGather3div4Sf
+            | I::X86Avx512MaskGather3div4Si
+            | I::X86Avx512MaskGather3div8Sf
+            | I::X86Avx512MaskGather3div8Si
+            | I::X86Avx512MaskGather3siv2Df
+            | I::X86Avx512MaskGather3siv2Di
+            | I::X86Avx512MaskGather3siv4Df
+            | I::X86Avx512MaskGather3siv4Di
+            | I::X86Avx512MaskGather3siv4Sf
+            | I::X86Avx512MaskGather3siv4Si
+            | I::X86Avx512MaskGather3siv8Sf
+            | I::X86Avx512MaskGather3siv8Si
+            | I::X86Avx512MaskScatterDpd512
+            | I::X86Avx512MaskScatterDps512
+            | I::X86Avx512MaskScatterQpd512
+            | I::X86Avx512MaskScatterQps512
+            | I::X86Avx512MaskScatterDpq512
+            | I::X86Avx512MaskScatterDpi512
+            | I::X86Avx512MaskScatterQpq512
+            | I::X86Avx512MaskScatterQpi512
+            | I::X86Avx512MaskScatterdiv2Df
+            | I::X86Avx512MaskScatterdiv2Di
+            | I::X86Avx512MaskScatterdiv4Df
+            | I::X86Avx512MaskScatterdiv4Di
+            | I::X86Avx512MaskScatterdiv4Sf
+            | I::X86Avx512MaskScatterdiv4Si
+            | I::X86Avx512MaskScatterdiv8Sf
+            | I::X86Avx512MaskScatterdiv8Si
+            | I::X86Avx512MaskScattersiv2Df
+            | I::X86Avx512MaskScattersiv2Di
+            | I::X86Avx512MaskScattersiv4Df
+            | I::X86Avx512MaskScattersiv4Di
+            | I::X86Avx512MaskScattersiv4Sf
+            | I::X86Avx512MaskScattersiv4Si
+            | I::X86Avx512MaskScattersiv8Sf
+            | I::X86Avx512MaskScattersiv8Si => &[4],
             _ => &[],
         }
     }

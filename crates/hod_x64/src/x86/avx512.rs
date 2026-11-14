@@ -43,6 +43,8 @@
 //! The upper halves of `zmm0`..`zmm15` are not cleared afterwards
 //! (`vzeroupper`): they hold no value of hod's, and a later legacy SSE
 //! instruction is only slower.
+//!
+//! The gathers and scatters (WP-224) are in [`vsib`].
 
 use hod_cg::{CgResult, Class, FnCx};
 use hod_ir::{FnStr, Inst, Intrinsic, SymbolKind, TypeId, TypeKind, Value, ValueKind};
@@ -56,6 +58,8 @@ use crate::common::{R11, XMM15, deferred_first, frame_inst, gp, put, unsupported
 use crate::features::{Avx512, evex512_off};
 use crate::intrinsic::const_int;
 use crate::target::X64;
+
+pub mod vsib;
 
 /// Where an EVEX operand order differs from the intrinsic's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -940,7 +944,7 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
 /// The stable name `which` is refused with in a function whose features
 /// do not enable it, if it is one of this module's.
 pub fn refusal(which: Intrinsic<'_>) -> Option<&'static str> {
-    row(which).map(|row| row.0)
+    row(which).map(|row| row.0).or_else(|| vsib::refusal(which))
 }
 
 /// A call of `which` with `args`, if `which` is an intrinsic of this
@@ -951,7 +955,7 @@ pub fn intrinsic<'a>(
     which: Intrinsic<'a>,
     args: &'a [Value],
 ) -> Option<CgResult<()>> {
-    let row = row(which)?;
+    let Some(row) = row(which) else { return vsib::intrinsic(cx, inst, which, args) };
     Some(lower(cx, inst, args, row))
 }
 

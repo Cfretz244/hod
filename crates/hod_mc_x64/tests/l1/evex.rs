@@ -942,3 +942,140 @@ pub fn opmask(b: &mut Batch) {
         }
     }
 }
+
+/// The EVEX gathers and scatters (WP-224): every member at every length
+/// (the index and the data each at its own length), the data and index
+/// registers on both sides of bits 3 and 4 (the index's bit 4 is
+/// `EVEX.V'`), every scale, every mask register, and bases and
+/// displacements at the `ModRM`/`SIB` special cases (`rsp`, `rbp`, `r12`,
+/// `r13`) and around the compressed displacement's `N` (the element's
+/// bytes). Refused: `k0` (also by `llvm-mc`), and a gather whose
+/// destination is its index (the processor faults; `llvm-mc` only warns).
+pub fn vsib(b: &mut Batch) {
+    // No size keyword: LLVM 19 sizes the operand as the vector, LLVM 22
+    // as an element; both take it without one.
+    let at = |base: u8, iv: Vl, i: u8, scale: Scale, disp: i32| {
+        let f = scale.factor();
+        let index = if f == 1 { vr(iv, i) } else { format!("{f}*{}", vr(iv, i)) };
+        let disp = match disp {
+            0 => String::new(),
+            d if d < 0 => format!(" - {}", -i64::from(d)),
+            d => format!(" + {d}"),
+        };
+        format!("[{} + {index}{disp}]", reg(Size::Q, base))
+    };
+    let vsib = |base: u8, i: u8, scale: Scale, disp: i32| EVsib {
+        base: r(base),
+        index: z(i),
+        scale,
+        disp,
+    };
+    for vl in Vl::ALL {
+        for &op in EGather::ALL {
+            let mn = op.mnemonic();
+            let (iv, dv) = (op.index_vl(vl), op.data_vl(vl));
+            let n = i32::from(op.elem_bytes());
+            for d in SOME {
+                for i in SOME {
+                    if d == i {
+                        reject!(b, try_egather(op, vl, k(1), z(d), vsib(0, i, Scale::S1, 0)));
+                        continue;
+                    }
+                    for scale in Scale::ALL {
+                        emit_as!(
+                            b,
+                            mn,
+                            try_egather(op, vl, k(1), z(d), vsib(0, i, scale, 0)),
+                            "{mn} {} {{k1}}, {}",
+                            vr(dv, d),
+                            at(0, iv, i, scale, 0)
+                        );
+                    }
+                }
+            }
+            for m in 1..8 {
+                emit_as!(
+                    b,
+                    mn,
+                    try_egather(op, vl, k(m), z(3), vsib(1, 9, Scale::S4, 0)),
+                    "{mn} {} {{k{m}}}, {}",
+                    vr(dv, 3),
+                    at(1, iv, 9, Scale::S4, 0)
+                );
+            }
+            reject!(
+                b,
+                try_egather(op, vl, k(0), z(3), vsib(1, 9, Scale::S4, 0)),
+                "{mn} {} {{k0}}, {}",
+                vr(dv, 3),
+                at(1, iv, 9, Scale::S4, 0)
+            );
+            for base in [0, 4, 5, 7, 8, 12, 13, 15] {
+                for disp in vsib_disps(n) {
+                    emit_as!(
+                        b,
+                        mn,
+                        try_egather(op, vl, k(2), z(17), vsib(base, 30, Scale::S8, disp)),
+                        "{mn} {} {{k2}}, {}",
+                        vr(dv, 17),
+                        at(base, iv, 30, Scale::S8, disp)
+                    );
+                }
+            }
+        }
+        for &op in EScatter::ALL {
+            let mn = op.mnemonic();
+            let (iv, dv) = (op.index_vl(vl), op.data_vl(vl));
+            let n = i32::from(op.elem_bytes());
+            for s in SOME {
+                for i in SOME {
+                    for scale in Scale::ALL {
+                        emit_as!(
+                            b,
+                            mn,
+                            try_escatter(op, vl, k(1), vsib(0, i, scale, 0), z(s)),
+                            "{mn} {} {{k1}}, {}",
+                            at(0, iv, i, scale, 0),
+                            vr(dv, s)
+                        );
+                    }
+                }
+            }
+            for m in 1..8 {
+                emit_as!(
+                    b,
+                    mn,
+                    try_escatter(op, vl, k(m), vsib(1, 9, Scale::S4, 0), z(3)),
+                    "{mn} {} {{k{m}}}, {}",
+                    at(1, iv, 9, Scale::S4, 0),
+                    vr(dv, 3)
+                );
+            }
+            reject!(
+                b,
+                try_escatter(op, vl, k(0), vsib(1, 9, Scale::S4, 0), z(3)),
+                "{mn} {} {{k0}}, {}",
+                at(1, iv, 9, Scale::S4, 0),
+                vr(dv, 3)
+            );
+            for base in [0, 4, 5, 7, 8, 12, 13, 15] {
+                for disp in vsib_disps(n) {
+                    emit_as!(
+                        b,
+                        mn,
+                        try_escatter(op, vl, k(6), vsib(base, 22, Scale::S2, disp), z(25)),
+                        "{mn} {} {{k6}}, {}",
+                        at(base, iv, 22, Scale::S2, disp),
+                        vr(dv, 25)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Displacements around `N`: 0, multiples of `N` at and past the `disp8`
+/// range on both sides, values that are not multiples, and a `disp32`.
+fn vsib_disps(n: i32) -> [i32; 13] {
+    [0, n, -n, 127 * n, -128 * n, 128 * n, -129 * n, 1, n / 2, n + 1, 127, -128, 0x1234_5678]
+}
