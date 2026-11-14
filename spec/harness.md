@@ -4028,6 +4028,19 @@ do worse or better than the control), then the refusal census of the
 hybrid builds (per reason: `first`, `census`, the builds, the most
 frequent functions) and the objects kiln did not offer, by trigger.
 
+**Reruns.** `oss-report.py rerun <project> <flavour> <mode> <test>
+[--times N]` runs one ctest test of a kept tree N times (default 2) under
+the row's memory cap and appends each result to the tree's
+`reruns.jsonl`. On the pages, a test that does worse than the control
+and passed every recorded rerun, at least two, is not counted worse: the
+cell says `same (rerun, note n)` and a numbered note under the table
+gives the counts; with fewer reruns, or a failed one, it stays worse,
+with its note.
+
+**Clean trees.** Every build empties its tree first, so a tree kept or
+cut off half-built by an earlier build (objects of another kiln or hod,
+which make would not rebuild) is never built on.
+
 **Hosted.** `.github/workflows/oss.yml` runs `oss-run.sh` per project on
 the `ubuntu-24.04` and `ubuntu-24.04-arm` runners (by hand or on an
 `oss/**` branch; never a required check) and fails its summary when a
