@@ -443,7 +443,10 @@ tag = "4.14.0"
 build = "cmake"
 cxx_std = 17
 c = "kiln"
-configure = ["-DBUILD_LIST=core,imgproc,ts", "-DBUILD_TESTS=ON", "-DBUILD_PERF_TESTS=OFF", "-DBUILD_EXAMPLES=OFF", "-DBUILD_opencv_apps=OFF", "-DBUILD_DOCS=OFF", "-DBUILD_JAVA=OFF", "-DBUILD_opencv_python3=OFF", "-DBUILD_ZLIB=ON", "-DWITH_IPP=OFF", "-DWITH_ITT=OFF", "-DWITH_OPENCL=OFF", "-DWITH_LAPACK=OFF", "-DWITH_EIGEN=OFF", "-DWITH_PROTOBUF=OFF", "-DWITH_KLEIDICV=OFF", "-DWITH_OPENMP=OFF", "-DWITH_TBB=OFF", "-DWITH_VA=OFF", "-DWITH_GTK=OFF", "-DWITH_QT=OFF", "-DWITH_FFMPEG=OFF", "-DWITH_GSTREAMER=OFF", "-DWITH_V4L=OFF", "-DWITH_ADE=OFF", "-DOPENCV_GENERATE_PKGCONFIG=OFF"]
+configure = ["-DBUILD_LIST=core,imgproc,ts", "-DBUILD_TESTS=ON", "-DBUILD_PERF_TESTS=OFF", "-DBUILD_EXAMPLES=OFF", "-DBUILD_opencv_apps=OFF", "-DBUILD_DOCS=OFF", "-DBUILD_JAVA=OFF", "-DBUILD_opencv_python3=OFF", "-DBUILD_ZLIB=ON", "-DWITH_IPP=OFF", "-DWITH_ITT=OFF", "-DWITH_OPENCL=OFF", "-DWITH_LAPACK=OFF", "-DWITH_EIGEN=OFF", "-DWITH_PROTOBUF=OFF", "-DWITH_KLEIDICV=OFF", "-DWITH_OPENMP=OFF", "-DWITH_TBB=OFF", "-DWITH_VA=OFF", "-DWITH_GTK=OFF", "-DWITH_QT=OFF", "-DWITH_FFMPEG=OFF", "-DWITH_GSTREAMER=OFF", "-DWITH_V4L=OFF", "-DWITH_ADE=OFF", "-DOPENCV_GENERATE_PKGCONFIG=OFF", "-DWITH_JPEG=OFF", "-DWITH_PNG=OFF", "-DWITH_SPNG=OFF", "-DWITH_WEBP=OFF", "-DWITH_TIFF=OFF", "-DWITH_OPENJPEG=OFF", "-DWITH_JASPER=OFF", "-DWITH_OPENEXR=OFF", "-DWITH_AVIF=OFF", "-DWITH_JPEGXL=OFF", "-DWITH_GDAL=OFF", "-DWITH_GDCM=OFF"]
+# The image codec libraries (libjpeg-turbo, libpng, libwebp, ...) serve
+# imgcodecs only, which BUILD_LIST leaves out: off (kiln rejects their NEON
+# kernels and one libwebp C conversion, findings KILN-LIMITS-3.md 8-9).
 # OPENCV_TEST_DATA_PATH is not set (opencv_extra is not fetched): the tests
 # that need its data are skipped by the suite itself.
 test = "ctest --output-on-failure --timeout 9000"
