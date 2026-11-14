@@ -589,13 +589,15 @@ mod dataflow {
         /// An opmask register.
         K(u8),
         /// Memory: base register, index register and scale, displacement,
-        /// bytes (0 for `lea`'s), broadcast.
+        /// bytes (0 for `lea`'s), broadcast; WP-224: a vector of indices
+        /// (VSIB: the vector register, its bytes, the scale).
         Mem {
             base: Option<u8>,
             index: Option<(u8, i64)>,
             disp: i64,
             bytes: u8,
             bcst: bool,
+            vindex: Option<(u8, u8, i64)>,
         },
         /// `rip`-relative memory (a constant of the object).
         Rip(i64, u8),
@@ -703,6 +705,7 @@ mod dataflow {
         let bytes = mem_bytes(core.split_whitespace().next().unwrap_or(""));
         let inner = &core[open + 1..core.len() - 1];
         let (mut base, mut index, mut disp, mut rip) = (None, None, 0i64, false);
+        let mut vindex = None;
         let mut sign = 1;
         for tok in inner.split_whitespace() {
             match tok {
@@ -711,12 +714,17 @@ mod dataflow {
                 "rip" => rip = true,
                 t if t.contains('*') => {
                     let (s, r) = t.split_once('*').unwrap();
-                    let Some(Opnd::Gpr(r, 0, 8)) = reg(r) else { panic!("index in `{text}`") };
-                    index = Some((r, number(s).unwrap()));
+                    let s = number(s).unwrap();
+                    match reg(r) {
+                        Some(Opnd::Gpr(r, 0, 8)) => index = Some((r, s)),
+                        Some(Opnd::Vec(r, n)) => vindex = Some((r, n, s)),
+                        _ => panic!("index in `{text}`"),
+                    }
                 }
                 t => match reg(t) {
                     Some(Opnd::Gpr(r, 0, 8)) if base.is_none() => base = Some(r),
                     Some(Opnd::Gpr(r, 0, 8)) => index = Some((r, 1)),
+                    Some(Opnd::Vec(r, n)) => vindex = Some((r, n, 1)),
                     _ => disp += sign * number(t).unwrap_or_else(|| panic!("`{t}` in `{text}`")),
                 },
             }
@@ -724,7 +732,7 @@ mod dataflow {
         if rip {
             return (Opnd::Rip(disp, bytes), mask, zero);
         }
-        (Opnd::Mem { base, index, disp, bytes, bcst }, mask, zero)
+        (Opnd::Mem { base, index, disp, bytes, bcst, vindex }, mask, zero)
     }
 
     /// One instruction: mnemonic, operands, mask register, `{z}`.
@@ -790,6 +798,8 @@ mod dataflow {
         k: [[Sym; 8]; 8],
         mem: HashMap<(u8, i64), Sym>,
         frames: u8,
+        /// WP-224: the lanes a scatter stored, in order (nodes `scatter`).
+        events: Vec<u32>,
     }
 
     /// Mnemonics that read their destination besides their sources.
@@ -873,6 +883,31 @@ mod dataflow {
         mask_lanes: u32,
         ret_regs: usize,
     ) -> (Vec<Sym>, Vec<Vec<Sym>>) {
+        let s = execute(graph, listing, mask_lanes);
+        let out = (0..bytes as i64).map(|at| s.load_byte(0, at)).collect();
+        (out, s.vec[..ret_regs].iter().map(|v| v.to_vec()).collect())
+    }
+
+    /// WP-224: [`run`], and the lanes the scatters stored, in order: each
+    /// a node `scatter` over the base pointer, the index, the element
+    /// stored, and its mask bit unless the bit is a constant 1 (a lane
+    /// whose bit is a constant 0 stores nothing). The memory a gather or
+    /// a scatter reaches through its vector of indices is not modelled
+    /// as bytes: a gathered lane is a node `gather` over the base, the
+    /// index and (masked) the pass-through, so two listings agree when
+    /// they reach the same addresses under the same mask bits.
+    pub fn run_with_events(
+        graph: &mut Graph,
+        listing: &[String],
+        bytes: usize,
+        mask_lanes: u32,
+    ) -> (Vec<Sym>, Vec<u32>) {
+        let s = execute(graph, listing, mask_lanes);
+        let out = (0..bytes as i64).map(|at| s.load_byte(0, at)).collect();
+        (out, s.events)
+    }
+
+    fn execute(graph: &mut Graph, listing: &[String], mask_lanes: u32) -> State {
         let mut s = State {
             gpr: std::array::from_fn(|r| {
                 std::array::from_fn(|b| Sym::of(Src::Entry(r as u8), b as i64))
@@ -885,6 +920,7 @@ mod dataflow {
             }),
             mem: HashMap::new(),
             frames: 5,
+            events: Vec::new(),
         };
         let ptr = |base: u8| -> [Sym; 8] {
             std::array::from_fn(|b| Sym::of(Src::Ptr(base, 0), b as i64))
@@ -901,8 +937,7 @@ mod dataflow {
                 break;
             }
         }
-        let out = (0..bytes as i64).map(|at| s.load_byte(0, at)).collect();
-        (out, s.vec[..ret_regs].iter().map(|v| v.to_vec()).collect())
+        s
     }
 
     impl State {
@@ -1029,6 +1064,89 @@ mod dataflow {
             }
         }
 
+        /// WP-224: a gather (`vpgatherdd zmm0 {k1}, [rcx + 4*zmm1]`) or a
+        /// scatter (`vpscatterdd [rcx + 4*zmm1] {k1}, zmm2`) under opmask
+        /// `k`. Its lanes: the fewer of the data register's elements and
+        /// the index register's indices (the element size is the last
+        /// letter, `q`, `pd` 8 bytes, else 4; the index size the letter
+        /// after `gather`/`scatter`). Lane `j` reads mask bit `j`; a gather
+        /// writes its lanes and clears the register above them, and both
+        /// clear the opmask. The base pointer is normalized with the
+        /// displacement folded in (`lea rax, [rsi + 8]` then `[rax + ..]`
+        /// is `[rsi + 8 + ..]`); the instruction's own spelling (integer
+        /// or float) is not kept, its bytes moved are the same.
+        fn vsib(&mut self, graph: &mut Graph, m: &str, ops: &[Opnd], k: u8) {
+            let scatter = m.contains("scatter");
+            let kind = if scatter { "scatter" } else { "gather" };
+            let after = &m[m.find(kind).expect("a gather or a scatter") + kind.len()..];
+            let elem = if after.ends_with('q') || after.ends_with("pd") { 8 } else { 4 };
+            let isz = if after.starts_with('q') { 8 } else { 4 };
+            let (mem, data) = if scatter { (&ops[0], &ops[1]) } else { (&ops[1], &ops[0]) };
+            let Opnd::Mem {
+                base: Some(base),
+                index: None,
+                disp,
+                vindex: Some((ix, ix_bytes, scale)),
+                ..
+            } = *mem
+            else {
+                panic!("a VSIB operand: {mem:?}")
+            };
+            let Opnd::Vec(r, r_bytes) = *data else { panic!("a VSIB data register: {data:?}") };
+            let lanes = (usize::from(r_bytes) / elem).min(usize::from(ix_bytes) / isz);
+            let b = self.gpr[usize::from(base)];
+            let consistent =
+                b.iter().enumerate().all(|(i, s)| s.src == b[0].src && s.at == i as i64);
+            let (base_bytes, disp) = match b[0].src {
+                Src::Ptr(p, off) if consistent => {
+                    ((0..8).map(|i| Sym::of(Src::Ptr(p, off + disp), i)).collect::<Vec<_>>(), 0)
+                }
+                _ => (b.to_vec(), disp),
+            };
+            let kbits = self.k[usize::from(k)];
+            let old = self.vec[usize::from(r)];
+            let index = self.vec[usize::from(ix)];
+            let mut out = [Sym::constant(0); 64];
+            for j in 0..lanes {
+                let bit = kbits[j / 8].and(1 << (j % 8));
+                let lane = &old[j * elem..(j + 1) * elem];
+                let mask = match bit.src {
+                    Src::Const if bit.at == 0 => {
+                        if !scatter {
+                            out[j * elem..(j + 1) * elem].copy_from_slice(lane);
+                        }
+                        continue;
+                    }
+                    Src::Const => None,
+                    _ => Some(vec![bit]),
+                };
+                let mut inputs = vec![base_bytes.clone(), index[j * isz..(j + 1) * isz].to_vec()];
+                // A scatter's element; a masked gather's pass-through.
+                if scatter || mask.is_some() {
+                    inputs.push(lane.to_vec());
+                }
+                let node = Node {
+                    mnemonic: kind.to_string(),
+                    imm: Some(scale),
+                    deco: vec![format!("disp{disp:+}"), format!("e{elem}"), format!("i{isz}")],
+                    mask,
+                    inputs,
+                };
+                let id = graph.intern(node);
+                if scatter {
+                    self.events.push(id);
+                } else {
+                    for (i, b) in out[j * elem..(j + 1) * elem].iter_mut().enumerate() {
+                        *b = Sym::of(Src::Node(id), i as i64);
+                    }
+                }
+            }
+            if !scatter {
+                self.vec[usize::from(r)] = out;
+            }
+            self.k[usize::from(k)] = [Sym::constant(0); 8];
+        }
+
         /// Executes one instruction; `false` at `ret`.
         #[allow(clippy::too_many_lines, reason = "one arm per kind of instruction")]
         fn step(&mut self, graph: &mut Graph, l: &Line, mask_lanes: u32, text: &str) -> bool {
@@ -1114,6 +1232,30 @@ mod dataflow {
             {
                 let w = Self::width(&ops[0]);
                 self.write(&ops[0], &vec![Sym::constant(0); w], vex);
+                return true;
+            }
+            // WP-224: an opmask set by itself (`kxnorw k1, k0, k0`): the
+            // bits of the size set, those above cleared.
+            if let Some(size) = m.strip_prefix("kxnor")
+                && ops.len() == 3
+                && format!("{:?}", ops[1]) == format!("{:?}", ops[2])
+            {
+                let n = match size {
+                    "b" => 1,
+                    "w" => 2,
+                    "d" => 4,
+                    _ => 8,
+                };
+                let v: Vec<Sym> =
+                    (0..8).map(|i| Sym::constant(if i < n { 0xff } else { 0 })).collect();
+                self.write(&ops[0], &v, vex);
+                return true;
+            }
+            // WP-224: a gather or a scatter through a vector of indices.
+            if let Some(k) = l.mask
+                && ops.iter().any(|o| matches!(o, Opnd::Mem { vindex: Some(_), .. }))
+            {
+                self.vsib(graph, m, ops, k);
                 return true;
             }
             // `and` with a constant: the bits kept.
@@ -2844,4 +2986,638 @@ fn evex_frame_locals_keep_their_displacement() {
         wrong.len(),
         wrong[..wrong.len().min(12)].join("\n")
     );
+}
+
+/// WP-224 (§5.6.35 item 10): the masked gathers and scatters, as LLVM 19
+/// and 22 declare them. A gather is `(pass-through, base, indices, mask,
+/// scale)`, a scatter `(base, mask, indices, data, scale)`; the mask has
+/// a lane per element moved, the fewer of the data's and the indices'.
+const VSIB: [&str; 48] = [
+    "<8 x double> @llvm.x86.avx512.mask.gather.dpd.512(<8 x double>, ptr, <8 x i32>, <8 x i1>, i32)",
+    "<16 x float> @llvm.x86.avx512.mask.gather.dps.512(<16 x float>, ptr, <16 x i32>, <16 x i1>, i32)",
+    "<8 x double> @llvm.x86.avx512.mask.gather.qpd.512(<8 x double>, ptr, <8 x i64>, <8 x i1>, i32)",
+    "<8 x float> @llvm.x86.avx512.mask.gather.qps.512(<8 x float>, ptr, <8 x i64>, <8 x i1>, i32)",
+    "<8 x i64> @llvm.x86.avx512.mask.gather.dpq.512(<8 x i64>, ptr, <8 x i32>, <8 x i1>, i32)",
+    "<16 x i32> @llvm.x86.avx512.mask.gather.dpi.512(<16 x i32>, ptr, <16 x i32>, <16 x i1>, i32)",
+    "<8 x i64> @llvm.x86.avx512.mask.gather.qpq.512(<8 x i64>, ptr, <8 x i64>, <8 x i1>, i32)",
+    "<8 x i32> @llvm.x86.avx512.mask.gather.qpi.512(<8 x i32>, ptr, <8 x i64>, <8 x i1>, i32)",
+    "<2 x double> @llvm.x86.avx512.mask.gather3div2.df(<2 x double>, ptr, <2 x i64>, <2 x i1>, i32)",
+    "<2 x i64> @llvm.x86.avx512.mask.gather3div2.di(<2 x i64>, ptr, <2 x i64>, <2 x i1>, i32)",
+    "<4 x double> @llvm.x86.avx512.mask.gather3div4.df(<4 x double>, ptr, <4 x i64>, <4 x i1>, i32)",
+    "<4 x i64> @llvm.x86.avx512.mask.gather3div4.di(<4 x i64>, ptr, <4 x i64>, <4 x i1>, i32)",
+    "<4 x float> @llvm.x86.avx512.mask.gather3div4.sf(<4 x float>, ptr, <2 x i64>, <2 x i1>, i32)",
+    "<4 x i32> @llvm.x86.avx512.mask.gather3div4.si(<4 x i32>, ptr, <2 x i64>, <2 x i1>, i32)",
+    "<4 x float> @llvm.x86.avx512.mask.gather3div8.sf(<4 x float>, ptr, <4 x i64>, <4 x i1>, i32)",
+    "<4 x i32> @llvm.x86.avx512.mask.gather3div8.si(<4 x i32>, ptr, <4 x i64>, <4 x i1>, i32)",
+    "<2 x double> @llvm.x86.avx512.mask.gather3siv2.df(<2 x double>, ptr, <4 x i32>, <2 x i1>, i32)",
+    "<2 x i64> @llvm.x86.avx512.mask.gather3siv2.di(<2 x i64>, ptr, <4 x i32>, <2 x i1>, i32)",
+    "<4 x double> @llvm.x86.avx512.mask.gather3siv4.df(<4 x double>, ptr, <4 x i32>, <4 x i1>, i32)",
+    "<4 x i64> @llvm.x86.avx512.mask.gather3siv4.di(<4 x i64>, ptr, <4 x i32>, <4 x i1>, i32)",
+    "<4 x float> @llvm.x86.avx512.mask.gather3siv4.sf(<4 x float>, ptr, <4 x i32>, <4 x i1>, i32)",
+    "<4 x i32> @llvm.x86.avx512.mask.gather3siv4.si(<4 x i32>, ptr, <4 x i32>, <4 x i1>, i32)",
+    "<8 x float> @llvm.x86.avx512.mask.gather3siv8.sf(<8 x float>, ptr, <8 x i32>, <8 x i1>, i32)",
+    "<8 x i32> @llvm.x86.avx512.mask.gather3siv8.si(<8 x i32>, ptr, <8 x i32>, <8 x i1>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.dpd.512(ptr, <8 x i1>, <8 x i32>, <8 x double>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.dps.512(ptr, <16 x i1>, <16 x i32>, <16 x float>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.qpd.512(ptr, <8 x i1>, <8 x i64>, <8 x double>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.qps.512(ptr, <8 x i1>, <8 x i64>, <8 x float>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.dpq.512(ptr, <8 x i1>, <8 x i32>, <8 x i64>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.dpi.512(ptr, <16 x i1>, <16 x i32>, <16 x i32>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.qpq.512(ptr, <8 x i1>, <8 x i64>, <8 x i64>, i32)",
+    "void @llvm.x86.avx512.mask.scatter.qpi.512(ptr, <8 x i1>, <8 x i64>, <8 x i32>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv2.df(ptr, <2 x i1>, <2 x i64>, <2 x double>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv2.di(ptr, <2 x i1>, <2 x i64>, <2 x i64>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv4.df(ptr, <4 x i1>, <4 x i64>, <4 x double>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv4.di(ptr, <4 x i1>, <4 x i64>, <4 x i64>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv4.sf(ptr, <2 x i1>, <2 x i64>, <4 x float>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv4.si(ptr, <2 x i1>, <2 x i64>, <4 x i32>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv8.sf(ptr, <4 x i1>, <4 x i64>, <4 x float>, i32)",
+    "void @llvm.x86.avx512.mask.scatterdiv8.si(ptr, <4 x i1>, <4 x i64>, <4 x i32>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv2.df(ptr, <2 x i1>, <4 x i32>, <2 x double>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv2.di(ptr, <2 x i1>, <4 x i32>, <2 x i64>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv4.df(ptr, <4 x i1>, <4 x i32>, <4 x double>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv4.di(ptr, <4 x i1>, <4 x i32>, <4 x i64>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv4.sf(ptr, <4 x i1>, <4 x i32>, <4 x float>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv4.si(ptr, <4 x i1>, <4 x i32>, <4 x i32>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv8.sf(ptr, <8 x i1>, <8 x i32>, <8 x float>, i32)",
+    "void @llvm.x86.avx512.mask.scattersiv8.si(ptr, <8 x i1>, <8 x i32>, <8 x i32>, i32)",
+];
+
+/// One test function of a gather or a scatter: `void tK(ptr %out, ptr %a,
+/// ptr %b, ptr %c, i64 %m)`, the indices loaded from `%b`. A gather
+/// reads through `%a`, its pass-through from `%c`, and stores to `%out`;
+/// a scatter stores the data at `%c` through `%out`. `twice`: the call
+/// again with the same mask (a gather with the first result as its
+/// pass-through, stored after it; a scatter through `%a` first), so the
+/// mask, which the instruction clears, must be a copy.
+#[derive(Clone, Copy, Debug)]
+struct VsibCase {
+    row: usize,
+    /// [`Arg::Var`] (the low bits of `%m`) or [`Arg::Const`].
+    mask: Arg,
+    /// A gather's pass-through: [`Arg::Load`], [`Arg::Zero`], [`Arg::Undef`].
+    pass: Arg,
+    scale: i64,
+    twice: bool,
+}
+
+/// Row `row`'s name, whether it gathers, and its data, index and mask types.
+fn vsib_types(row: usize) -> (String, bool, String, String, String) {
+    let (ret, name, p) = decl(VSIB[row]);
+    if ret == "void" {
+        (name, false, p[3].clone(), p[2].clone(), p[1].clone())
+    } else {
+        (name, true, p[0].clone(), p[2].clone(), p[3].clone())
+    }
+}
+
+/// The test functions of every row: a variable mask, constant masks (all
+/// set, lanes 0 and 2, none), a zero and an undefined pass-through, each
+/// other scale, the call twice.
+fn vsib_cases() -> Vec<VsibCase> {
+    let mut cases = Vec::new();
+    for row in 0..VSIB.len() {
+        let gather = vsib_types(row).1;
+        let base = VsibCase { row, mask: Arg::Var, pass: Arg::Load, scale: 4, twice: false };
+        cases.push(base);
+        for bits in [-1, 5, 0] {
+            cases.push(VsibCase { mask: Arg::Const(bits), ..base });
+        }
+        if gather {
+            for pass in [Arg::Zero, Arg::Undef] {
+                cases.push(VsibCase { pass, ..base });
+            }
+        }
+        for scale in [1, 2, 8] {
+            cases.push(VsibCase { scale, ..base });
+        }
+        cases.push(VsibCase { twice: true, ..base });
+    }
+    cases
+}
+
+/// The module of `cases`, with `features`.
+fn vsib_module(cases: &[VsibCase], prefix: &str, features: &str) -> String {
+    let mut text = ll_header();
+    let mut declared = std::collections::BTreeSet::new();
+    for (k, c) in cases.iter().enumerate() {
+        let (name, gather, data, index, mask) = vsib_types(c.row);
+        if declared.insert(name.clone()) {
+            writeln!(text, "declare {}", VSIB[c.row]).unwrap();
+        }
+        writeln!(text, "define void @{prefix}t{k}(ptr %out, ptr %a, ptr %b, ptr %c, i64 %m) #0 {{")
+            .unwrap();
+        writeln!(text, "  %ix = load {index}, ptr %b, align 1").unwrap();
+        let (n, _) = vector_of(&mask).unwrap();
+        let bits = match c.mask {
+            Arg::Var => {
+                writeln!(text, "  %t = trunc i64 %m to i{n}\n  %k = bitcast i{n} %t to {mask}")
+                    .unwrap();
+                "%k".to_string()
+            }
+            Arg::Const(bits) => mask_const(n, if bits == -1 { u64::MAX } else { bits as u64 }),
+            other => panic!("a mask {other:?}"),
+        };
+        let scale = c.scale;
+        if gather {
+            let pass = match c.pass {
+                Arg::Load => {
+                    writeln!(text, "  %p = load {data}, ptr %c, align 1").unwrap();
+                    "%p"
+                }
+                Arg::Zero => "zeroinitializer",
+                Arg::Undef => "undef",
+                other => panic!("a pass-through {other:?}"),
+            };
+            writeln!(
+                text,
+                "  %r = call {data} @{name}({data} {pass}, ptr %a, {index} %ix, {mask} {bits}, i32 {scale})\n  \
+                 store {data} %r, ptr %out, align 1"
+            )
+            .unwrap();
+            if c.twice {
+                writeln!(
+                    text,
+                    "  %r2 = call {data} @{name}({data} %r, ptr %a, {index} %ix, {mask} {bits}, i32 {scale})\n  \
+                     %o2 = getelementptr i8, ptr %out, i64 {}\n  \
+                     store {data} %r2, ptr %o2, align 1",
+                    bytes_of(&data)
+                )
+                .unwrap();
+            }
+        } else {
+            writeln!(text, "  %d = load {data}, ptr %c, align 1").unwrap();
+            let call = |to: &str| {
+                format!(
+                    "  call void @{name}(ptr {to}, {mask} {bits}, {index} %ix, {data} %d, i32 {scale})"
+                )
+            };
+            if c.twice {
+                writeln!(text, "{}", call("%a")).unwrap();
+            }
+            writeln!(text, "{}", call("%out")).unwrap();
+        }
+        writeln!(text, "  ret void\n}}").unwrap();
+    }
+    writeln!(text, "attributes #0 = {{ \"target-features\"=\"{features}\" }}").unwrap();
+    text
+}
+
+/// hod's object of `cases` with `stress` and `features`, or the refusal.
+fn vsib_object(
+    cases: &[VsibCase],
+    prefix: &str,
+    features: &str,
+    stress: Stress,
+) -> Result<Vec<u8>, hod_x64::ModuleError> {
+    let (module, bodies) = parse(&vsib_module(cases, prefix, features));
+    hod_x64::compile_to_object(&module, &bodies, &pic(stress))
+}
+
+/// What a listing of case `c` does: the bytes stored to `%out` by a
+/// gather (both results when `twice`), and the lanes the scatters stored.
+type VsibResult = (Vec<dataflow::Sym>, Vec<u32>);
+
+fn vsib_run(graph: &mut dataflow::Graph, c: &VsibCase, listing: &[String]) -> VsibResult {
+    let (_, gather, data, _, _) = vsib_types(c.row);
+    let bytes = if gather { bytes_of(&data) * if c.twice { 2 } else { 1 } } else { 0 };
+    dataflow::run_with_events(graph, listing, bytes, 64)
+}
+
+fn vsib_results(
+    graph: &mut dataflow::Graph,
+    cases: &[VsibCase],
+    listings: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<VsibResult> {
+    cases.iter().enumerate().map(|(k, c)| vsib_run(graph, c, &listings[&format!("t{k}")])).collect()
+}
+
+/// §5.6.35 item 10: for every gather and scatter, in every test function
+/// of [`vsib_cases`], hod's code (plainly and under every stress option)
+/// stores what `llc -O0` 22's and 19's code stores: the gathered bytes as
+/// trees over the inputs, each lane a `gather` over the base pointer, its
+/// index, the scale, the displacement, the element and index sizes and
+/// (under a mask bit that is not constant) the mask bit and the
+/// pass-through; and the scattered lanes in order, alike. hod must agree
+/// with each `llc`, not merely one of them.
+#[test]
+fn vsib_names_agree_with_llc_by_dataflow() {
+    let cases = vsib_cases();
+    let scratch = Scratch::new("x64-avx512-vsib-dataflow");
+    let text = vsib_module(&cases, "", AVX512_FEATURES);
+    let mut legs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for major in [22, 19] {
+        if let Some(object) = llc(&scratch, major, &format!("llc{major}"), &text) {
+            legs.push((format!("llc {major}"), object));
+        }
+    }
+    if legs.is_empty() || hod_testutil::tool("llvm-objdump").is_none() {
+        return;
+    }
+    let mut refused = Vec::new();
+    for row in 0..VSIB.len() {
+        let one: Vec<VsibCase> = cases.iter().filter(|c| c.row == row).copied().collect();
+        if let Err(e) = vsib_object(&one, "", AVX512_FEATURES, Stress::default()) {
+            refused.push(format!("{}: {e}", vsib_types(row).0));
+        }
+    }
+    assert!(refused.is_empty(), "{} rows refused:\n{}", refused.len(), refused.join("\n"));
+    let references = legs.len();
+    for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+        let object = vsib_object(&cases, "", AVX512_FEATURES, stress).unwrap();
+        legs.push((format!("hod {mode}"), scratch.write(&format!("hod-{mode}.o"), object)));
+    }
+    let mut graph = dataflow::Graph::default();
+    let all: Vec<(String, Vec<VsibResult>)> = legs
+        .iter()
+        .map(|(leg, object)| (leg.clone(), vsib_results(&mut graph, &cases, &listings(object))))
+        .collect();
+    let mut wrong = Vec::new();
+    let mut counts = Vec::new();
+    for (leg, got) in &all[references..] {
+        let mut n = 0;
+        for (k, got) in got.iter().enumerate() {
+            let differ: Vec<&String> =
+                all[..references].iter().filter(|(_, r)| &r[k] != got).map(|(l, _)| l).collect();
+            if differ.is_empty() {
+                continue;
+            }
+            n += 1;
+            let mut text = format!("{leg} t{k} {:?} differs from {differ:?}:", cases[k]);
+            for (reference_leg, r) in &all[..references] {
+                write!(text, "\n  {reference_leg}: {} events {:?}", graph.tree(&r[k].0), r[k].1)
+                    .unwrap();
+            }
+            write!(text, "\n  {leg}: {} events {:?}", graph.tree(&got.0), got.1).unwrap();
+            wrong.push(text);
+        }
+        counts.push(format!("{leg}: {n}"));
+    }
+    // Not vacuous: the lanes gathered and scattered in `llc` 22's code.
+    let reference = &all[0].1;
+    let gathered: usize = reference
+        .iter()
+        .map(|(bytes, _)| {
+            let mut ids: Vec<u32> = bytes
+                .iter()
+                .filter_map(|s| if let dataflow::Src::Node(n) = s.src { Some(n) } else { None })
+                .collect();
+            ids.dedup();
+            ids.len()
+        })
+        .sum();
+    let scattered: usize = reference.iter().map(|(_, e)| e.len()).sum();
+    eprintln!(
+        "vsib dataflow: {} names, {} functions, {gathered} lanes gathered and {scattered} scattered \
+         (in {}), references {:?}, disagreements {counts:?}",
+        VSIB.len(),
+        cases.len(),
+        all[0].0,
+        all[..references].iter().map(|l| &l.0).collect::<Vec<_>>(),
+    );
+    assert!(gathered > 0 && scattered > 0);
+    assert!(
+        wrong.is_empty(),
+        "{} disagreements:\n{}",
+        wrong.len(),
+        wrong[..wrong.len().min(12)].join("\n")
+    );
+}
+
+/// The parts of a VSIB line of `llvm-objdump`: mnemonic, operands.
+fn vsib_line(l: &str) -> Option<(&str, &str)> {
+    let (head, ops) = l.split_once('\t')?;
+    (head.contains("gather") || head.contains("scatter")).then_some((head, ops))
+}
+
+/// The memory operand's `[...]` of a VSIB line: start and end of the
+/// text inside.
+fn vsib_brackets(l: &str) -> Option<(usize, usize)> {
+    Some((l.find('[')? + 1, l.find(']')?))
+}
+
+/// The vector index register's number and where its name starts in `l`.
+fn vsib_index(l: &str) -> Option<(u8, usize)> {
+    let (open, close) = vsib_brackets(l)?;
+    let at = open + l[open..close].find("mm")? - 1;
+    let digits: String = l[at + 3..close].chars().take_while(char::is_ascii_digit).collect();
+    Some((digits.parse().ok()?, at))
+}
+
+/// The data register of a VSIB line (a gather's destination, a scatter's
+/// source): its name's start and length.
+fn vsib_data(l: &str) -> Option<(usize, usize)> {
+    let (head, ops) = vsib_line(l)?;
+    let base = head.len() + 1;
+    let (at, name) = if head.contains("scatter") {
+        let src = ops.rsplit(", ").next()?;
+        (ops.len() - src.len(), src)
+    } else {
+        (0, ops.split_whitespace().next()?)
+    };
+    Some((base + at, name.len()))
+}
+
+/// The opmask register of a VSIB line.
+fn vsib_k(l: &str) -> Option<u8> {
+    let at = l.find("{k")?;
+    l[at + 2..at + 3].parse().ok()
+}
+
+/// §5.6.35 item 10: the comparison bites. `llc` 22's listings with one
+/// deliberate change to a gather or a scatter give another result than
+/// the unchanged listing, for every kind of change named: another scale,
+/// another index register, another mask register, the mask not copied
+/// (the first of two calls reading the opmask the second reads, which the
+/// first clears), another element size, the index and data registers
+/// swapped, another base register, another displacement. The base and
+/// the index cannot be swapped as such (a VSIB base is a general
+/// register, the index a vector one; the swap does not assemble): the
+/// two mutations of the base and of the index registers stand for it.
+#[test]
+fn vsib_comparison_catches_mutations() {
+    let cases = vsib_cases();
+    let scratch = Scratch::new("x64-avx512-vsib-mutations");
+    let text = vsib_module(&cases, "", AVX512_FEATURES);
+    let Some(object) = llc(&scratch, 22, "llc22", &text) else { return };
+    if hod_testutil::tool("llvm-objdump").is_none() {
+        return;
+    }
+    let listings = listings(&object);
+    let mut graph = dataflow::Graph::default();
+    let reference = vsib_results(&mut graph, &cases, &listings);
+    // Each mutation rewrites a listing, once per line it applies to
+    // (`None` where it does not), given the listing and the line.
+    type Mutation = (&'static str, fn(&[String], usize) -> Option<String>);
+    let mutations: &[Mutation] = &[
+        ("another scale", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let (open, close) = vsib_brackets(l)?;
+            if let Some(star) = l[open..close].find('*') {
+                let at = open + star - 1;
+                let to = match &l[at..at + 1] {
+                    "1" => "2",
+                    "2" => "4",
+                    "4" => "8",
+                    _ => "1",
+                };
+                Some(format!("{}{to}{}", &l[..at], &l[at + 1..]))
+            } else {
+                let (_, at) = vsib_index(l)?;
+                Some(format!("{}2*{}", &l[..at], &l[at..]))
+            }
+        }),
+        ("another index register", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let (n, at) = vsib_index(l)?;
+            let digits = n.to_string().len();
+            Some(format!("{}{}{}", &l[..at + 3], n ^ 8, &l[at + 3 + digits..]))
+        }),
+        ("index and data registers swapped", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let (n, at) = vsib_index(l)?;
+            let ilen = 3 + n.to_string().len();
+            let (d, dlen) = vsib_data(l)?;
+            let data: u8 = l[d + 3..d + dlen].parse().ok()?;
+            if data == n {
+                return None;
+            }
+            // Each name keeps its width; only the numbers trade places.
+            let iname = format!("{}{data}", &l[at..at + 3]);
+            let dname = format!("{}{n}", &l[d..d + 3]);
+            let mut s = l.clone();
+            if d > at {
+                s.replace_range(d..d + dlen, &dname);
+                s.replace_range(at..at + ilen, &iname);
+            } else {
+                s.replace_range(at..at + ilen, &iname);
+                s.replace_range(d..d + dlen, &dname);
+            }
+            Some(s)
+        }),
+        ("another mask register", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let k = vsib_k(l)?;
+            let to = if k == 7 { 6 } else { 7 };
+            Some(l.replace(&format!("{{k{k}}}"), &format!("{{k{to}}}")))
+        }),
+        ("mask not copied", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let later = ls[i + 1..].iter().find(|x| vsib_line(x).is_some())?;
+            let (k, k2) = (vsib_k(l)?, vsib_k(later)?);
+            (k != k2).then(|| l.replace(&format!("{{k{k}}}"), &format!("{{k{k2}}}")))
+        }),
+        ("another element size", |ls, i| {
+            let l = &ls[i];
+            let (head, ops) = vsib_line(l)?;
+            let swapped = if let Some(h) = head.strip_suffix("pd") {
+                format!("{h}ps")
+            } else if let Some(h) = head.strip_suffix("ps") {
+                format!("{h}pd")
+            } else if let Some(h) = head.strip_suffix('d') {
+                format!("{h}q")
+            } else {
+                format!("{}d", head.strip_suffix('q')?)
+            };
+            Some(format!("{swapped}\t{ops}"))
+        }),
+        ("another base register", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let (open, _) = vsib_brackets(l)?;
+            let base = l[open..].split_whitespace().next()?;
+            let to = if base == "rdx" { "rsi" } else { "rdx" };
+            Some(format!("{}{to}{}", &l[..open], &l[open + base.len()..]))
+        }),
+        ("another displacement", |ls, i| {
+            let l = &ls[i];
+            vsib_line(l)?;
+            let (_, close) = vsib_brackets(l)?;
+            Some(format!("{} + 0x40{}", &l[..close], &l[close..]))
+        }),
+    ];
+    for (what, mutate) in mutations {
+        let (mut tried, mut caught) = (0, 0);
+        let mut missed = Vec::new();
+        for (k, c) in cases.iter().enumerate() {
+            // Under a mask of 0 the instruction moves nothing: only
+            // another mask register changes that.
+            if c.mask == Arg::Const(0) && *what != "another mask register" {
+                continue;
+            }
+            let listing = &listings[&format!("t{k}")];
+            for i in 0..listing.len() {
+                let Some(changed) = mutate(listing, i) else { continue };
+                let mut copy = listing.clone();
+                copy[i] = changed;
+                tried += 1;
+                if vsib_run(&mut graph, c, &copy) == reference[k] {
+                    missed.push(format!("t{k} {c:?}: {} -> {}", listing[i], copy[i]));
+                } else {
+                    caught += 1;
+                }
+            }
+        }
+        eprintln!("vsib mutation {what}: {caught} of {tried} caught");
+        assert!(tried > 0, "{what}: applies nowhere");
+        assert!(missed.is_empty(), "{what} missed:\n{}", missed.join("\n"));
+    }
+}
+
+/// §5.6.35 item 10: each gather and scatter is refused by its name in a
+/// function without `avx512f`, without `avx512vl` for a 128- or 256-bit
+/// form, or with `evex512` off for a 512-bit one; a scale other than 1,
+/// 2, 4 or 8 is `x64:x86-intrinsic-signature`. The rows are x86-64 ones,
+/// not built on AArch64.
+#[test]
+fn vsib_refusals_and_rows() {
+    let signature = Some(CgError::unsupported("x64:x86-intrinsic-signature"));
+    let x64 = hod_ir::Support::shipped(hod_ir::Arch::X86_64);
+    let a64 = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
+    let under =
+        |c: VsibCase, features: &str| match vsib_object(&[c], "", features, Stress::default()) {
+            Ok(_) => None,
+            Err(hod_x64::ModuleError::Function { error, .. }) => Some(error),
+            Err(other) => panic!("{other}"),
+        };
+    let no_f = "+avx2,+avx,+fma,+f16c";
+    let (no_vl, no_512) =
+        (format!("{AVX512_FEATURES},-avx512vl"), format!("{AVX512_FEATURES},-evex512"));
+    let mut checked = 0;
+    for row in 0..VSIB.len() {
+        let (name, _, data, index, _) = vsib_types(row);
+        let refusal: &'static str = Box::leak(format!("intrinsic:{name}").into_boxed_str());
+        let refused = Some(CgError::unsupported(refusal));
+        let base = VsibCase { row, mask: Arg::Var, pass: Arg::Load, scale: 4, twice: false };
+        assert_eq!(under(base, AVX512_FEATURES), None, "{name}");
+        assert_eq!(under(base, no_f), refused, "{name} without avx512f");
+        let wide = bytes_of(&data).max(bytes_of(&index)) == 64;
+        assert_eq!(under(base, &no_vl), if wide { None } else { refused.clone() }, "{name} -vl");
+        assert_eq!(under(base, &no_512), if wide { refused.clone() } else { None }, "{name} -512");
+        for scale in [0, 3, 16] {
+            assert_eq!(
+                under(VsibCase { scale, ..base }, AVX512_FEATURES),
+                signature,
+                "{name} {scale}"
+            );
+        }
+        assert_eq!(x64.supports(refusal), Some(true), "{name}");
+        assert_eq!(a64.supports(refusal), Some(false), "{name}");
+        checked += 1;
+    }
+    eprintln!("vsib refusals: {checked} rows");
+}
+
+/// The C driver of the gathers' and scatters' execution test: every
+/// function of `cases` as hod built it (`h_tK`) and as `llc` 22 did
+/// (`l_tK`), run where the CPU has the features. Each call gets a table
+/// of 1024 random bytes (`%a` its middle), indices in -32..32 (so every
+/// lane, at any scale, stays in the tables), random data or
+/// pass-through and a random mask (all set in the first round), and an
+/// output table of 1024 bytes (`%out` its middle); both tables are
+/// compared after the calls. Prints each disagreement and `compared N
+/// skipped M wrong W`.
+fn vsib_driver(cases: &[VsibCase]) -> String {
+    let mut c = String::from("#include <stdio.h>\n#include <string.h>\n#include <stdint.h>\n");
+    c.push_str("typedef void (*fn)(void *, void *, void *, void *, uint64_t);\n");
+    for k in 0..cases.len() {
+        writeln!(c, "void h_t{k}(void *, void *, void *, void *, uint64_t);").unwrap();
+        writeln!(c, "void l_t{k}(void *, void *, void *, void *, uint64_t);").unwrap();
+    }
+    c.push_str("static const fn h[] = {");
+    (0..cases.len()).for_each(|k| write!(c, "h_t{k},").unwrap());
+    c.push_str("};\nstatic const fn l[] = {");
+    (0..cases.len()).for_each(|k| write!(c, "l_t{k},").unwrap());
+    // Per function: the bytes of an index, the features (1 F, 2 VL).
+    c.push_str("};\nstatic const int info[][2] = {");
+    for case in cases {
+        let (_, _, data, index, _) = vsib_types(case.row);
+        let (_, elem) = vector_of(&index).unwrap();
+        let need = if bytes_of(&data).max(bytes_of(&index)) == 64 { 1 } else { 3 };
+        write!(c, "{{{},{need}}},", bits_of(elem) / 8).unwrap();
+    }
+    c.push_str(
+        "};\n\
+         static uint64_t state = 0x2240224;\n\
+         static uint64_t next(void) { state ^= state << 13; state ^= state >> 7; state ^= state << 17; return state; }\n\
+         static unsigned char oh[1024], ol[1024], th[1024], tl[1024], ix[64], d[64];\n\
+         int main(void) {\n  \
+           __builtin_cpu_init();\n  \
+           int have = 0;\n  \
+           if (__builtin_cpu_supports(\"avx512f\")) have |= 1;\n  \
+           if (__builtin_cpu_supports(\"avx512vl\")) have |= 2;\n  \
+           long compared = 0, skipped = 0, wrong = 0;\n  \
+           for (unsigned f = 0; f < sizeof h / sizeof *h; f++) {\n    \
+             if ((info[f][1] & have) != info[f][1]) { skipped++; continue; }\n    \
+             for (int r = 0; r < 12; r++) {\n      \
+               for (int i = 0; i < 1024; i += 8) { uint64_t v = next(); memcpy(th + i, &v, 8); }\n      \
+               memcpy(tl, th, 1024); memset(oh, 0xcc, 1024); memset(ol, 0xcc, 1024);\n      \
+               for (int i = 0; i < 64; i += info[f][0]) { int64_t v = (int64_t)(next() % 64) - 32; memcpy(ix + i, &v, info[f][0]); }\n      \
+               for (int i = 0; i < 64; i += 8) { uint64_t v = next(); memcpy(d + i, &v, 8); }\n      \
+               uint64_t m = r == 0 ? ~0ull : next();\n      \
+               h[f](oh + 512, th + 512, ix, d, m); l[f](ol + 512, tl + 512, ix, d, m);\n      \
+               compared++;\n      \
+               if (memcmp(oh, ol, 1024) || memcmp(th, tl, 1024)) {\n        \
+                 wrong++;\n        \
+                 printf(\"t%u round %d differs\\n\", f, r);\n      \
+               }\n    \
+             }\n  \
+           }\n  \
+           printf(\"compared %ld skipped %ld wrong %ld\\n\", compared, skipped, wrong);\n  \
+           return 0;\n\
+         }\n",
+    );
+    c
+}
+
+/// §5.6.35 item 10: on a CPU with AVX-512, hod's gathers and scatters
+/// move the bytes `llc` 22's do (see [`vsib_driver`]). As for
+/// [`avx512_names_agree_with_llc_on_hardware`], the program is linked
+/// statically and run by the command `HOD_X64_AVX512_RUNNER` names
+/// (`native` runs it directly); without one the test only links it. An
+/// undefined pass-through is left out.
+#[test]
+fn vsib_names_agree_with_llc_on_hardware() {
+    let cases: Vec<VsibCase> = vsib_cases().into_iter().filter(|c| c.pass != Arg::Undef).collect();
+    let scratch = Scratch::new("x64-avx512-vsib-run");
+    let Some(llc22) = llc(&scratch, 22, "llc22", &vsib_module(&cases, "l_", AVX512_FEATURES))
+    else {
+        return;
+    };
+    let hod = vsib_object(&cases, "h_", AVX512_FEATURES, Stress::default()).unwrap();
+    let hod = scratch.write("hod.o", hod);
+    let Some(toolchain) = Toolchain::x86_64(&scratch) else { return };
+    let driver = toolchain.compile_c(&scratch, "driver", &vsib_driver(&cases), &[]);
+    let program = scratch.join("vsib");
+    let linker = &toolchain.linkers[0];
+    toolchain.link_ok(linker, &["-static"], &[&driver, &hod, &llc22], &program);
+    let runner = std::env::var("HOD_X64_AVX512_RUNNER").unwrap_or_default();
+    let mut words = runner.split_whitespace();
+    let mut command = match words.next() {
+        None => {
+            eprintln!(
+                "vsib execution: {} functions linked; not run (no HOD_X64_AVX512_RUNNER)",
+                cases.len()
+            );
+            return;
+        }
+        Some("native") => Command::new(&program),
+        Some(first) => {
+            let mut command = Command::new(first);
+            command.args(words).arg(&program);
+            command
+        }
+    };
+    let ran = hod_testutil::run_with(&mut command, &[], Duration::from_mins(10));
+    assert!(ran.success(), "the program failed: {:?}\n{}", ran.status, ran.stderr_text());
+    let out = ran.stdout_text();
+    let last = out.lines().last().unwrap_or("");
+    eprintln!("vsib execution ({runner}): {last}");
+    assert!(last.starts_with("compared ") && last.ends_with(" wrong 0"), "{out}");
+    assert!(!last.starts_with("compared 0 "), "the runner's CPU has no AVX-512: {last}");
 }
