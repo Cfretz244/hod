@@ -51,7 +51,7 @@ on a schedule.
 | L6 | **kiln's corpus through hod** | kiln's executing tests (about 1500 `run` tests plus the GCC torture suite) with hod as the code generator | clang (kiln's harness) | merge gate |
 | L7 | **debug info** (`xtask debug`) | scripted gdb and lldb sessions on hod's and `llc`'s programs under every linker; kiln's debugger tests through hod; `--verify` of the corpus's `-g` modules; `(function, line)` comparison with `llc` | gdb, lldb, `llc`, `llvm-dwarfdump` | every change (quick tier, in `cargo test`), merge gate (all) |
 | L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | nightly / release |
-| L9 | **open-source projects** built with kiln + hod, running their own tests | - | release |
+| L9 | **open-source projects** built with kiln + hod, running their own tests ("Real projects (L9)") | kiln with `llc` | release |
 | L10 | **fuzzing** (`xtask fuzz`) | random C programs (csmith in option sets, and hod's own ABI generator; YARPGen once installed) through clang `-O0 -emit-llvm` for each target, built by hod `--strict` and by the reference `llc`, linked and run, exit status and output compared; the module split so each compiler builds half (`--mix`); with `-g`, DWARF verified and lines compared (`--debug`); random IR functions against an interpreter (not yet) | `llc` (`-O2` as the witness of a finding) | the reduced seeds of findings in every change (as L4 seeds); long runs in the sweep, budgeted |
 
 ### The IR corpus
@@ -206,6 +206,33 @@ its share of L10, and its tests of the command (`xtask/tests/fuzz_real.rs`)
 skip without the tools; a planted calling-convention bug that only
 `--mix` can see shows the mode works. The numbers of the long runs are
 in `docs/status/fuzz.md`.
+
+### Real projects (L9)
+
+Open-source projects built through their own build systems with kiln as
+the compiler and hod as its back end, running their own tests
+(`spec/harness.md` "Real projects", `spec/landed/harness/WP-177.md`). The
+rows are kiln's (`scripts/oss/projects.toml`, kiln's format); each is
+built at `-O0` and at `-O0 -g`, three ways: kiln with `llc` (the
+control), kiln with hod falling back to `llc` where hod declines (the
+**census**: every object kiln made, whether hod built it, and each
+refusal by name and function), and kiln with hod **strict** when the
+census is empty (the build must complete with every offered module from
+hod). A test that passes under `llc` and not under hod is the lane's
+most important finding; a refusal is coverage work for another package.
+
+```
+source scripts/env.sh
+cargo build --release -p hod_cli
+scripts/oss/oss-run.sh fmt googletest abseil      # the whole procedure, one build at a time
+scripts/oss/oss-build.sh re2 --mode strict --flavour O0g   # one build
+python3 scripts/oss/oss-report.py status --out docs/status/oss.md
+```
+
+Results: `docs/status/oss.md` (generated). The refused modules are kept
+under `findings/oss/<project>/<reason>/` in the build root, with their
+command lines. The hosted form is `.github/workflows/oss.yml` (x86-64 and
+AArch64 runners; by hand or on an `oss/**` branch).
 
 ### Linker matrix
 

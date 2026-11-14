@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""kiln-cc: the logging C compiler wrapper of hod's real-project lane.
+
+A port of kiln's scripts/oss/kiln-cc, unchanged but for this paragraph:
+the C wrapper is kiln-cxx with `lang="c"`, so it appends `$HOD_OSS_CFLAGS`
+to every compile as kiln-cxx does.
+
+Use it as CMAKE_C_COMPILER for a row with `c = "kiln"`: it runs
+`$KILN_OSS_CC` (oss-build.sh sets the kiln C driver `kiln` beside kiln++,
+in every mode) under the same caps and logs the same JSON line to
+`$KILN_OSS_LOG`, with `lang` "c" (or "asm" for a `.S`). It never adds
+`-stdlib=`.
+"""
+
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "kiln-cxx")
+_loader = importlib.machinery.SourceFileLoader("kiln_cxx", _path)
+_spec = importlib.util.spec_from_loader("kiln_cxx", _loader)
+kiln_cxx = importlib.util.module_from_spec(_spec)
+_loader.exec_module(kiln_cxx)
+
+if __name__ == "__main__":
+    sys.exit(kiln_cxx.main(lang="c"))

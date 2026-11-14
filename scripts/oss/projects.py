@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Helpers of hod's real-project lane (spec/harness.md "Real projects").
+
+A port of kiln's scripts/oss/projects.py (kiln:spec/landed/harness/
+WP-666.md): the same projects.toml format, the same `shell` and
+`report-json` commands, reduced to the cmake rows the lane drives, and a
+report that adds the lane's mode and flavour, hod's census of the build
+and the project's per-test results.
+
+  projects.py list [--json]              project names, one per line
+  projects.py shell <project>            the project's table as bash assignments
+  projects.py report-json <args...>      write report.json for one build tree
+"""
+
+import argparse
+import json
+import os
+import platform
+import re
+import shlex
+import sys
+import time
+import tomllib
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOML = os.path.join(HERE, "projects.toml")
+
+REQUIRED = ("url", "tag", "build", "cxx_std", "test")
+BUILDS = ("cmake",)
+MODES = ("llc", "hod", "strict")
+FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
+VMEM_MAX_KB = 6000000
+CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
+# One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
+# `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
+CTEST_LINE_RE = re.compile(r"^\s*\d+/\d+ Test\s+#\d+: (\S+) \.+\s*(\S.*?)\s+[\d.]+ sec\s*$")
+# The reason name of a hod refusal as a directory name (hod-shim's rule).
+SAFE_RE = re.compile(r"[^A-Za-z0-9:_.+-]")
+
+
+def load(path=TOML):
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+    for name, p in data.items():
+        missing = [k for k in REQUIRED if k not in p]
+        if missing:
+            raise SystemExit(f"{path}: [{name}] lacks {', '.join(missing)}")
+        if p["build"] not in BUILDS:
+            raise SystemExit(f"{path}: [{name}] build must be one of {BUILDS} (the lane drives cmake rows only)")
+        p.setdefault("configure", [])
+        p.setdefault("build_targets", [])
+        p.setdefault("c_compiler", "clang-19")
+        p.setdefault("c", "clang")
+        if p["c"] not in ("kiln", "clang"):
+            raise SystemExit(f"{path}: [{name}] c must be \"kiln\" or \"clang\"")
+        p.setdefault("submodules", False)
+        p.setdefault("source_subdir", "")
+        p.setdefault("notes", "")
+        p.setdefault("deps", [])
+        p.setdefault("install_configure", [])
+        p.setdefault("checkout", name)
+        p.setdefault("test_timeout", 1800)
+        p.setdefault("vmem_kb", 3000000)
+        if not (isinstance(p["vmem_kb"], int) and 0 < p["vmem_kb"] <= VMEM_MAX_KB):
+            raise SystemExit(f"{path}: [{name}] vmem_kb must be an integer in 1..{VMEM_MAX_KB}")
+        if not (isinstance(p["test_timeout"], int) and p["test_timeout"] > 0):
+            raise SystemExit(f"{path}: [{name}] test_timeout must be a positive integer")
+    for name, p in data.items():
+        bad = [d for d in p["deps"] if d not in data]
+        if bad:
+            raise SystemExit(f"{path}: [{name}] deps must name rows of this file: {', '.join(bad)}")
+    return data
+
+
+def read_jsonl(path):
+    """One JSON object per line; a torn line is skipped."""
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def is_tu(rec):
+    return rec.get("source") not in (None, "link", "none")
+
+
+def summarize(records):
+    """TU and link counts of the build phase (kiln's report.json `tus`, `links`)."""
+    build = [r for r in records if r.get("phase") == "build"]
+    tus = [r for r in build if is_tu(r)]
+    links = [r for r in build if r.get("source") == "link"]
+    by_kind = {}
+    for r in tus:
+        by_kind[r.get("kind", "other")] = by_kind.get(r.get("kind", "other"), 0) + 1
+    by_lang = {}
+    for r in tus:
+        b = by_lang.setdefault(r.get("lang") or "c++", {"total": 0, "ok": 0, "failed": 0})
+        b["total"] += 1
+        b["ok" if r.get("kind") == "ok" else "failed"] += 1
+    failed = [{"source": r.get("source"), "kind": r.get("kind"), "diag": r.get("diag", "")} for r in tus if r.get("kind") != "ok"]
+    return {
+        "tus": {
+            "total": len(tus),
+            "ok": by_kind.get("ok", 0),
+            "failed": len(tus) - by_kind.get("ok", 0),
+            "by_kind": dict(sorted(by_kind.items())),
+        },
+        "tus_by_lang": dict(sorted(by_lang.items())),
+        "failed_tus": failed[:50],
+        "links": {
+            "total": len(links),
+            "ok": sum(1 for r in links if r.get("kind") == "ok"),
+            "failed": sum(1 for r in links if r.get("kind") != "ok"),
+        },
+        "tu_cpu_s": round(sum(r.get("cpu_s", 0) for r in tus), 1),
+        "peak_tu_rss_kb": max((r.get("max_rss_kb", 0) for r in tus), default=0),
+    }
+
+
+def read_coverage(path):
+    """hod's coverage log (spec/cli.md "Coverage log"): (outcome, reason,
+    census reasons) per line, fields by position."""
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                fs = line.rstrip("\n").split("\t")
+                if len(fs) < 8:
+                    continue
+                census = []
+                if len(fs) >= 11 and fs[10] != "-":
+                    census = [c.replace("\\,", ",") for c in re.split(r"(?<!\\),", fs[10])]
+                out.append({"outcome": fs[0], "reason": fs[1], "output": fs[4], "us": int(fs[6]) if fs[6].isdigit() else 0, "census": census})
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def census(build_dir):
+    """hod's part of one build: what kiln offered it (kiln's statistics
+    log), what it built, and every refusal by name with its functions
+    (hod's coverage log and hod-shim's log)."""
+    stats = [r for r in read_jsonl(os.path.join(build_dir, "kiln-stats.jsonl")) if r.get("output_kind") == "obj"]
+    backends = {}
+    not_offered = {}
+    for r in stats:
+        b = r.get("backend") or "none"
+        backends[b] = backends.get(b, 0) + 1
+        if b == "llvm":
+            key = ",".join(r.get("triggers") or []) or "-"
+            if r.get("opt_level") not in (None, "0"):
+                key = f"-O{r.get('opt_level')}"
+            not_offered[key] = not_offered.get(key, 0) + 1
+    cov = read_coverage(os.path.join(build_dir, "coverage.log"))
+    shim = read_jsonl(os.path.join(build_dir, "hod-shim.jsonl"))
+    refusals = {}
+    for r in shim:
+        if r.get("rc") == 0:
+            continue
+        name = r.get("reason") or "unknown"
+        e = refusals.setdefault(name, {"modules": 0, "first": 0, "functions": {}, "examples": []})
+        e["modules"] += 1
+        e["first"] += 1
+        fn = r.get("function")
+        if fn:
+            e["functions"][fn] = e["functions"].get(fn, 0) + 1
+        if len(e["examples"]) < 3:
+            src = next((a for a in r.get("kiln_argv", []) if a.endswith((".cc", ".cpp", ".cxx", ".c", ".C"))), None)
+            e["examples"].append({"source": src, "function": fn, "cwd": r.get("kiln_cwd")})
+    # The census (HOD_CENSUS=1): every reason of each refused module.
+    census_counts = {}
+    for c in cov:
+        if c["outcome"] == "hod":
+            continue
+        for name in set(c["census"]) | {c["reason"]}:
+            if name and name != "-":
+                census_counts[name] = census_counts.get(name, 0) + 1
+    for name, n in census_counts.items():
+        refusals.setdefault(name, {"modules": 0, "first": 0, "functions": {}, "examples": []})["modules"] = max(
+            n, refusals[name]["modules"]
+        )
+    for e in refusals.values():
+        e["functions"] = dict(sorted(e["functions"].items(), key=lambda kv: -kv[1])[:10])
+    return {
+        "objects": len(stats),
+        "backends": dict(sorted(backends.items())),
+        "not_offered": dict(sorted(not_offered.items())),
+        "hod_runs": len(cov),
+        "hod_built": sum(1 for c in cov if c["outcome"] == "hod"),
+        "hod_refused": sum(1 for c in cov if c["outcome"] != "hod"),
+        "hod_s": round(sum(c["us"] for c in cov) / 1e6, 1),
+        "refusals": dict(sorted(refusals.items(), key=lambda kv: (-kv[1]["first"], -kv[1]["modules"], kv[0]))),
+    }
+
+
+def test_results(log_path):
+    """(summary line, counts or None, {test: status}) of a ctest log."""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            lines = [l.rstrip("\n") for l in f]
+    except FileNotFoundError:
+        return None, None, {}
+    per = {}
+    for line in lines:
+        m = CTEST_LINE_RE.match(line)
+        if m:
+            per[m.group(1)] = m.group(2).lstrip("*").strip()
+    for line in reversed(lines):
+        m = CTEST_RE.search(line)
+        if m:
+            total, failed = int(m.group(3)), int(m.group(2))
+            return line.strip(), {"passed": total - failed, "failed": failed, "total": total}, per
+    last = next((l.strip() for l in reversed(lines) if l.strip()), "")
+    return last, None, per
+
+
+def cmd_report_json(a):
+    recs = read_jsonl(os.path.join(a.build_dir, "compile.jsonl"))
+    s = summarize(recs)
+    summary, counts, per = (None, None, {})
+    if a.test_rc is not None:
+        summary, counts, per = test_results(os.path.join(a.build_dir, "test.log"))
+    p = load()[a.project]
+    rep = {
+        "schema": 1,
+        "project": a.project,
+        "mode": a.mode,
+        "flavour": a.flavour,
+        "flags": FLAVOURS[a.flavour],
+        "host": platform.machine(),
+        "compiler_path": a.compiler_path,
+        "hod_path": a.hod_path,
+        "url": p["url"],
+        "tag": p["tag"],
+        "cxx_std": p["cxx_std"],
+        "c": p["c"],
+        "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "configure_rc": a.configure_rc,
+        "build_rc": a.build_rc,
+        "test_rc": a.test_rc,
+        "test_summary": summary,
+        "tests": counts,
+        "test_status": per,
+        "wall_s": round(a.wall, 1),
+        **s,
+        "hod": census(a.build_dir) if a.mode != "llc" else None,
+    }
+    out = os.path.join(a.build_dir, "report.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(rep, f, indent=1)
+        f.write("\n")
+    print(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    l = sub.add_parser("list")
+    l.add_argument("--json", action="store_true")
+    s = sub.add_parser("shell")
+    s.add_argument("project")
+    r = sub.add_parser("report-json")
+    r.add_argument("--project", required=True)
+    r.add_argument("--mode", choices=MODES, required=True)
+    r.add_argument("--flavour", choices=sorted(FLAVOURS), required=True)
+    r.add_argument("--compiler-path", required=True)
+    r.add_argument("--hod-path", default="")
+    r.add_argument("--build-dir", required=True)
+    r.add_argument("--configure-rc", type=int, required=True)
+    r.add_argument("--build-rc", type=int)
+    r.add_argument("--test-rc", type=int)
+    r.add_argument("--wall", type=float, required=True)
+    a = ap.parse_args()
+
+    if a.cmd == "list":
+        names = list(load())
+        print(json.dumps(names) if a.json else "\n".join(names))
+    elif a.cmd == "shell":
+        data = load()
+        if a.project not in data:
+            sys.exit(f"projects.py: unknown project '{a.project}' (see {TOML})")
+        p = data[a.project]
+        q = shlex.quote
+        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb"):
+            print(f"P_{k.upper()}={q(str(p[k]))}")
+        print(f"P_SUBMODULES={'1' if p['submodules'] else ''}")
+        print("P_CONFIGURE=(" + " ".join(q(x) for x in p["configure"]) + ")")
+        print("P_BUILD_TARGETS=(" + " ".join(q(x) for x in p["build_targets"]) + ")")
+        print("P_DEPS=(" + " ".join(q(x) for x in p["deps"]) + ")")
+        print("P_INSTALL_CONFIGURE=(" + " ".join(q(x) for x in p["install_configure"]) + ")")
+    elif a.cmd == "report-json":
+        cmd_report_json(a)
+
+
+if __name__ == "__main__":
+    main()

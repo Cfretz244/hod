@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""hod-shim: the hod kiln runs in the real-project lane (spec/harness.md
+"Real projects").
+
+oss-build.sh points kiln at this file (`KILN_HOD`). kiln runs it as it
+runs hod (`hod --strict <llc arguments> -o <obj> -`, the module text on
+standard input; kiln:spec/driver.md "Back-end selection"). The shim runs
+the real hod (`$HOD_OSS_REAL_HOD`) with the same arguments and the same
+input, passes its standard error and exit status through, and adds what
+the lane needs and hod does not give:
+
+- one JSON line per run appended to `$HOD_OSS_SHIM_LOG`: the output, hod's
+  status, the reason and function of the refusal (from hod's diagnostic
+  `hod: error: unsupported construct '<reason>' in function '<f>' ...`),
+  the compile command of the kiln process that ran it (its parent's
+  argv and cwd, from /proc) and the module saved, if any;
+- the module of a refusal, saved as `$HOD_OSS_DECLINED/<reason>/<k>.ll`
+  with `<k>.json` (the line above) beside it, `<k>` a hash of the
+  compiled source's path: one module per source (a project compiling one
+  source into several targets keeps one), at most `$HOD_OSS_KEEP`
+  (default 1) per reason, the first runs winning;
+- `HOD_OSS_STRICT=1`: a decline (status 2) becomes status 1, so kiln's
+  `KILN_HOD_STRICT=1` makes it a compile error (kiln falls back silently
+  from status 2 even then).
+
+The shim never changes the input, the arguments or a successful answer.
+"""
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+
+DIAG_RE = re.compile(r"unsupported construct '((?:[^'\\]|\\.)*)'(?: in function '((?:[^'\\]|\\.)*)')?")
+
+
+def parent_command():
+    """The argv and cwd of the nearest ancestor that is a compile (has
+    `-c`), else of the parent."""
+    pid = os.getppid()
+    first = None
+    for _ in range(4):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv = [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                ppid = int(f.read().rsplit(b")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+        if first is None:
+            first = (argv, cwd)
+        if "-c" in argv:
+            return argv, cwd
+        pid = ppid
+    return first or ([], "")
+
+
+def output_of(args):
+    for i, a in enumerate(args):
+        if a == "-o" and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith("-o") and len(a) > 2:
+            return a[2:]
+    return None
+
+
+def source_of(argv):
+    return next((a for a in argv if a.endswith((".cc", ".cpp", ".cxx", ".c++", ".c", ".C"))), None)
+
+
+def save(rec, data):
+    """The module under <declined>/<reason>/<k>.ll, k the source's hash,
+    unless the reason already has `keep` modules (O_EXCL, so concurrent
+    shims of one source never share a file)."""
+    root = os.environ.get("HOD_OSS_DECLINED")
+    if not root:
+        return None
+    keep = int(os.environ.get("HOD_OSS_KEEP") or 1)
+    name = re.sub(r"[^A-Za-z0-9:_.+-]", "_", rec["reason"] or "unknown")[:100]
+    d = os.path.join(root, name)
+    try:
+        os.makedirs(d, exist_ok=True)
+        if sum(1 for f in os.listdir(d) if f.endswith(".ll")) >= keep:
+            return None
+    except OSError:
+        return None
+    key = hashlib.sha1((source_of(rec.get("kiln_argv", [])) or rec.get("output") or "").encode()).hexdigest()[:12]
+    path = os.path.join(d, f"{key}.ll")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except OSError:
+        return None
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    rec["saved"] = path
+    with open(os.path.join(d, f"{key}.json"), "w", encoding="utf-8") as f:
+        json.dump(rec, f, indent=1)
+        f.write("\n")
+    return path
+
+
+def main():
+    real = os.environ.get("HOD_OSS_REAL_HOD")
+    if not real:
+        sys.stderr.write("hod-shim: HOD_OSS_REAL_HOD is not set\n")
+        return 1
+    args = sys.argv[1:]
+    data = sys.stdin.buffer.read() if "-" in args else b""
+    try:
+        p = subprocess.run([real] + args, input=data if "-" in args else None, stderr=subprocess.PIPE)
+    except OSError as e:
+        sys.stderr.write(f"hod-shim: cannot run {real}: {e}\n")
+        return 1
+    sys.stderr.buffer.write(p.stderr)
+    sys.stderr.flush()
+    rc = p.returncode
+    if rc == 0 and not os.environ.get("HOD_OSS_SHIM_LOG_ALL"):
+        log_rec = {"rc": 0, "output": output_of(args)}
+    else:
+        text = p.stderr.decode("utf-8", "replace")
+        first = text.splitlines()[0] if text.strip() else ""
+        m = DIAG_RE.search(text)
+        argv, cwd = parent_command()
+        log_rec = {
+            "rc": rc,
+            "output": output_of(args),
+            "reason": m.group(1) if m else None,
+            "function": m.group(2) if m and m.group(2) else None,
+            "diag": first[:500],
+            "kiln_argv": argv,
+            "kiln_cwd": cwd,
+            "hod_args": args,
+            "bytes": len(data),
+        }
+        if rc != 0 and data:
+            if not log_rec["reason"]:
+                log_rec["reason"] = "hod-failed" if rc != 2 else "unknown"
+            save(log_rec, data)
+    log = os.environ.get("HOD_OSS_SHIM_LOG")
+    if log:
+        line = (json.dumps(log_rec, ensure_ascii=False) + "\n").encode("utf-8")
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
+    if rc == 2 and os.environ.get("HOD_OSS_STRICT") == "1":
+        return 1
+    if rc < 0:
+        return 128 - rc
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
