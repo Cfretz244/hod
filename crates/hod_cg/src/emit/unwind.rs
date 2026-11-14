@@ -231,6 +231,7 @@ impl ModuleEmitter<'_> {
             let options = LsdaOptions {
                 function_sections: self.options.function_sections,
                 stubs: self.sections.generic(Kind::Data),
+                large: self.large_code_model(),
             };
             hod_eh::write_lsdas(&mut self.obj, &funcs, options).map_err(eh_err)?
         };
@@ -300,7 +301,8 @@ impl ModuleEmitter<'_> {
                 lsda,
             });
         }
-        hod_eh::write_eh_frame(&mut self.obj, &frames).map_err(eh_err)?;
+        let target = hod_eh::for_model(self.obj.arch(), self.large_code_model());
+        hod_eh::write_eh_frame_for(&mut self.obj, &frames, target).map_err(eh_err)?;
         Ok(())
     }
 }

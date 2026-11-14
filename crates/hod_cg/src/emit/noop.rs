@@ -73,15 +73,20 @@ impl ModuleEmitter<'_> {
         align: u64,
     ) -> CgResult<SectionId> {
         let mut name = std::mem::take(&mut self.name);
-        let section =
-            match self.sections.implicit(kind, unique, false, NO_GROUP, own, align, &mut name) {
-                Found::Old(section) => section,
-                Found::New(new, pending) => {
-                    let section = self.obj.add_section(&name, new.kind, 1).map_err(obj_err)?;
-                    self.sections.created(&name, &pending, section, Some((kind, align)));
-                    section
-                }
-            };
+        // The frame and its function are globals of LLVM's: large ones
+        // under x86-64's large code model (§9.7, WP-209).
+        let large = self.large_model();
+        let section = match self
+            .sections
+            .implicit(kind, large, unique, false, NO_GROUP, own, align, &mut name)
+        {
+            Found::Old(section) => section,
+            Found::New(new, pending) => {
+                let section = self.obj.add_section(&name, new.kind, 1).map_err(obj_err)?;
+                self.sections.created(&name, &pending, section, Some((kind, align)));
+                section
+            }
+        };
         self.name = name;
         Ok(section)
     }

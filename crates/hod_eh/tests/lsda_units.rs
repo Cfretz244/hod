@@ -232,7 +232,7 @@ fn sections_follow_the_function() {
     let (mut obj, text, _) = object(Arch::AArch64, &[]);
     let a = func(0, b"a", text, 12, &sites, &pads, &[], &[], &[]);
     let b = func(1, b"b", text, 12, &sites, &pads, &[], &[], &[]);
-    let opts = LsdaOptions { function_sections: true, stubs: None };
+    let opts = LsdaOptions { function_sections: true, stubs: None, large: false };
     write_lsdas(&mut obj, &[a, b], opts).unwrap();
     assert!(find(&obj, b".gcc_except_table").is_none());
     assert!(find(&obj, b".gcc_except_table.a").is_some());
@@ -354,7 +354,7 @@ fn errors_leave_the_object_unchanged() {
     let before = snapshot(&base);
     for (k, (bad, err)) in cases.into_iter().enumerate() {
         let mut obj = object(Arch::AArch64, &["t"]).0;
-        let opts = LsdaOptions { function_sections: k == 12, stubs: None };
+        let opts = LsdaOptions { function_sections: k == 12, stubs: None, large: false };
         let later = FuncLsda { order: 1, ..ok };
         assert_eq!(write_lsdas(&mut obj, &[later, bad], opts), Err(err), "case {k}");
         assert_eq!(snapshot(&obj), before, "case {k}: object unchanged");

@@ -27,12 +27,12 @@
 //!   private symbol, as `llc` reaches it.
 
 use hod_cg::{CallArg, CgResult, Class, FnCx, SymRef};
-use hod_ir::{CallConv, CodeModel, Inst, Intrinsic, TypeId, Value};
+use hod_ir::{CallConv, Inst, Intrinsic, TypeId, Value};
 use hod_mc_a64 as mc;
 use hod_mc_a64::{Cond, Load, Size};
 use hod_obj::{A64Reloc, RelocKind};
 
-use crate::common::{CODE_MODEL, add_const, deferred_first, put, unsupported, xr};
+use crate::common::{add_const, deferred_first, put, unsupported, xr};
 use crate::intrinsic::const_int;
 use crate::target::A64;
 
@@ -52,8 +52,8 @@ const MAX_PROMISE: u64 = 1 << 30;
 /// intrinsic.
 ///
 /// # Errors
-/// [`PROMISE`]; `a64:code-model` for `coro.noop` outside the small
-/// code model; what the call sequence reports; `Internal` for another
+/// [`PROMISE`]; `a64:code-model` for `coro.noop` under a code model
+/// other than small and large (and large under PIC); what the call sequence reports; `Internal` for another
 /// intrinsic or an argument list the verifier rejects.
 pub fn intrinsic<'a>(
     cx: &mut FnCx<'a, A64>,
@@ -118,12 +118,15 @@ fn promise<'a>(
 
 /// `noop`: the address of the object's noop frame.
 fn noop<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
-    if cx.options.code_model(cx.module) != CodeModel::Small {
-        return unsupported(CODE_MODEL);
-    }
+    let large = crate::common::large(cx)?;
     let frame = cx.noop_coro_frame()?;
     debug_assert_eq!(frame, SymRef::NoopCoroFrame, "the noop frame's symbol");
     let rd = cx.def_reg(inst)?;
+    if large {
+        // §5.6.36: the frame's absolute address.
+        crate::common::movw_address(cx, xr(rd), frame);
+        return cx.finish(inst, rd);
+    }
     let at = cx.offset();
     put(cx, mc::adrp(xr(rd).zr(), 0));
     cx.reloc(at, RelocKind::A64(A64Reloc::AdrPrelPgHi21), frame, 0);

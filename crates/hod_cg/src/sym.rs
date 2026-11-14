@@ -705,6 +705,10 @@ runtime_fns! {
     AtomicFetchOr16 = "__atomic_fetch_or_16": (PTR, I128, I32) -> I128;
     /// `__atomic_fetch_xor_16(ptr, value, order)` (WP-144).
     AtomicFetchXor16 = "__atomic_fetch_xor_16": (PTR, I128, I32) -> I128;
+    /// `_GLOBAL_OFFSET_TABLE_`: not a function but the symbol x86-64's
+    /// large code model computes the GOT's address from
+    /// (`R_X86_64_GOTPC64`, WP-209, §5.6.36); never called.
+    GlobalOffsetTable = "_GLOBAL_OFFSET_TABLE_": () -> VOID;
 }
 
 // ---- Runtime routines keyed by (type, target): §7.3 (WP-117) ----
