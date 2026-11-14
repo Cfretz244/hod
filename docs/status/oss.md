@@ -38,6 +38,12 @@ Host: aarch64; target: aarch64.
 | simdjson | O0g | 135 | 169 | 154 | 0 | 0 | ok | ok | 117/117 | 117/117 | 117/117 | same | `hod-3b14f8ff` | `21b9110a4` |
 | magic_enum | O0 | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `hod-3b14f8ff` | `21b9110a4` |
 | magic_enum | O0g | 22 | 22 | 22 | 0 | 0 | ok | ok | 15/15 | 15/15 | 15/15 | same | `hod-3b14f8ff` | `21b9110a4` |
+| tl_expected | O0 | 13 | 13 | 13 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-3b14f8ff` | `21b9110a4` |
+| tl_expected | O0g | 13 | 13 | 13 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-3b14f8ff` | `21b9110a4` |
+| zlib | O0 | 37 | 37 | 36 | 0 | 1 | failed (0 TUs) | failed (0 TUs) | 5/6 | 5/6 | 5/6 | same | `hod-3b14f8ff` | `21b9110a4` |
+| zlib | O0g | 37 | 37 | 36 | 0 | 1 | failed (0 TUs) | failed (0 TUs) | 5/6 | 5/6 | 5/6 | same | `hod-3b14f8ff` | `21b9110a4` |
+| zstd | O0 | 118 | 118 | 118 | 0 | 0 | ok | ok | 2/3 | 2/3 | 2/3 | same | `hod-3b14f8ff` | `21b9110a4` |
+| zstd | O0g | 118 | 118 | 118 | 0 | 0 | ok | ok | 2/3 | 2/3 | 2/3 | same | `hod-3b14f8ff` | `21b9110a4` |
 
 Notes:
 
@@ -48,6 +54,12 @@ Notes:
 ## Refusal census (hybrid builds)
 
 No refusal: every module kiln offered hod in the hybrid builds was built by hod.
+
+Objects kiln did not offer hod (kiln's statistics log: the `opt` triggers, `-` for a static reason):
+
+| why | objects | builds |
+|---|---|---|
+| `coverage` | 2 | zlib O0 (1), zlib O0g (1) |
 
 ## Strict builds (kiln's statistics log)
 
@@ -85,3 +97,9 @@ No refusal: every module kiln offered hod in the hybrid builds was built by hod.
 | simdjson | O0g | 169 | 154 | 0 | 0 | 0 | ok | 117/117 | - |
 | magic_enum | O0 | 22 | 22 | 0 | 0 | 0 | ok | 15/15 | - |
 | magic_enum | O0g | 22 | 22 | 0 | 0 | 0 | ok | 15/15 | - |
+| tl_expected | O0 | 13 | 13 | 0 | 0 | 0 | ok | 1/1 | - |
+| tl_expected | O0g | 13 | 13 | 0 | 0 | 0 | ok | 1/1 | - |
+| zlib | O0 | 37 | 36 | 0 | 0 | 1 | failed (0 TUs) | 5/6 | - |
+| zlib | O0g | 37 | 36 | 0 | 0 | 1 | failed (0 TUs) | 5/6 | - |
+| zstd | O0 | 118 | 118 | 0 | 0 | 0 | ok | 2/3 | - |
+| zstd | O0g | 118 | 118 | 0 | 0 | 0 | ok | 2/3 | - |
