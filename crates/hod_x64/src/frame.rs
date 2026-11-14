@@ -296,6 +296,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     teardown(cx)?;
     put(cx, mc::ret());
 
+    let large = cx.tail_exit_count() > 0 && crate::common::large(cx)?;
     for index in 0..cx.tail_exit_count() {
         let exit = cx.tail_exit(index);
         cx.bind(exit.label)?;
@@ -306,10 +307,21 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
         // WP-125: `al` of a variadic function, as it arrived.
         crate::call::before_tail_exit(cx);
         teardown(cx)?;
-        cx.tail_branch_here(index, dwarf); // WP-113: `spec/dwarf.md` §6.19
         match exit.target {
-            CallTarget::Sym(sym) => put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?,
-            CallTarget::Reg(callee) => put(cx, mc::jmp_r(gp(callee))),
+            // §5.6.36: the address first, so that the branch is `jmp r11`.
+            CallTarget::Sym(sym) if large => {
+                crate::common::far_callee(cx, sym)?;
+                cx.tail_branch_here(index, dwarf); // WP-113: `spec/dwarf.md` §6.19
+                put(cx, mc::jmp_r(R11));
+            }
+            CallTarget::Sym(sym) => {
+                cx.tail_branch_here(index, dwarf);
+                put_reloc(cx, mc::jmp_near(0), X64Reloc::Plt32, sym, 0)?;
+            }
+            CallTarget::Reg(callee) => {
+                cx.tail_branch_here(index, dwarf);
+                put(cx, mc::jmp_r(gp(callee)));
+            }
         }
         cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
     }
@@ -477,6 +489,10 @@ pub fn emit_call(
         put(cx, mc::mov_ri(Size::B, Reg::Rax, i64::from(vector_regs)));
     }
     match target {
+        // §5.6.36: `call r11`, the address from `R_X86_64_64` or the GOT.
+        CallTarget::Sym(sym) if crate::common::large(cx)? => {
+            crate::common::far_branch(cx, sym, false)
+        }
         CallTarget::Sym(sym) => put_reloc(cx, mc::call(0), X64Reloc::Plt32, sym, 0),
         CallTarget::Reg(callee) => {
             put(cx, mc::call_r(gp(callee)));

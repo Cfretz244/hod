@@ -50,12 +50,12 @@
 //! call.
 
 use hod_cg::{Access, CgResult, FnCx, SymRef, TlsAccess};
-use hod_ir::{CodeModel, Const, Inst, Intrinsic, SymId, Value, ValueKind};
+use hod_ir::{Const, Inst, Intrinsic, SymId, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Mem, Reg, Seg, Size, Xmm};
 use hod_obj::X64Reloc;
 
-use crate::common::{CODE_MODEL, RSP, add_addend, deferred_first, gp, put, put_reloc, unsupported};
+use crate::common::{RSP, add_addend, deferred_first, gp, put, put_reloc};
 use crate::target::X64;
 
 /// The group's refusal before WP-134; no lowering returns it any more
@@ -222,8 +222,8 @@ fn tls_symbol(cx: &FnCx<'_, X64>, ptr: Value) -> Option<(SymId, i64)> {
 /// static models and anything else are the operand's own sequence.
 ///
 /// # Errors
-/// [`CODE_MODEL`] for a code model other than small; `Internal` for an
-/// operand list the verifier rejects.
+/// [`CODE_MODEL`](crate::common::CODE_MODEL) for a code model other than small and large;
+/// `Internal` for an operand list the verifier rejects.
 pub fn intrinsic<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -249,9 +249,9 @@ pub fn intrinsic<'a>(
                 cx.put(ptr, rd)?;
                 return cx.finish(inst, rd);
             };
-            if cx.options.code_model(cx.module) != CodeModel::Small {
-                return unsupported(CODE_MODEL);
-            }
+            // The large code model's sequences are the small model's, as
+            // `llc` 19 and 22 write them (§5.6.36).
+            crate::common::large(cx)?;
             cx.displace_all()?;
             let rd = cx.def_reg(inst)?;
             dynamic_pair(cx, sym, model)?;
