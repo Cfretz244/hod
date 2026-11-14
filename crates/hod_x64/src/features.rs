@@ -507,9 +507,118 @@ pub fn uses_x86_fp80(module: &hod_ir::Module, body: &hod_ir::Body) -> bool {
         })
 }
 
+/// An AVX-512 family an intrinsic needs (WP-208, `spec/codegen.md`
+/// §5.6.35): the feature of clang's header function, with
+/// [`Avx512::Vl`] too for a 128- or 256-bit form.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Avx512 {
+    /// `avx512f`.
+    F,
+    /// `avx512vl`.
+    Vl,
+    /// `avx512bw`.
+    Bw,
+    /// `avx512dq`.
+    Dq,
+    /// `avx512vbmi2`.
+    Vbmi2,
+}
+
+/// The items that turned off turn off `avx512f`: it and what it implies.
+const AVX512F_NEEDS: &[&[u8]] = &[
+    b"avx512f", b"avx2", b"avx", b"fma", b"f16c", b"sse4.2", b"sse4.1", b"ssse3", b"sse3", b"sse2",
+    b"sse",
+];
+
+impl Avx512 {
+    /// Whether item `name` (without its sign), turned on, turns this
+    /// family on: its own feature and those that imply it in `llc` 19
+    /// and 22. AVX10 is not counted (clang writes the AVX-512 features
+    /// it implies), so an AVX10 name alone refuses.
+    pub fn implied_by(self, name: &[u8]) -> bool {
+        match self {
+            Avx512::F => name.starts_with(b"avx512"),
+            Avx512::Vl => matches!(name, b"avx512vl" | b"avx512fp16"),
+            Avx512::Bw => matches!(
+                name,
+                b"avx512bw"
+                    | b"avx512vbmi"
+                    | b"avx512vbmi2"
+                    | b"avx512bitalg"
+                    | b"avx512bf16"
+                    | b"avx512fp16"
+            ),
+            Avx512::Dq => matches!(name, b"avx512dq" | b"avx512fp16"),
+            Avx512::Vbmi2 => name == b"avx512vbmi2",
+        }
+    }
+
+    /// Whether item `name`, turned off, turns this family off: its own
+    /// feature, or one it needs.
+    pub fn disabled_by(self, name: &[u8]) -> bool {
+        let own = match self {
+            Avx512::F => b"avx512f".as_slice(),
+            Avx512::Vl => b"avx512vl",
+            Avx512::Bw => b"avx512bw",
+            Avx512::Dq => b"avx512dq",
+            Avx512::Vbmi2 => b"avx512vbmi2",
+        };
+        name == own
+            || (self == Avx512::Vbmi2 && name == b"avx512bw")
+            || AVX512F_NEEDS.contains(&name)
+    }
+
+    /// Whether `features` (a `target-features` string) enable this
+    /// family: the last item that turns it on or off decides; without one
+    /// it is off (a `target-cpu` alone does not count, as for WP-202's).
+    pub fn enabled(self, features: &[u8]) -> bool {
+        let mut on = false;
+        for item in features.split(|&b| b == b',') {
+            match item.split_first() {
+                Some((b'+', name)) if self.implied_by(name) => on = true,
+                Some((b'-', name)) if self.disabled_by(name) => on = false,
+                _ => {}
+            }
+        }
+        on
+    }
+}
+
+/// Whether `features` turn `evex512` off (the last `evex512` item is
+/// `-evex512`): the 512-bit forms are then not available (§5.6.35).
+pub fn evex512_off(features: &[u8]) -> bool {
+    features.split(|&b| b == b',').rfind(|item| item.get(1..) == Some(b"evex512"))
+        == Some(b"-evex512")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avx512_families() {
+        let on = |f: Avx512, s: &str| f.enabled(s.as_bytes());
+        assert!(!on(Avx512::F, ""));
+        assert!(on(Avx512::F, "+avx2,+avx512f"));
+        assert!(on(Avx512::F, "+avx512bw"));
+        assert!(!on(Avx512::F, "+avx512f,-avx2"));
+        assert!(on(Avx512::F, "-avx512f,+avx512dq"));
+        assert!(!on(Avx512::Vl, "+avx512f"));
+        assert!(on(Avx512::Vl, "+avx512vl"));
+        assert!(!on(Avx512::Vl, "+avx512vl,-avx512f"));
+        assert!(on(Avx512::Bw, "+avx512vbmi"));
+        assert!(!on(Avx512::Bw, "+avx512bw,-avx512bw"));
+        assert!(!on(Avx512::Bw, "+avx512dq"));
+        assert!(on(Avx512::Dq, "+avx512fp16"));
+        assert!(!on(Avx512::Vbmi2, "+avx512bw"));
+        assert!(!on(Avx512::Vbmi2, "+avx512vbmi2,-avx512bw"));
+        assert!(on(Avx512::Vbmi2, "+avx512vbmi2"));
+        // AVX10 alone is not counted.
+        assert!(!on(Avx512::F, "+avx10.1-512"));
+        assert!(!evex512_off(b"+avx512f"));
+        assert!(evex512_off(b"+avx512f,-evex512"));
+        assert!(!evex512_off(b"-evex512,+evex512"));
+    }
 
     fn reason(features: &str) -> Option<&'static str> {
         check(features).err().map(|refused| refused.reason)

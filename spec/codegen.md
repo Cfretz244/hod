@@ -4396,6 +4396,86 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    for the vector's lanes, and a call whose operands are not the
    intrinsic's (`x64:vector-op`). AArch64 does not build them yet.
    Execution evidence: on the emulator against `llc` 22 and 19.
+2. **The AVX-512 F, VL, BW and DQ names** of the census (design 0007
+   §5.1: the `llvm.x86.avx512.*` names clang 19 and 22 write at `-O0`
+   for the header functions that are not plain IR) and the VBMI2
+   compresses, which share F's overloaded `llvm.x86.avx512.mask.compress`
+   (`crates/hod_x64/src/x86/avx512.rs`; matrix rows `never(X64_ONLY)` /
+   `on(X86_SSE)`, note `AVX-512 (WP-208)`). Each is accepted only in a
+   function whose `target-features` enable its family
+   (`features::Avx512`: `avx512f`, `avx512bw`, `avx512dq`,
+   `avx512vbmi2`; the last item that turns it on or off decides, a
+   feature that implies it counts, one it needs turned off turns it off,
+   an AVX10 name alone does not count), `avx512vl` too for a 128- or
+   256-bit form (but `rcp14.sd`/`rsqrt14.sd`), and not `-evex512` (the
+   last `evex512` item) for a 512-bit one; it is refused by its name
+   otherwise (`intrinsic:` and the name, without the type suffix for
+   `mask.compress`). With them hod writes the EVEX instruction `llc -O0`
+   selects:
+   - each distinct vector operand is copied into its own register from
+     `zmm17` up (`vmovdqu64`, from its `xmm` or its slot), the result is
+     computed into `zmm16` and copied to its `xmm` or its slot. A slot is
+     addressed as `[r11]` after `lea`: a local's `[rbp + disp32]` is
+     shortened to a raw `disp8` once the frame is laid out (§5.6.17),
+     which EVEX would scale by `N`. hod's pool holds no value in
+     `zmm16`..`zmm31` or an opmask register; all are caller-saved, and
+     `vzeroupper` is not written (no value of hod's lives in an upper
+     half);
+   - a mask goes to `k1` (`kmovw`; `kmovd`/`kmovq` for 32 and 64 lanes),
+     a constant one through `r11`; a constant whose lanes the instruction
+     reads are all set is no mask. The destination is first the
+     pass-through (merging), or is zeroed (`{z}`) when the pass-through
+     is `zeroinitializer`, `undef` or `poison` (`llc` merges into what the
+     register holds for some of them: a refinement of `undef`);
+   - the rounding operand: 4 none; `{sae}` 8 or 12 where the name has
+     `{sae}`; `{rn-sae}`..`{rz-sae}` 8..11 where it has `{er}`; another
+     value is refused (`x64:x86-intrinsic-signature`; `llc` does not
+     select it either). An immediate is its low byte;
+   - the operand order is the instruction's: `permvar`'s index first
+     (`vpermps dst, idx, a`), `vpermi2var` into `a` (`vpermt2*`),
+     `vfmaddsub` into `b` (`vfmaddsub213*`), `pternlog` into `a`;
+   - a shift by a constant count folds as `llc`: 0 is the source, a count
+     at or above the element width is zero for a logical shift (`pxor`,
+     or `r11` zero stored) and the width less one for an arithmetic one;
+     a variable count goes through `xmm15` (`movd`) to the shift by a
+     vector count;
+   - `fpclass` writes `k0`, its `<N x i1>` result (class `Gpr`) is
+     `kmovw`'s zero-extension; `mask.compress` with every lane set is the
+     source.
+
+   Refused as `x64:x86-intrinsic-signature`: a call whose operands are
+   not vectors of 16, 32 or 64 bytes of 8- to 64-bit lanes in the class
+   of their size, a pass-through of another type than the result, a
+   mask that is not an integer or `<N x i1>`, an immediate that is not a
+   constant, or a name's length (`.128`, `.256`, `.512`) that is not the
+   vectors'. As in §5.6.33 the element type itself is not checked. The
+   rows are x86-64 ones; AArch64 refuses them.
+
+   **Evidence.** For every name, every operand as usual and then one at
+   a time another way (constant masks -1, 5, every lane, 0; a zero and
+   an undefined pass-through; each rounding; immediates 0, 0xff, 0x1a5;
+   counts 0, 1, width - 1, width, 255, 256, -1 and a variable one): 802
+   functions, whose stored bytes, as a tree of instructions over the
+   inputs (a symbolic interpreter of `llvm-objdump` listings, which
+   normalizes constant masks, undefined merges, zero idioms and moves),
+   are under hod (plain and under every stress option) those of `llc -O0`
+   22's or 19's code (`llc` 22 folds some constant masks into blends and
+   shuffles where 19 and hod keep the masked instruction); the
+   interpreter catches ten kinds of deliberate change to `llc` 22's
+   listings; and the encoder agrees with LLVM's assembler and
+   disassembler (`spec/mc-x64.md`, EVEX). **No name has execution
+   evidence yet**: the execution test (`avx512_names_agree_with_llc_on_hardware`)
+   links hod's and `llc` 22's functions with a C driver into one static
+   program and runs it with the command `HOD_X64_AVX512_RUNNER` names
+   (the program appended; `native` runs it directly), comparing the
+   bytes on random inputs, small floats and doubles and special values,
+   skipping a function whose features the CPU lacks
+   (`__builtin_cpu_supports`) and failing when it skips all. Without the
+   variable it only links the program, **also under
+   `HOD_REQUIRE_TOOLS=1`**: no emulator on the hosts of this suite
+   executes AVX-512 (QEMU's user mode models none), so the variable is
+   the one way to run it, on an AVX-512 host:
+   `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
 
 ## 6. Control flow
 
