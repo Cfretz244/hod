@@ -385,7 +385,8 @@ refuses it as ambiguous. Families:
 - `set<cc>`, `cmov<cc>`, `jmp` and `j<cc>` to a numeric local label;
 - SSE: `adds/subs/muls/divs/sqrts/mins/maxs` `s`/`d`, `andp andnp orp
   xorp ucomis comis` `s`/`d`, `movss movsd movaps movapd movups movupd
-  movdqa movdqu movd movq cvtss2sd cvtsd2ss`.
+  movdqa movdqu movd movq cvtss2sd cvtsd2ss`;
+- the instructions of the census, §13.
 
 Where LLVM chooses among encodings of one written form (`xchg` with
 `%rax`, the short immediate forms, `movq $imm` as `movabs`), hod's
@@ -397,8 +398,10 @@ constructor makes the same choice. Another mnemonic is
 - **Prefixes**: `lock` before an instruction `hod_mc_x64` marks
   lockable (a read-modify-write of memory), in the same statement (`F0` after an
   operand-size `66`, as LLVM writes it) or alone (`F0` first). `rep`
-  (`repe`, `repz`) before `movs[bwlq]`, `stos[bwlq]` or `nop`
-  (`pause`). Any other pairing, or a prefix last, is `asm:operand/form`.
+  (`repe`, `repz`; `F3`) and `repne` (`repnz`; `F2`) before a string
+  instruction without operands or `nop` (§13), joined or alone: the
+  prefix byte first either way. Any other pairing, or a prefix last, is
+  `asm:operand/form`.
 - **Data**: `.byte`, `.short`/`.value`/`.word`/`.2byte`,
   `.long`/`.int`/`.4byte`, `.quad`/`.8byte` of constants that fit the
   field, signed or unsigned (`asm:operand/range`).
@@ -422,7 +425,8 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   with x86's codes: `r`, `l`, `q` (any general register), `Q` (`rax`,
   `rcx`, `rdx`, `rbx`), `R` (the legacy eight), `x`, `v` (SSE), `m`,
   `o`, `X`, `i`, `n`, `e`, `Z`, `I`..`O` (ranged immediates), `{reg}`,
-  `{@cc<cond>}`, digits, `|` alternatives, `=`, `+`, `&`, `*`, `%`.
+  `{@cc<cond>}`, `Ws` (clang's `^Ws`) and `s` (a symbol plus a constant
+  offset, §13), digits, `|` alternatives, `=`, `+`, `&`, `*`, `%`.
   `llc` refuses `a`, `b`, `c`, `d`, `S`, `D` and `g` in IR (front ends
   write `{ax}` and `imr`), so hod refuses them as
   `asm:constraint/<letter>`; so is `A`, `t`, `u`, `f`, `y`, `p`.
@@ -437,3 +441,203 @@ The lowering is `spec/codegen.md` §5.6.28. In short:
   `x64:inline-asm`; a bundle `x64:inline-asm-bundle`.
 
 Tests: `crates/hod_x64/tests/inline_asm.rs` (§5.6.28).
+
+## 12. Real-project system-register reads; `callbr` results on AArch64 (WP-196)
+
+- The system-register reads kiln writes for real projects on AArch64
+  (abseil's `UnscaledCycleClock::Now`/`Frequency`: `mrs $0, cntvct_el0`
+  and `mrs $0, cntfrq_el0` in a `sideeffect` template with one `=r`
+  output; `crc_internal::GetCpuType`: `mrs $0, MIDR_EL1`, upper case,
+  without `sideeffect`; `optnone` functions with
+  `+fp-armv8,+neon,+outline-atomics,+v8a,-fmv`) are §5.4's and compile
+  strict; the template's word is `llc`'s up to the general register the
+  allocator chose. Test: `crates/hod_a64/tests/sysreg_asm.rs`
+  `kiln_shapes_compile_with_llc_s_words`.
+- A `callbr` result defined again on an indirect edge (§6,
+  `spec/codegen.md` §5.5.3) is released after that edge's `phi` copies:
+  a register result whose only uses were on another edge (a loop
+  header's `phi`) no longer stays in a register at the end of the block.
+  Test: `crates/hod_a64/tests/callbr_phi.rs` (`loop_reg`, built by hod
+  plain and stressed and by `llc` 19 and 22, linked and run).
+
+## 13. The x86-64 census (WP-199)
+
+The mnemonics and operand forms of §10 were chosen from the templates
+real code writes: the x86-64 real-project lane's modules (each `call asm`
+of `.build/corpus-x64` and the lane's saved findings) and the templates
+of widely used sources (the C library's and the compilers' headers,
+abseil, protobuf, the sanitizer and OpenMP runtimes, LLVM's own). The
+census is `crates/hod_asm/tests/census_x64.rs`: each body as it reads
+once its operands are substituted, where it is written, how many
+templates of that shape were found, and what hod does with it; every
+accepted body is `llvm-mc` 22's and 19's bytes. The record
+(`spec/landed/codegen/WP-199.md`) has the table.
+
+**Added** (each encoded as `llvm-mc` encodes it, `tests/llvm_mc_x64.rs`):
+
+- the prefetches `prefetchnta`, `prefetcht0`..`t2`, `prefetch`,
+  `prefetchw`, `prefetchwt1`; the flushes `clflush`, `clflushopt`,
+  `clwb`; `fxsave`/`xsave` and their family (`..64` forms);
+- `nop{w,l,q}` with a register or memory operand (`nop` with a register
+  takes its size from it; with memory and no suffix it is
+  `asm:operand/form`, ambiguous to LLVM too);
+- without operands: `rdmsr`, `wrmsr`, `rdpmc`, `xsetbv`, `xend`,
+  `xtest`, `rdpkru`, `wrpkru`, `serialize`, `endbr64`, `enclu`,
+  `encls`, `enclv`, `pconfig`, `fnclex`, `fninit`, `clc`, `stc`, `cmc`,
+  `lahf`, `sahf`, `cli`, `sti`; `hreset $imm`;
+- `fnstsw` (no operand, `%ax`, memory), `fnstenv`, `fldenv`, `fnsave`,
+  `frstor`, `stmxcsr`, `ldmxcsr`; the waiting forms `fstcw`, `fstsw`,
+  `fstenv`, `fsave`, `fclex`, `finit`, each `9B` and the form without
+  the wait (LLVM writes two instructions; the bytes are the same);
+- `in`/`out` of `al`/`ax`/`eax` with `%dx` or an 8-bit port;
+- `crc32{b,w,l,q}` of registers, the byte source into a 64-bit
+  destination included (a memory source is `asm:operand/form`);
+- `addp subp mulp divp sqrtp minp maxp unpcklp unpckhp` `s`/`d`;
+- `rdrand`, `rdseed`, `rdpid`, `rd`/`wr` `fs`/`gs` `base`;
+- the string instructions `movs stos lods scas cmps` `b`/`w`/`l`/`q`
+  without operands (and `movsd` as `movsl`; `stosd`, `lodsd`, `scasd`,
+  `cmpsd` are not their names to LLVM), alone or after `rep`/`repe`/
+  `repz`/`repne`/`repnz`.
+
+**CPU features.** `llc`'s assembler takes every mnemonic whatever the
+function's `target-features` (it assembles `prefetchw`, `crc32b`,
+`clwb`, `rdrand` with none), so hod checks no feature for a template.
+
+**Stays refused**, with the census's count of templates that need it:
+
+| form | refusal | templates |
+|---|---|---|
+| `.cfi_*` in a body (valgrind's `CALL_FN_*`) | `asm:directive/cfi_remember_state` | 15 |
+| a call or branch to a symbol (`call __bolt_fini_trampoline`): taken since WP-204, §14 | — | 3 |
+| the control registers (`mov %cr3, %rax`) | `asm:operand/register` | 2 |
+| AVX (`vdivpd`) | `asm:mnemonic/v*` | 2 |
+| an indirect branch or call (`jmpq *%rdx`, `call *%rax`) | `asm:operand/form` | 2 |
+| a symbol in an immediate (`movabsq $__hot_end, %rcx`) | `asm:operand/symbol` | 1 |
+| a difference of labels in data (`.long 1f-1b-6`) | `asm:operand/expression` | 1 |
+| `lea` with `@gotpcrel` (LLVM 19 and 22 differ) | `asm:operand/specifier` | 0 |
+| `inteldialect` | `x64:inline-asm-intel` | 0 |
+
+The x87 register operands (`fsqrt` with `=t`, `fpatan` with `{st}`,
+found in 4 templates) were refused before the body is read, as
+`asm:constraint/t`, `asm:constraint/st` (§11); since WP-204 `{st}` and
+`{st(1)}` are taken (§14). With both, the census's count is 201 of 220
+templates (197 bodies of `census_x64.rs`, and the 4 x87 templates).
+
+**Symbol operands (`Ws`).** protobuf's `port.h` (x86-64 Linux, clang 19
+and up) keeps a type's default instance alive with
+`asm(".reloc ., BFD_RELOC_NONE, %p0" :: "Ws"(&instance))`; front ends
+write the constraint `Ws` (kiln) or `^Ws` (clang), and `llc` reads both.
+The census's template 220. hod takes:
+
+- **The operand**: a global (`ptr @g`), or a constant `getelementptr`
+  of one (`@g` plus a byte offset). Any other value is
+  `asm:constraint/s`. A symbol whose name needs quoting, or a private
+  one (`llc` prints `.L` names hod's object does not keep), is
+  `asm:operand/symbol`. `s` alone reads the same; `Wd` and `s` are
+  refused by clang for x86, so no front end writes them.
+- **Printing**, as `llc` 22 and 19 print it: `$0` is `$g+8`; `${0:p}`,
+  `${0:c}` and `${0:P}` are `g+8` (no offset when it is 0, `g-4` when it
+  is negative). `${0:a}` is `asm:modifier/a` (LLVM 19 prints `g-4`,
+  LLVM 22 `g-4(%rip)`); other modifiers are refused as for registers.
+  `i` with a symbol stays `asm:operand/symbol` (§13 table).
+- **`.reloc ., BFD_RELOC_NONE, sym+off`** (or `R_X86_64_NONE`): an
+  `R_X86_64_NONE` relocation at the current offset, with the addend, and
+  no bytes. Another offset than `.` is `asm:operand/expression`; another
+  relocation kind is `asm:directive/reloc`; a local label as the target
+  is `asm:operand/symbol`.
+
+The relocations are `llc` 22's and 19's (PIC in
+`symbol_fields_are_llcs_relocations`; static too in the record's
+check); `leaq ${1:p}(%rip), %rax` with
+`Ws` is `llc`'s bytes and relocation (`forced_ws_address`). One
+difference: `llc` 22 given clang's `^Ws` for a static build writes the
+`.reloc` of `@g` plus 8 without the 8 when the IR is clang's; kiln's `Ws`
+and every PIC build keep it, as hod does always.
+
+On AArch64 the same header writes the plain `asm("" :: "r"(p))` (its
+`.reloc` path is x86-64 only); the `S` constraint stays
+`asm:constraint/s` there.
+
+## 14. x86-64 leftovers: module assembly, calls, x87 operands (WP-204)
+
+**Module-level assembly on x86-64** (`module.rs` `assemble_module_x64`,
+`hod_cg::emit::module_asm`). §9's directives, sections, symbols and data
+on x86-64, with the x86 spellings: `.word` and `.value` are 2 bytes,
+`.align` takes bytes, `.hword`/`.xword` are unknown (`asm:directive/*`,
+as to `llvm-mc`); code sections align to 1 and pad with LLVM's nops (at
+most 15 bytes each, longest first). Instructions are §10's, plus `ret`,
+`leave` and the x87 instructions without operands. Data relocations are
+`R_X86_64_64`, `_32`, `_16`; instruction fields are §10.2's, resolved as
+LLVM's assembler resolves them: a `%rip` field or a branch to a label
+of local binding in the same section is filled in; to such a label
+elsewhere it is relocated against the section with the label's offset
+in the addend; a GOT field keeps the symbol (a `.L` name is
+`asm:symbol`). Branches relax as LLVM's do: short until out of reach or
+relocated, iterated to the least fixed point. `asm::check` admits
+x86-64; the classify row `module:asm` is on for both targets.
+
+**`.symver name, base@V`** (`@`, `@@`, `@@@`; x86-64 only, AArch64 still
+refuses it as `asm:directive/symver`), applied after every module
+symbol is defined, as `llvm-mc` 19 and 22 do: a defined name gets an
+alias `base@V` (`base@@V`) with its section, value, size, type, binding
+and visibility, the name kept; `@@@` renames a defined name `base@@V`;
+an undefined name is renamed `base@V` (`@` and `@@@`), so what refers to
+it refers to the version; an undefined unreferenced name writes nothing.
+An undefined name with `@@` (an LLVM error) is `asm:symbol`; so is a
+`.L` name. The symbols' order in `.symtab` is not `llc`'s (sets agree).
+
+**A call or branch to a symbol** in a template or module text (`call
+S`, `jmp S`, `jcc S`, `S@PLT`): the near form. The field is
+`R_X86_64_PLT32` (addend −4) for a symbol alone or with `@PLT` (plus any
+addend), `R_X86_64_PC32` for any other expression (`S+0` included), as
+`llvm-mc` writes them. In a template, a symbol the module lacks is
+`asm:symbol`; one of local binding is relocated against its section
+(`llc` fills the displacement in: the same target). `call S@GOTPCREL`,
+`lock call`, `callw` and a constant target stay refused
+(`asm:operand/form`, `asm:mnemonic/callw`). **The stack rule**: hod's
+frame has `rbp`, `rsp` is 16-byte aligned at every template and nothing
+of hod's lives below it, so a call needs nothing more; the callee's
+clobbers are the template's to declare (`call_symbol` in
+`tests/data/inline_asm` checks the callee's alignment).
+
+**x87 operands** (`hod_x64::barrier::template`): `{st}` (`{st(0)}`) and
+`{st(1)}` as inputs, outputs and clobbers, of `float`, `double` and
+`x86_fp80`, as LLVM's `X86FloatingPoint` reads inline assembly: the
+inputs are pushed deepest first (`fld`), the template runs, the outputs
+are popped from `st(0)` upward (`fstp`), then the inputs the template
+did not pop (those neither written nor clobbered) are popped. Inputs,
+outputs and popped inputs must each be `st(0)` upward; another set is
+`asm:constraint/st`. `$N` of one prints `%st` / `%st(1)`. `t` and `u`
+are `llc` errors in IR ("couldn't allocate output register") and stay
+`asm:constraint/t`, `asm:constraint/u`; `{st(2)}` and deeper are
+`asm:constraint/other`; `{st}` of another type is
+`x64:inline-asm-operand-type`. Instructions with `%st(i)` operands
+(`fadd %st(1), %st`) stay `asm:operand/register`.
+
+**Empty templates** that one barrier effect cannot express (several
+outputs, an output of another type than its tied input, a pointer tied
+to an `i32` output stored through it, an `i1` input) go through the
+template lowering with no bytes: inputs into registers, outputs from
+them. Tied integers of different sizes share a register (the output's
+width is stored); an `i1` is a byte, masked to bit 0.
+
+**Stays refused**, by name, with the count in the x86-64 corpus's asm
+modules (176) and the census (220):
+
+| form | refusal | corpus | census |
+|---|---|---|---|
+| `.cfi_*` in a template (valgrind's `CALL_FN_*`) | `asm:directive/cfi_*` | 0 | 15 |
+| a `callbr` with a template (`asm goto`, `jmp ${0:l}`) | `x64:inline-asm` | 2 | 0 |
+| the control registers | `asm:operand/register` | 0 | 2 |
+| AVX | `asm:mnemonic/v*` | 0 | 2 |
+| an indirect branch or call | `asm:operand/form` | 0 | 2 |
+| a symbol in an immediate | `asm:operand/symbol` | 0 | 1 |
+| a difference of labels in data | `asm:operand/expression` | 0 | 1 |
+| x87 `t`, `u` letters (`llc` errors) | `asm:constraint/t`, `/u` | 0 | 0 |
+| an x87 register operand in an instruction | `asm:operand/register` | 0 | 0 |
+| `.symver` of an undefined name with `@@` | `asm:symbol` | 0 | 0 |
+
+`.cfi_*` in a body needs two changes outside the assembler: `hod_eh`'s
+CFI program has no remember/restore state, and the x86-64 prologue
+writes its callee-saved rows after the body, which `cfi_at`'s ordering
+refuses (WP-204's record).

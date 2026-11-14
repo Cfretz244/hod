@@ -783,9 +783,8 @@ does not use it.
 **Not provided** here: the integer-operand arithmetic (`fiadd` and the
 others), `fcom`/`fcomp` with a memory operand, `fist`/`fistp` to 8 bits
 (they do not exist), `fisttp` (SSE3), `fnstsw m16`, `fnstenv`/`fldenv`/
-`fnsave`/`frstor`, `fxsave`, the transcendental instructions (`fsin`,
-`fptan`, `fyl2x` and the others), `fscale`, `fxtract`, the waiting forms
-(`fstcw`, `fstsw`, `fclex`, `finit`, `fwait`) and `ffree`.
+`fnsave`/`frstor`, `fxsave`, the waiting forms (`fstcw`, `fstsw`,
+`fclex`, `finit`, `fwait`) and `ffree`.
 
 **Tests.** Three groups of `tests/l1`, by the method of "Test method"
 below: `x87` (every stack register in every register form, every
@@ -805,6 +804,29 @@ an 8-bit operand numbered 4 to 7, in each position, gets the REX prefix
 `40` (and an operand-size prefix, if any, before it), operands numbered 0
 to 3 get none, and LLVM's disassembler, at every major, reads `spl`,
 `bpl`, `sil`, `dil` where intended and never `ah`, `ch`, `dh`, `bh`.
+
+**The other instructions without operands** (WP-204), for inline and
+module assembly (`spec/asm.md` §14); the code generator does not use
+them. Each is `const fn() -> Inst`, `D9` and one byte, with no prefix, no
+REX and no failure; the operation is the Intel SDM's. Tested as the fixed
+forms of `x87` above and in `table`.
+
+| constructor | bytes | operation |
+|---|---|---|
+| `fnop()` | `D9 D0` | nothing |
+| `ftst()` | `D9 E4` | compare `st(0)` with `+0.0` into C0, C2, C3 |
+| `fxam()` | `D9 E5` | classify `st(0)` into C0, C2, C3 (C1: the sign) |
+| `fld1()`, `fldl2t()`, `fldl2e()`, `fldpi()`, `fldlg2()`, `fldln2()`, `fldz()` | `D9 E8` … `D9 EE` | push `1`, `log2(10)`, `log2(e)`, `pi`, `log10(2)`, `ln(2)`, `+0.0` (`fld1`, `fldz` above) |
+| `f2xm1()` | `D9 F0` | `st(0) = 2^st(0) - 1` |
+| `fyl2x()` | `D9 F1` | `st(1) = st(1) * log2(st(0))`, then pop |
+| `fptan()` | `D9 F2` | `st(0) = tan(st(0))`, then push `1.0` |
+| `fpatan()` | `D9 F3` | `st(1) = atan2(st(1), st(0))`, then pop |
+| `fxtract()` | `D9 F4` | `st(0)` = its exponent, then push its significand |
+| `fdecstp()`, `fincstp()` | `D9 F6`, `D9 F7` | the stack top minus, plus one (no tag changes) |
+| `fyl2xp1()` | `D9 F9` | `st(1) = st(1) * log2(st(0) + 1)`, then pop |
+| `fsincos()` | `D9 FB` | `st(0) = sin(st(0))`, then push `cos` of the old `st(0)` |
+| `fscale()` | `D9 FD` | `st(0) = st(0) * 2^trunc(st(1))` |
+| `fsin()`, `fcos()` | `D9 FE`, `D9 FF` | `st(0) = sin(st(0))`, `cos(st(0))` |
 
 ## Processor state and extensions
 
@@ -829,22 +851,155 @@ which). Each is checked against `llvm-mc` 19 and 22 like the rest
 | `crc32_rr(size, dst, src)` | `F2 [66] [REX] 0F 38 F0 /r` (`src` a byte register; `REX` for `spl`..`dil`), `F1 /r` otherwise; `dst` 32 bits, 64 with `REX.W` for `Q` | |
 | `bmi_rrr(op: Bmi, size, dst, x, y)` | three-byte VEX (`C4`, map `0F38`, `L` 0, `W` for `Q`): `BEXTR` `F7`, `BZHI` `F5` (`x` in `ModRM.rm`, `y` in `vvvv`); `PDEP` `F2.F5`, `PEXT` `F3.F5` (`x` in `vvvv`, `y` in `ModRM.rm`); operands in Intel's order | `size` `D` or `Q` |
 
+## Inline assembly
+
+The instructions only inline assembly writes (WP-199, `src/inline.rs`;
+`spec/asm.md` §13 has the census that chose them). Each is checked
+against `llvm-mc` 19 and 22 like the rest (`tests/l1/inline.rs`).
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `prefetch_m(op: Prefetch, m)` | `PREFETCHNTA`/`T0`/`T1`/`T2` `0F 18 /0`..`/3`; `PREFETCH`/`PREFETCHW`/`PREFETCHWT1` `0F 0D /0`, `/1`, `/2` | |
+| `nop_r(size, r)`, `nop_m(size, m)` | `NOP r/m` `[66] [REX.W] 0F 1F /0` | `size` not `B` |
+| `in_dx(size)`, `in_i(size, port: u8)` | `IN` `EC`/`ED`, `E4`/`E5 ib` (`66` for `W`) | `size` not `Q` |
+| `out_dx(size)`, `out_i(size, port: u8)` | `OUT` `EE`/`EF`, `E6`/`E7 ib` (`66` for `W`) | `size` not `Q` |
+| `string_op(op: StringOp, size)` | `MOVS` `A4`, `STOS` `AA`, `LODS` `AC`, `SCAS` `AE`, `CMPS` `A6`; `+1` and `[66]`/`REX.W` above a byte; no repeat prefix (the caller's byte before it, as LLVM writes `rep` as an instruction of its own) | |
+| `fnstsw_m(m)`, `fnstenv_m(m)`, `fldenv_m(m)`, `fnsave_m(m)`, `frstor_m(m)` | `DD /7`, `D9 /6`, `D9 /4`, `DD /6`, `DD /4` | |
+| `crc32_q_rb(dst, src)` | `CRC32 r64, r/m8` `F2 REX.W 0F 38 F0 /r`, register source | |
+| `rdmsr()`, `wrmsr()` | `0F 32`, `0F 30` | |
+| `enclu()`, `encls()`, `enclv()`, `pconfig()` | `0F 01 D7`, `CF`, `C0`, `C5` | |
+| `hreset(imm: u8)` | `F3 0F 3A F0 C0 ib` | |
+| `clc()`, `stc()`, `cmc()`, `lahf()`, `sahf()`, `cli()`, `sti()` | `F8`, `F9`, `F5`, `9F`, `9E`, `FA`, `FB` | |
+
+The waiting x87 forms (`fstcw`, `fstsw`, `fstenv`, `fsave`, `fclex`,
+`finit`) are `fwait` and the form that does not wait, two instructions;
+the assembler writes both (`spec/asm.md` §13).
+
+## SSE4 and the extensions of the `0F38`/`0F3A` maps
+
+The legacy-encoded instructions of the three-byte maps that the x86
+target intrinsics past SSSE3 use (WP-202, `src/sse4.rs`;
+`spec/codegen.md` §5.6.33 says which function may use which), on
+`xmm` operands, the memory operand 128 bits but where a row says
+otherwise. Swept against `llvm-mc` 19 and 22 (`tests/l1/avx.rs`,
+group `three-byte-maps`).
+
+| constructor | encodes |
+|---|---|
+| `ext_rr(op: Ext, dst, src)`, `ext_rm(op, dst, m)` | `[66] [REX] 0F 38 op /r`: `PACKUSDW` `2B`, `PTEST` `17`, `PHMINPOSUW` `41`, `PMULDQ` `28`, `AESENC` `DC`, `AESENCLAST` `DD`, `AESDEC` `DE`, `AESDECLAST` `DF`, `AESIMC` `DB`, `GF2P8MULB` `CF` (all `66`); `SHA1NEXTE` `C8`, `SHA1MSG1` `C9`, `SHA1MSG2` `CA`, `SHA256RNDS2` `CB` (third operand `xmm0`), `SHA256MSG1` `CC`, `SHA256MSG2` `CD` (no prefix) |
+| `ext_rri(op: ExtImm, dst, src, imm8)`, `ext_rmi(op, dst, m, imm8)` | `[66] [REX] 0F 3A op /r ib`: `ROUNDPS` `08`, `ROUNDPD` `09`, `ROUNDSS` `0A` (m32), `ROUNDSD` `0B` (m64), `INSERTPS` `21` (m32), `DPPS` `40`, `DPPD` `41`, `MPSADBW` `42`, `PCLMULQDQ` `44`, `PCMPESTRM` `60`, `PCMPESTRI` `61`, `PCMPISTRM` `62`, `PCMPISTRI` `63` (lengths in `eax`/`edx`, index to `ecx`, mask to `xmm0`), `AESKEYGENASSIST` `DF`, `GF2P8AFFINEQB` `CE`, `GF2P8AFFINEINVQB` `CF` (all `66`); `SHA1RNDS4` `CC` (no prefix) |
+
+## VEX
+
+The VEX-encoded instructions (WP-202, `src/avx.rs`): AVX, AVX2, FMA,
+F16C and the VEX forms of GFNI and PCLMULQDQ, at 128 bits (`xmm`,
+`VEX.L` 0) or 256 (`ymm`, `VEX.L` 1), the width a [`Width`] operand
+(`X`, `Y`); a vector register is an `Xmm`, its number. The prefix is the
+two-byte `C5` when the instruction is in map `0F`, has `VEX.W` 0 and no
+`X` or `B` bit; the three-byte `C4` otherwise (`R`, `X`, `B` and `vvvv`
+inverted, `vvvv` 1111 when unused). That is the prefix LLVM's assembler
+chooses for the same operands, with two exceptions where it changes the
+instruction to reach `C5` and hod does not: it writes `vmovdqu x, x8..x15`
+as the store form (`7F`), and it swaps the sources of a commutable
+instruction whose second source is `xmm8`..`xmm15` and first is not.
+Both encodings are the same instruction; the sweeps leave those operand
+combinations out (`tests/l1/avx.rs`, group `vex`).
+
+| constructor | encodes | precondition |
+|---|---|---|
+| `v3_rrr(op: V3, width, dst, a, b)`, `v3_rrm(.., m)` | `op dst, a, b/m` (`a` in `vvvv`): map `0F38` `66`: `VPSHUFB` `00`, `VPHADDW`/`D`/`SW` `01`–`03`, `VPMADDUBSW` `04`, `VPHSUBW`/`D`/`SW` `05`–`07`, `VPSIGNB`/`W`/`D` `08`–`0A`, `VPMULHRSW` `0B`, `VPERMILPS`/`PD` `0C`/`0D`, `VPERMPS` `16`, `VPMULDQ` `28`, `VPACKUSDW` `2B`, `VPERMD` `36`, `VPSRLVD`/`Q` `45` (W0/W1), `VPSRAVD` `46`, `VPSLLVD`/`Q` `47`, `VGF2P8MULB` `CF`; map `0F` `66`: `VPACKSSWB` `63`, `VPACKUSWB` `67`, `VPACKSSDW` `6B`, `VPSRLW`/`D`/`Q` `D1`–`D3`, `VPAVGB` `E0`, `VPSRAW`/`D` `E1`/`E2`, `VPAVGW` `E3`, `VPMULHUW` `E4`, `VPMULHW` `E5`, `VPSLLW`/`D`/`Q` `F1`–`F3` (the shifts' `b` is an `xmm` or m128 at both widths), `VPMADDWD` `F5`, `VPSADBW` `F6`; `VMINPS`/`PD` `5D`, `VMAXPS`/`PD` `5F` (none/`66`); `VHADDPD`/`PS` `7C`, `VHSUBPD`/`PS` `7D`, `VADDSUBPD`/`PS` `D0` (`66`/`F2`) | `VPERMD`, `VPERMPS` 256 bits only |
+| `v3_rrri(op: V3Imm, width, dst, a, b, imm8)`, `v3_rrmi` | map `0F3A` `66`: `VPERM2F128` `06`, `VDPPS` `40`, `VDPPD` `41`, `VMPSADBW` `42`, `VPCLMULQDQ` `44`, `VPERM2I128` `46`, `VGF2P8AFFINEQB` `CE` (W1), `VGF2P8AFFINEINVQB` `CF` (W1); `VCMPPS`/`PD`/`SS`/`SD` `0F C2` (the predicate 0–31 the immediate; `SS`/`SD` 128 only, prefix `F3`/`F2`) | `VPERM2F128`, `VPERM2I128` 256 only; `VDPPD` 128 only |
+| `v2_rr(op: V2, width, dst, src)`, `v2_rm` | `op dst, src/m` (`vvvv` 1111): `VPTEST` `0F38 17`, `VTESTPS`/`PD` `0F38 0E`/`0F`, `VCVTPH2PS` `0F38 13` (source `xmm` or m64/m128), `VRSQRTPS` `52`, `VRCPPS` `53`, `VCVTPD2PS` `66 5A`, `VCVTPS2DQ` `66 5B`, `VCVTTPS2DQ` `F3 5B`, `VCVTTPD2DQ` `66 E6`, `VCVTPD2DQ` `F2 E6` (the three from `pd` write an `xmm`), `VMOVDQU` `F3 6F` (load) | |
+| `v2_rri(op: V2Imm, width, dst, src, imm8)`, `v2_rmi` | `VPERMQ` `0F3A 00` W1, `VPERMPD` `01` W1, `VROUNDPS` `08`, `VROUNDPD` `09` | `VPERMQ`, `VPERMPD` 256 only |
+| `vblend_rrrr(op: VBlend, width, dst, a, b, mask)`, `vblend_rrmr` | `VBLENDVPS` `0F3A 4A`, `VBLENDVPD` `4B`, `VPBLENDVB` `4C`, the mask register in `imm8[7:4]` | |
+| `fma_rrr(op: Fma, width, dst, a, b)`, `fma_rrm` | `VFMADDSUB213PS`/`PD` `0F38 A6` (W0/W1), `VFMSUBADD213PS`/`PD` `A7` | |
+| `vmask_load(op: VMask, width, dst, mask, m)`, `vmask_store(op, width, m, mask, src)` | `VMASKMOVPS` `0F38 2C`/`2E`, `VMASKMOVPD` `2D`/`2F`, `VPMASKMOVD`/`Q` `8C`/`8E` (W0/W1) | |
+| `vshift_rri(op: VShift, width, dst, src, imm8)` | `66 0F 71`/`72`/`73 /digit ib`, `dst` in `vvvv`: `VPSRLW` `/2`, `VPSRAW` `/4`, `VPSLLW` `/6` (`71`); `D` the same (`72`); `VPSRLQ` `/2`, `VPSRLDQ` `/3`, `VPSLLQ` `/6`, `VPSLLDQ` `/7` (`73`) | |
+| `vmovdqu_mr(width, m, src)` | `VMOVDQU` store `F3 0F 7F` | |
+| `vpmovmskb_rr(width, r32, src)`, `vmovmskp_rr(double, width, r32, src)` | `66 0F D7`, `0F 50` / `66 0F 50` | |
+| `vcvtps2ph_rri(width, dst, src, imm8)` | `66 0F3A 1D /r ib`, `dst` (an `xmm`) in `ModRM.rm` | |
+| `vzeroupper()` | `C5 F8 77` | |
+| `gather(op: Gather, width, dst, m: Vsib, mask)` (WP-207) | `op dst, [base + index*scale + disp], mask` (`mask` in `vvvv`, a VSIB operand: always a `SIB` byte whose index is a vector register, `VEX.X` its bit 3, index 4 `xmm4`; the shortest displacement, `disp8` 0 for `rbp`/`r13`), map `0F38` `66`: `VPGATHERDD`/`DQ` `90` (W0/W1), `VPGATHERQD`/`QQ` `91`, `VGATHERDPS`/`DPD` `92`, `VGATHERQPS`/`QPD` `93`; `VEX.L` the wider of destination and index (`DQ`/`DPD`: an `xmm` index at both widths; `QD`/`QPS`: an `xmm` destination and mask at both widths) | `dst`, the index and `mask` three distinct registers (the processor's `#UD`) |
+
+The gathers' sweep is group `vex-gathers` (`tests/l1/avx.rs`): every
+member at both widths, every scale, bases `rax`, `rsp`, `rbp`, `rdi`,
+`r8`, `r12`, `r13`, `r15` with no, 8-bit and 32-bit displacements. Its
+assembly text has no size keyword: LLVM 19's Intel parser sizes a VSIB
+operand as the destination (`xmmword ptr`), LLVM 22's as an element
+(`dword ptr`), and both take the operand without one.
+
+## EVEX and the opmask instructions
+
+The EVEX-encoded instructions and the opmask instructions (WP-208,
+`src/evex.rs`; design `docs/design/0007-avx512.md`). A vector register is a
+[`Zmm`], `0..=31` (its `xmm`/`ymm` name at the shorter lengths); the length
+a [`Vl`] (`X`, `Y`, `Z`: `L'L` 00, 01, 10); an opmask register a [`K`]
+(`k0`..`k7`). The prefix is `62 P0 P1 P2`: `P0` = `R X B R' 0 mmm` (the
+four inverted; `X` is bit 4 of a register in `ModRM.rm`), `P1` = `W vvvv 1
+pp` (`vvvv` inverted, 1111 when unused), `P2` = `z L'L b V' aaa` (`V'`
+inverted). A [`Masking`] is `{k}` (merge) or `{k}{z}`; `k0` is no mask, and
+`{z}` with `k0` is refused; the store forms merge only. `b` with a memory
+operand is the broadcast `{1toN}` (element 4 or 8 bytes); with a register
+operand at 512 bits it is rounding: `{rn-sae}`..`{rz-sae}` put the mode in
+`L'L` (members marked ER), `{sae}` leaves `L'L` 00 (members marked SAE);
+each member takes only its own kind, as LLVM's assembler.
+
+**Compressed displacement.** A memory operand's `disp8` is scaled by `N`:
+the vector length for the full-vector tuple, half, a quarter or an eighth
+of it for the narrowing and widening forms, 16 for the shift count, the
+element size for a broadcast or a scalar or compress store. A displacement
+that is a multiple of `N` whose quotient fits in a byte is written as the
+quotient; any other one that is not 0 (or 0 with an `rbp`/`r13` base) as
+`disp32`, as LLVM's assembler.
+
+The constructors take the family member, the length, the masking and the
+operands; the checked ones (`try_*` and the panicking twin) refuse a length
+the member does not have, `{z}` with `k0`, a broadcast on a member without
+one, a rounding the member does not take, and masking on `VPSADBW`.
+
+| constructor | encodes |
+|---|---|
+| `e3_rrr(op: E3, vl, masking, dst, a, b)`, `e3_rrm`, `e3_rrb` (broadcast), `e3_rrr_round(op, masking, dst, a, b, round)` (512 only) | `op dst{k}, a, b` (`a` in `vvvv`): `VMAXPS`/`PD`, `VMINPS`/`PD` (SAE), `VPACKSSDW`/`SSWB`/`USDW`/`USWB`, `VPAVGB`/`W`, `VPMULHRSW`, `VPMULHUW`, `VPMULHW`, `VPSADBW`, `VPSHUFB`, `VPSLLV`/`VPSRAV`/`VPSRLV` `D`/`Q`/`W`, `VPSLL`/`VPSRL`/`VPSRA` `W`/`D`/`Q` by `xmm`/m128, `VPERMD`/`PS`/`Q`/`PD` (256 and 512), `VPERMW`/`B`, `VPERMT2`/`VPERMI2` `D`/`Q`/`PS`/`PD`/`W`/`B`, `VPMULTISHIFTQB`, `VFMADDSUB213PS`/`PD` (ER), `VPADDD`/`Q`, `VPANDD`/`Q`, `VRCP14SD`, `VRSQRT14SD` (128 only) |
+| `e3_rrri(op: E3Imm, ..., imm8)`, `e3_rrmi`, `e3_rrbi` | `VDBPSADBW`, `VPTERNLOGD`/`Q` |
+| `e2_rr(op: E2, vl, masking, dst, src)`, `e2_rm`, `e2_rb`, `e2_rr_round` | `VGETEXPPS`/`PD` (SAE), `VRCP14PS`/`PD`, `VRSQRT14PS`/`PD`, `VCVTPS2DQ`, `VCVTPD2QQ`, `VCVTPD2DQ`, `VCVTPD2PS`, `VCVTQQ2PS`, `VCVTUQQ2PS` (ER), `VCVTTPS2DQ`/`UDQ`/`QQ`/`UQQ`, `VCVTTPD2QQ`/`UQQ`/`DQ`/`UDQ` (SAE); the narrowing ones write half the length, the widening ones read half |
+| `e2_rri(op: E2Imm, ..., imm8)`, `e2_rmi`, `e2_rbi`, `e2_rri_round` | `VRNDSCALEPS`/`PD` (SAE), `VPERMQ`/`VPERMPD` by immediate (256 and 512) |
+| `eshift_rri(op: EShift, vl, masking, dst, src, imm8)`, `eshift_rmi`, `eshift_rbi` | `66 0F 71`/`72`/`73 /digit ib`, `dst` in `vvvv`: `VPSRL`/`VPSRA`/`VPSLL` `W`/`D`/`Q` |
+| `ecmp_kri(op: ECmp, vl, mask, dst: K, src, imm8)`, `ecmp_kmi`, `ecmp_kbi` | `VFPCLASSPS`/`PD` |
+| `estore_rr(op: EStore, vl, masking, dst, src)`, `estore_mr(op, vl, mask, m, src)` | `dst`/`m` in `ModRM.rm`: `VPMOVSQB`/`SQW`/`SQD`, `VPMOVUSDB`/`USQB`/`USQW`/`USQD`, `VPCOMPRESSD`/`Q`/`B`/`W`, `VCOMPRESSPS`/`PD` |
+| `emov_rr(op: EMov, vl, masking, dst, src)`, `emov_rm`, `emov_mr(op, vl, mask, m, src)` | `VMOVDQU8`/`16`/`32`/`64`, `VMOVUPS`/`PD` |
+| `evcvtps2ph_rri(vl, masking, dst, src, imm8)`, `evcvtps2ph_mri` | `VCVTPS2PH` `66 0F3A 1D` |
+| `kmov_kk(size, dst, src)`, `kmov_km`, `kmov_mk`, `kmov_kr`, `kmov_rk` | `KMOVB`/`W`/`D`/`Q` (`90`, `91`, `92`, `93`), VEX-encoded |
+| `k3_kkk(op: K3, size, dst, a, b)` | `KAND`, `KANDN`, `KOR`, `KXNOR`, `KXOR`, `KADD` `B`/`W`/`D`/`Q`; `KUNPCKBW`/`WD`/`DQ` (sizes `W`, `D`, `Q`; `mnemonic(size)` is `None` for `B`, which the checked form refuses) |
+| `k2_kk(op: K2, size, a, b)` | `KNOT`, `KORTEST`, `KTEST` |
+| `kshift_kki(op: KShift, size, dst, src, imm8)` | `KSHIFTL`/`KSHIFTR` `B`/`W`/`D`/`Q` |
+
+LLVM's assembler chooses VEX for a vector instruction that has a VEX form
+and no EVEX-only operand; the sweeps write `{evex}` before every vector
+line (never before an opmask line, where it would ask for the APX form).
+The tests are `tests/l1/evex.rs`, groups `evex`, `evex-memory-operands`
+(the `disp8*N` boundaries of every tuple) and `opmask`.
+
 ## Not provided
 
 By decision of the scope so far: the high-byte registers `ah`..`bh`; the
-string instructions other than `rep_movs`/`rep_stos` (`cmps`, `scas`,
-`lods`, `repne`, the forms without `rep`, `std`); `xadd` and `cmpxchg`
+string instructions with explicit operands (`movsb (%rsi), %es:(%rdi)`)
+and segment overrides; `xadd` and `cmpxchg`
 with a register destination; `movabs` to and from the accumulator with a
 64-bit address; `enter`; 16-bit `push`/`pop`; far branches; `jrcxz` and
-`loop`; `hlt` and the system instructions other than `rdtsc`, `rdtscp`,
-`cpuid` and those of "Processor state and extensions"; a relocatable immediate other than those of "Relocatable
+`loop`; the system instructions other than `hlt`, `rdtsc`, `rdtscp`,
+`cpuid` and those of "Processor state and extensions" and "Inline
+assembly" (the control and debug registers, `lgdt`, `invlpg`, ...); the
+memory-source `crc32`; a relocatable immediate other than those of "Relocatable
 immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-dynamic call through
 the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
 descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
 instruction rather than a field; the SSE instructions not listed in
-"Scalar floating point" or "Packed SSE2" (SSE3 and later: `rounds`,
-`pshufb`, ...); MMX; and everything VEX- or EVEX-encoded (AVX, APX) but the four BMI
-operations. Adding an instruction is a constructor, a
+"Scalar floating point", "Packed SSE2" and the two sections above
+(SSSE3's `pshufb` and the other legacy SSSE3 forms, ...); MMX; the
+VEX-encoded instructions not listed under "VEX" (the gathers, `vzeroall`,
+...) but the four BMI operations; the EVEX-encoded instructions not
+listed under "EVEX and the opmask instructions" (the rest of AVX-512,
+APX). Adding an instruction is a constructor, a
 row here, a row in `tests/l1/table.rs` and a sweep.
 
 ## Test method
