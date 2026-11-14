@@ -395,3 +395,18 @@ configure = ["-DBUILD_TESTING=ON", "-DWITH_OPENSSL=OFF", "-DWITH_ZLIB=OFF"]
 test = "ctest --output-on-failure"
 c_compiler = "clang-19"
 notes = "WP-211. KJ (async I/O, fibers when the C library has them) and Cap'n Proto (the capnp compiler, which generates the tests' C++ during the build, serialization, RPC). ctest runs kj-tests, kj-heavy-tests, capnp-tests, capnp-heavy-tests and capnp-evolution-tests, each a program of many KJ_TEST cases. No OpenSSL or zlib (not on the machine): the TLS and gzip parts are left out."
+
+[rocksdb]
+url = "https://github.com/facebook/rocksdb"
+tag = "v11.13.2"
+build = "cmake"
+cxx_std = 20
+c = "kiln"
+configure = ["-DWITH_TESTS=ON", "-DWITH_ALL_TESTS=ON", "-DROCKSDB_BUILD_SHARED=OFF", "-DWITH_GFLAGS=OFF", "-DWITH_LIBURING=OFF", "-DWITH_SNAPPY=OFF", "-DWITH_LZ4=OFF", "-DWITH_ZLIB=OFF", "-DWITH_ZSTD=OFF", "-DWITH_BZ2=OFF", "-DWITH_BENCHMARK_TOOLS=OFF", "-DWITH_TOOLS=OFF", "-DWITH_CORE_TOOLS=OFF", "-DWITH_TRACE_TOOLS=OFF", "-DFAIL_ON_WARNINGS=OFF", "-DPORTABLE=1", "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"]
+build_targets = ["rocksdb", "c_test", "arena_test", "autovector_test", "block_based_table_reader_test", "block_test", "bloom_test", "cache_test", "coding_test", "comparator_db_test", "compaction_iterator_test", "crc32c_test", "data_block_hash_index_test", "db_basic_test", "db_iterator_test", "db_properties_test", "dbformat_test", "defer_test", "env_basic_test", "filename_test", "full_filter_block_test", "hash_table_test", "hash_test", "heap_test", "inlineskiplist_test", "log_test", "lru_cache_test", "memtable_list_test", "merge_test", "options_test", "rate_limiter_test", "ribbon_test", "skiplist_test", "slice_test", "table_test", "thread_local_test", "timer_test", "version_edit_test", "work_queue_test", "write_batch_test", "write_controller_test"]
+# One ctest test per test program (gtest_discover_tests would make one per
+# case): whole/CTestTestfile.cmake runs each built program once, under the
+# cross build's emulator if any.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in c_test arena_test autovector_test block_based_table_reader_test block_test bloom_test cache_test coding_test comparator_db_test compaction_iterator_test crc32c_test data_block_hash_index_test db_basic_test db_iterator_test db_properties_test dbformat_test defer_test env_basic_test filename_test full_filter_block_test hash_table_test hash_test heap_test inlineskiplist_test log_test lru_cache_test memtable_list_test merge_test options_test rate_limiter_test ribbon_test skiplist_test slice_test table_test thread_local_test timer_test version_edit_test work_queue_test write_batch_test write_controller_test; do if [ -x \"$t\" ]; then echo \"add_test($t $emu $PWD/$t)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure --timeout 2400"
+test_timeout = 10800
+notes = "WP-211. The static library (all of RocksDB: LSM tree, memtables, block-based tables, caches, filters, compaction) and 40 of its ~220 test programs (unit tests of the util/, memory/, table/, cache/ and options/ layers, and the DB-level db_basic_test, db_iterator_test, db_properties_test, comparator_db_test, merge_test), each program run once as one test; c_test is C through kiln-cc. No compression libraries (not on the machine), no tools; PORTABLE=1 (no -march=native; AArch64 still gets +crc+crypto)."
