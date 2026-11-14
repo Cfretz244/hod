@@ -390,8 +390,11 @@ quick gate; `HOD_REQUIRE_TOOLS=1` makes each missing one a failure
 
 **Release candidate:** all of the above with `HOD_REQUIRE_TOOLS=1`, on both
 targets, with every linker; L8 strict at the pass rate kiln achieves with
-`llc`; L9; the benchmark gate; a fuzzing budget with no open findings; and
-the support matrix in `docs/status/` regenerated.
+`llc`; L9; a fuzzing budget with no open findings; and the support matrix
+in `docs/status/` regenerated. The benchmark gate is not a condition of
+the first release (decided 2026-11-14): `docs/status/perf.md` stays as
+last measured, and the gate returns as a release condition with the
+performance milestone that follows 1.0 (`docs/ROADMAP.md` M5).
 
 ## Hosted CI
 

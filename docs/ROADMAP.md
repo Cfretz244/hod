@@ -104,7 +104,12 @@ The long tail.
 **Gate:** L8 strict: the libc++ suite with kiln + hod, no fallback, at
 kiln's LLVM pass rate. Published in `docs/status/`.
 
-## M5: in-process and fast
+## M5: in-process and fast (after 1.0)
+
+Decided 2026-11-14: the first release does not wait for this milestone.
+M6 is the release milestone and comes first; the bridge and the
+performance work follow it. The numbering is kept so that older documents
+still point at the right milestone.
 
 - The `kiln_hod` bridge: kiln hands its in-memory IR to hod directly.
   (Requires a hook in kiln's driver, agreed with kiln's maintainers.)
@@ -125,7 +130,7 @@ kiln's LLVM pass rate. Published in `docs/status/`.
   fuzzing budget with no open findings.
 
 **Gate:** the release-candidate gate of `docs/VALIDATION.md`, on both
-targets.
+targets. This is 1.0. It does not include M5's gate.
 
 ## Later
 
