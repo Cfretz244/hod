@@ -4049,6 +4049,21 @@ directory; a row whose tests write many small files or need file-system
 behaviour the workspace's bind mount lacks (glog) names a fresh
 directory under `/tmp` in its `test` command and removes it afterwards.
 
+**Targets, strict after a fallback, reductions.** `--target x86_64`
+(oss-run.sh, oss-build.sh, and oss-report.py before its command; WP-191,
+`spec/landed/harness/WP-191.md`) cross-builds the same rows for
+`x86_64-unknown-linux-gnu` on the AArch64 host: CMake's cross settings, the
+wrappers' `--target=<triple>`, the tests under
+`CMAKE_CROSSCOMPILING_EMULATOR` (qemu-x86_64 with the system root; `projects.py
+emulate-tests` puts the commands CMake does not wrap under it too), test
+timeouts times `$HOD_OSS_X64_TEST_SLOWDOWN`, and the trees and findings
+under `x64-build/`, `x64-install/` and `<findings>/x64/` (the sources are
+shared). `oss-run.sh --strict` runs the strict build even after a fallback:
+its refused compiles fail, `make -k` builds the rest and the tests that link
+run. After each project, `oss-reduce.py` reduces every kept refusal to
+`min.ll` beside it (`llvm-extract`, then `llvm-reduce` while hod's census
+still holds the reason).
+
 **Job slots.** Project builds and their tests (make, `cmake --install`,
 ctest, and `oss-report.py rerun`) draw from a jobserver pool of their own,
 the fifo `$HOD_OSS_JOBSERVER_FIFO` (default `/run/hod/lanes.fifo` when it
