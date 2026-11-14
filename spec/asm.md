@@ -118,7 +118,8 @@ of §7 holds the choice. Covered:
 
 - arithmetic and logic: `add` `adds` `sub` `subs` `cmp` `cmn` `neg`
   `negs` `adc` `adcs` `sbc` `sbcs` `and` `ands` `orr` `eor` `bic` `bics`
-  `orn` `eon` `tst` `mvn`, every immediate, shifted and extended form;
+  `orn` `eon` `tst` `mvn`, every immediate, shifted and extended form
+  (`bic` `bics` `orn` `eon` of an immediate since WP-216, §16);
 - moves: `mov` (register, `sp`, every immediate LLVM accepts as one
   `movz`/`movn`/`orr`), `movz` `movn` `movk`;
 - shifts, bitfields, extends: `lsl` `lsr` `asr` `ror` (and `-v`),
@@ -136,13 +137,15 @@ of §7 holds the choice. Covered:
 - loads and stores: `ldr` `str` (every size, `b`..`q` too) `ldrb` `strb`
   `ldrh` `strh` `ldrsb` `ldrsh` `ldrsw` `ldur`-forms, every addressing
   mode of §5.1; `ldp` `stp` `ldpsw`; `ldr` of a label (literal);
+  `prfm` `prfum` (§16);
 - exclusives and ordered: `ldxr` `ldaxr` `stxr` `stlxr` (and `b`/`h`),
   `ldar` `stlr` (and `b`/`h`), `ldxp` `ldaxp` `stxp` `stlxp`, `clrex`;
 - LSE (feature `lse`): `cas` `swp` `ldadd` `ldclr` `ldeor` `ldset`
   `ldsmax` `ldsmin` `ldumax` `ldumin` with every ordering suffix and size;
 - system: `nop` `yield` `wfe` `wfi` `sev` `sevl` `hint` `isb` `dmb`
-  `dsb` (every option), `svc` `brk` `udf`, `mrs`/`msr` of a system
-  register (§5.4), `bti`, `paciasp` `pacibsp` `autiasp` `autibsp`;
+  `dsb` (every option), `svc` `brk` `udf` `hlt`, `mrs`/`msr` of a system
+  register (§5.4), `bti`, `paciasp` `pacibsp` `autiasp` `autibsp`
+  `xpaclri`;
 - scalar floating point (feature `fp`): `fmov` (register, general to
   and from FP, `#imm8`), `fabs` `fneg` `fsqrt` `frint*`, `fadd` `fsub`
   `fmul` `fdiv` `fnmul` `fmax` `fmin` `fmaxnm` `fminnm`, `fmadd`
@@ -217,7 +220,10 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
   statements, every family of §5.2, the choices LLVM makes) is
   assembled by hod and by `llvm-mc` 22 and 19
   (`-triple=aarch64-linux-gnu -mattr=+lse,+crc`), word for word; the
-  refused table checks each name; feature gating.
+  refused table checks each name; feature gating; `prfm` with an offset
+  only `prfum` takes against `llvm-mc` 22 alone (§16).
+- `crates/hod_asm/tests/census_a64.rs` (§16): the AArch64 census, each
+  body by the table; the accepted ones `llvm-mc` 22's and 19's words.
 - Unit tests in each module: statements, expressions, substitution,
   local labels, operand printing, refusal-name interning.
 - `crates/hod_a64/tests/inline_asm.rs`: the lowering (§6), run against
@@ -250,6 +256,15 @@ expression, symbol, label, reach, literal-pool}`, `asm:label`,
 `asm:lexical`, `asm:feature`, `asm:template`, `asm:dialect`,
 `asm:section`, `asm:symbol`, `asm:unaligned` (an instruction of module
 text at an offset that is not a multiple of 4, §9).
+
+The AArch64 mnemonics real templates still need, and their refusals, are
+§16's table: the NEON and SVE instructions (`asm:mnemonic/fmla`,
+`/umlal`, `/pmull`, `/fcmeq`, `/cntb`, ...; `asm:operand/vector` for a
+vector arrangement of a scalar mnemonic, `asm:operand/register` for its
+scalar SIMD form), `asm:directive/p2align` and the other directives,
+`asm:mnemonic/adrp` (with `asm:operand/specifier` for `:lo12:`),
+`asm:mnemonic/ld1`. A prefetch operation that is no name of §16 is
+`asm:operand/option`; `prfm` and `prfum` take no write-back.
 
 ## 9. Module-level assembly (`module.rs`, WP-112)
 
@@ -721,3 +736,77 @@ name with `@@` stays `asm:symbol`. `emit_module_asm.rs`'s `symver` case
 (`@`, `@@`, `@@@`, defined, weak, hidden, internal, undefined and
 unreferenced names) has `llc` 19's and 22's sections, symbols (as sets)
 and relocations; module text without `.symver` reads as before.
+
+`.cfi_*` in a body needs two changes outside the assembler: `hod_eh`'s
+CFI program has no remember/restore state, and the x86-64 prologue
+writes its callee-saved rows after the body, which `cfi_at`'s ordering
+refuses (WP-204's record).
+
+## 16. AArch64 prefetch, and the census of AArch64 templates (WP-216)
+
+**`prfm` and `prfum`** (`a64/prefetch.rs`, `encode.rs`
+`prefetch_insn`), in inline bodies and module text alike. `hod_mc_a64`
+has no prefetch encoder (code generation writes none); the words are
+built in `prefetch.rs` from the load/store-register classes with `size`
+3 and `opc` 2, the operation in `Rt`, as `sysreg.rs` builds `mrs`/`msr`.
+
+- **The operation**: one of the 24 names `llvm-mc` 19 and 22 both
+  accept, in any case: `pld`, `pli`, `pst` × `l1`, `l2`, `l3`, `slc` ×
+  `keep`, `strm` (values 0..23; `slc` is 6, 7, 14, 15, 22, 23 and needs
+  no feature), or `#imm5` (`#` optional, a constant expression,
+  0..31). Another name (or a register) is `asm:operand/option`; a value
+  outside 0..31 is `asm:operand/range`. The two LLVM majors agree on
+  every name.
+- **`prfm` addressing**: `[xn|sp]`; `[xn, #imm]` (the `#` optional, as
+  RocksDB's `[${0:x},$1]` with `I` prints) scaled by 8, 0..32760;
+  `[xn, xm{, lsl #0|#3}]`, `[xn, wm, uxtw|sxtw {#0|#3}]`,
+  `[xn, xm, sxtx {#0|#3}]` (another amount `asm:operand/range`, a W
+  index without an extension or an X index with `uxtw`/`sxtw`, or `sp`
+  as the index, `asm:operand/register`); a label or symbol (the literal
+  form, `R_AARCH64_LD_PREL_LO19` for a symbol as `ldr`'s). Write-back
+  and post-index are `asm:operand/form`; `:lo12:` stays
+  `asm:operand/specifier`. With the values 24..31 the register form is
+  the word LLVM 22's disassembler calls `rprfm`: the same bytes.
+- **An offset the scaled form does not take** (negative, or not a
+  multiple of 8) but -256..255 is `prfum`, as `llvm-mc` 22 writes it;
+  `llvm-mc` 19 rejects that text ("index must be a multiple of 8").
+  kiln writes for LLVM 22, so hod follows 22 (`llvm_mc.rs`
+  `ACCEPTED_22` holds both facts). Anything else is
+  `asm:operand/range`.
+- **`prfum`**: `[xn|sp{, #imm}]`, -256..255; a register offset or a
+  label is `asm:operand/form`.
+
+**Also taken** (fixed forms the census of templates found or the row
+named): `hlt #imm16` (`0xd440_0000`, the exception class of `brk`);
+`xpaclri` (`HINT #7`); `bic`, `bics`, `orn`, `eon` of an immediate,
+`and`, `ands`, `orr`, `eor` of the inverted immediate (mimalloc's
+`bic x, x, #7`, valgrind's `bic sp, x21, #15`), as LLVM writes them.
+
+**The census** (`crates/hod_asm/tests/census_a64.rs`; how it was taken
+is the record's): every `asm(...)` of the real projects built so far
+(`.build/oss*/src`), of `/usr/include` (glibc's `fpu_control.h`,
+valgrind's headers), and the templates of the saved kiln-built modules
+whose body `llvm-mc` 22 reads as AArch64 after its operands are
+substituted. 140 of 211 templates assemble (116 before WP-216); every
+accepted body is `llvm-mc` 22's and 19's words. The kernel's arm64 UAPI
+headers and musl (not installed) have no AArch64 template.
+
+**Stays refused**, with the census's count of templates:
+
+| form | refusal | templates |
+|---|---|---|
+| `.p2align` in a body (zstd's loop alignment) | `asm:directive/p2align` | 34 |
+| NEON with vector arrangements (`fmla`, `umlal`, `pmull`, `pmull2`, `fcmeq`, `fcvtzs`/`fcvtzu`/`fcvtns` `.4s`) | `asm:mnemonic/<m>`, `asm:operand/vector` | 31 |
+| scalar SIMD forms (`fcvtzs d0, d1`, `fcmeq d0, d1, d1`) | `asm:operand/register`, `asm:mnemonic/fcmeq` | 3 |
+| `.arch_extension crypto` (before AES in NEON) | `asm:directive/arch_extension` | 1 |
+| SVE (`cntb`) | `asm:mnemonic/cntb` | 1 |
+| an instruction as data (`.inst 0xd4200000`) | `asm:directive/inst` | 1 |
+| `adrp` | `asm:mnemonic/adrp` | 0 |
+| `ld1` and the other structure loads | `asm:mnemonic/ld1` | 0 |
+
+`.p2align` in an inline body aligns to the function's place in its
+section, which the body does not know; NEON needs vector operands and
+registers in the lowering (`asm:operand/vector` is the parser's).
+`adrp sym` alone writes `R_AARCH64_ADR_PREL_PG_HI21`, a reference kind
+neither caller has, and is of use only with `:lo12:sym` (a relocation
+specifier): no census template writes either, so both wait.
