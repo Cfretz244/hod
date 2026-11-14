@@ -9,7 +9,8 @@
 //! body of one, it places the code under a local symbol of its own,
 //! `<name>.alwaysinline` (`STB_LOCAL`, `STT_FUNC`, in the section the
 //! function's own name selects, no group), and sends the direct calls
-//! and tail calls of the module's code to it. Every other reference (an
+//! and tail calls of the module's code to it (under the large code model,
+//! the 64-bit address a call is made through, WP-209). Every other reference (an
 //! address taken in code or in data, an alias) stays on the external
 //! symbol, so a function pointer compares equal across objects. Its
 //! unwind entry and its subprogram are written as any function's.
@@ -40,7 +41,8 @@ pub(super) enum CopyTarget {
     Copy(SymbolId),
 }
 
-/// Whether `kind` is a branch to a function (a call or a tail call): the
+/// Whether `kind` is a branch to a function (a call or a tail call): with
+/// the large model's addresses of callees ([`crate::Reloc::branch`]), the
 /// only relocations that go to a copy.
 fn is_branch(kind: RelocKind) -> bool {
     matches!(
@@ -84,11 +86,19 @@ impl ModuleEmitter<'_> {
     }
 
     /// Where a code relocation of `kind` to `sym` goes when it may go to
-    /// a copy. In `finish` (`last`), a copy that was never placed leaves
-    /// the relocation on the external symbol.
-    pub(super) fn copy_target(&self, kind: RelocKind, sym: SymRef, last: bool) -> CopyTarget {
+    /// a copy: a branch relocation, or one that addresses a callee
+    /// (`branch`, [`Reloc::branch`](crate::Reloc::branch)). In `finish`
+    /// (`last`), a copy that was never placed leaves the relocation on
+    /// the external symbol.
+    pub(super) fn copy_target(
+        &self,
+        kind: RelocKind,
+        branch: bool,
+        sym: SymRef,
+        last: bool,
+    ) -> CopyTarget {
         let SymRef::Module(sym) = sym else { return CopyTarget::Not };
-        if !is_branch(kind) || !self.is_copy(sym) {
+        if !(branch || is_branch(kind)) || !self.is_copy(sym) {
             return CopyTarget::Not;
         }
         match self.copies.get(&sym) {

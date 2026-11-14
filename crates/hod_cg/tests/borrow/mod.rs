@@ -95,6 +95,7 @@ pub fn chunk_from(
                 kind: RelocKind::from_elf_type(arch, kind),
                 sym,
                 addend,
+                branch: false,
             });
         }
         let empty = 0..0;

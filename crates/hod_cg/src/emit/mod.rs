@@ -177,7 +177,7 @@ pub struct ModuleEmitter<'m> {
     signatures: IdMap<SymbolId, GroupId>,
     /// Code relocations whose target is placed later: section, offset,
     /// kind, target, addend.
-    pending: Vec<(SectionId, u64, RelocKind, SymRef, i64)>,
+    pending: Vec<(SectionId, u64, RelocKind, bool, SymRef, i64)>,
     /// The initializers' fixups, by section, with section offsets.
     fixups: Vec<(SectionId, Fixup)>,
     /// Scratch: one initializer's image and fixups.
@@ -398,7 +398,16 @@ impl<'m> ModuleEmitter<'m> {
         // `.text` exists in every object `llc` writes.
         let text = emitter.arch().text_align();
         let mut name = std::mem::take(&mut emitter.name);
-        match emitter.sections.implicit(Kind::Text, false, false, NO_GROUP, b"", 1, &mut name) {
+        match emitter.sections.implicit(
+            Kind::Text,
+            false,
+            false,
+            false,
+            NO_GROUP,
+            b"",
+            1,
+            &mut name,
+        ) {
             Found::New(new, pending) => {
                 let id = emitter.obj.add_section(&name, new.kind, text).map_err(obj_err)?;
                 emitter.sections.created(&name, &pending, id, Some((Kind::Text, 1)));
@@ -507,8 +516,9 @@ impl<'m> ModuleEmitter<'m> {
         let comdat = symbol.comdat();
         let group = comdat.map_or(NO_GROUP, |c| c.index() as u32);
         let explicit = symbol.section();
+        let large = self.is_large(sym, kind);
         let found = if let Some(name) = explicit {
-            self.sections.explicit(name, kind, retain, group, align)
+            self.sections.explicit(name, kind, large, retain, group, align)
         } else {
             let mergeable = kind.flags() & SHF_MERGE != 0;
             let split = if kind == Kind::Text {
@@ -518,7 +528,7 @@ impl<'m> ModuleEmitter<'m> {
             };
             let unique = group != NO_GROUP || (!mergeable && split);
             let own = self.obj.string(self.obj.symbol(Self::obj_sym(sym)).name);
-            self.sections.implicit(kind, unique, retain, group, own, align, &mut self.name)
+            self.sections.implicit(kind, large, unique, retain, group, own, align, &mut self.name)
         };
         let (new, pending) = match found {
             Found::Old(section) => return Ok(section),
@@ -533,6 +543,37 @@ impl<'m> ModuleEmitter<'m> {
             self.obj.add_group_member(group, section).map_err(obj_err)?;
         }
         Ok(section)
+    }
+
+    /// Whether global `sym`, of section kind `kind`, goes to a large
+    /// section of x86-64 (`TargetMachine::isLargeGlobalValue`, §9.7,
+    /// WP-209): with an explicit section, by its name in every code model
+    /// ([`section::is_large_name`]); otherwise under the large code model,
+    /// where the large-data threshold is `llc`'s 0 (`llc` takes it from its
+    /// command line only, not from the module flag): every variable that is
+    /// not thread-local, and every function. Never on AArch64.
+    fn is_large(&self, sym: SymId, kind: Kind) -> bool {
+        if self.arch().arch != Arch::X86_64 {
+            return false;
+        }
+        let symbol = self.module.symbol(sym);
+        let function = kind == Kind::Text;
+        if let Some(name) = symbol.section() {
+            return section::is_large_name(name, function);
+        }
+        self.large_model() && kind.can_be_large()
+    }
+
+    /// Whether the object is built for x86-64's large code model (its
+    /// large sections, §9.7).
+    pub(super) fn large_model(&self) -> bool {
+        self.arch().arch == Arch::X86_64 && self.large_code_model()
+    }
+
+    /// Whether the object is built for the large code model, on either
+    /// architecture (its unwind tables, `spec/eh.md` §2.1).
+    pub(super) fn large_code_model(&self) -> bool {
+        self.options.code_model(self.module) == hod_ir::CodeModel::Large
     }
 
     /// The group of a COMDAT, made on its first member `section`.
@@ -722,7 +763,7 @@ impl<'m> ModuleEmitter<'m> {
         }
         for reloc in &chunk.relocs[func.relocs.start as usize..func.relocs.end as usize] {
             let at = offset + u64::from(reloc.offset);
-            let target = match self.copy_target(reloc.kind, reloc.sym, false) {
+            let target = match self.copy_target(reloc.kind, reloc.branch, reloc.sym, false) {
                 CopyTarget::Copy(copy) => Some((copy, reloc.addend)),
                 CopyTarget::Pending => None,
                 CopyTarget::Not => self.code_target(reloc.sym, reloc.addend),
@@ -731,7 +772,14 @@ impl<'m> ModuleEmitter<'m> {
                 Some((target, addend)) => {
                     self.obj.add_relocation(section, at, reloc.kind, target, addend);
                 }
-                None => self.pending.push((section, at, reloc.kind, reloc.sym, reloc.addend)),
+                None => self.pending.push((
+                    section,
+                    at,
+                    reloc.kind,
+                    reloc.branch,
+                    reloc.sym,
+                    reloc.addend,
+                )),
             }
         }
         if copy {
@@ -1015,8 +1063,8 @@ impl<'m> ModuleEmitter<'m> {
                 _ => {}
             }
         }
-        for (section, at, kind, target, addend) in std::mem::take(&mut self.pending) {
-            if let CopyTarget::Copy(copy) = self.copy_target(kind, target, true) {
+        for (section, at, kind, branch, target, addend) in std::mem::take(&mut self.pending) {
+            if let CopyTarget::Copy(copy) = self.copy_target(kind, branch, target, true) {
                 self.obj.add_relocation(section, at, kind, copy, addend);
                 continue;
             }
