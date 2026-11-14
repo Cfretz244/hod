@@ -49,7 +49,7 @@ pub const DEBUG_LOCAL_STATIC: &str = "debug:local-static";
 /// subprogram's abstract instance was written.
 const NO_DIE: u32 = u32::MAX - 1;
 /// The keys of retained variables and labels made abstract entities
-/// after a function's records (§6.28): above every record's row.
+/// after a function's records (§6.29): above every record's row.
 const RETAINED_KEY: u32 = 1 << 31;
 /// `DW_INL_inlined`.
 const DW_INL_INLINED: u8 = 1;
@@ -247,7 +247,7 @@ impl UnitPlan<'_> {
             return Err(unsupported(sp_id, DEBUG_INLINED_FOREIGN_UNIT));
         }
         // WP-195 (§6.25): an import scoped in the subprogram itself is
-        // written under its abstract instance; WP-210 (§6.28): so is a
+        // written under its abstract instance; WP-210 (§6.29): so is a
         // retained variable or label of the subprogram or of its blocks,
         // and when the module also has the function's code, a retained
         // variable. An import in a block, or a retained import or label
@@ -270,7 +270,7 @@ impl UnitPlan<'_> {
     }
 
     /// Whether retained node `n` is a variable or label in `sp` or one of
-    /// its blocks, which [`Self::retained_entities`] can make (§6.28); a
+    /// its blocks, which [`Self::retained_entities`] can make (§6.29); a
     /// variable only when `vars_only`.
     fn own_entity(&self, n: DiId, sp: DiId, vars_only: bool) -> bool {
         self.retained_entity(n).is_some_and(|(scope, class, _)| {
@@ -305,7 +305,7 @@ impl UnitPlan<'_> {
     /// abstract entity of get one now, in `retainedNodes` order, their
     /// scopes made first (`getOrCreateAbstractScope`); a parameter is
     /// placed by its number, a variable or label after those the records
-    /// made (WP-210, §6.28).
+    /// made (WP-210, §6.29).
     fn retained_entities(&mut self, s: &mut FnInline) -> Result<(), Error> {
         let mut next = RETAINED_KEY;
         for k in 0..s.list.len() {
@@ -964,7 +964,7 @@ impl<'a> Writer<'a> {
 
     /// A concrete retained variable with an abstract one: no location,
     /// `DW_AT_abstract_origin` alone (families 111 and 112 without their
-    /// list; WP-210, §6.28).
+    /// list; WP-210, §6.29).
     pub(crate) fn retained_of_abstract(&mut self, kind: Kind, origin: u32) {
         let family = if kind == Kind::LocalParam {
             fam::FORMAL_PARAMETER_OF_ABSTRACT_LIST

@@ -1,14 +1,14 @@
-//! WP-210 (`spec/dwarf.md` §6.27): what libc++'s test suite built with
+//! WP-210 (`spec/dwarf.md` §6.28): what libc++'s test suite built with
 //! `-g` met in the DIE writer.
 //!
 //! - a static data member whose value is wider than 64 bits
 //!   (`numeric_limits<__int128>::__min`, a `static constexpr long double`)
 //!   is written as `llc` writes it, `DW_AT_const_value` a `block1` of the
-//!   value's bytes (families 114 and 115); it was `debug:die-unsupported`.
+//!   value's bytes (families 115 and 116); it was `debug:die-unsupported`.
 //! - an inlined subprogram's retained variables and labels (kiln `-O2
 //!   -g`) are abstract entities of its abstract instance, and a retained
 //!   variable of the function's own out-of-line code names its abstract
-//!   one (§6.28); they were `debug:retained-nodes`.
+//!   one (§6.29); they were `debug:retained-nodes`.
 //!
 //! Each module's DIE tree is compared with `llc` 22's (`-O0
 //! -global-isel=0 -fast-isel=0`) line by line, offsets and indices masked,
@@ -172,9 +172,9 @@ fn count_prefix(tree: &[String], prefix: &str) -> usize {
     tree.iter().filter(|l| l.starts_with(prefix)).count()
 }
 
-/// §6.27: `i128` and `long double` static members' values are `block1`s
+/// §6.28: `i128` and `long double` static members' values are `block1`s
 /// of their bytes, as `llc` writes them, in DWARF 5 (`DW_TAG_variable`,
-/// family 114) and DWARF 4 (`DW_TAG_member`, family 115, written as
+/// family 115) and DWARF 4 (`DW_TAG_member`, family 116, written as
 /// version 4).
 #[test]
 fn a_static_members_value_wider_than_64_bits_is_a_block() {
@@ -262,7 +262,7 @@ const F_BODY: &str = "define dso_local i32 @f(i32 %x) #0 !dbg !11 {
 }
 ";
 
-/// §6.28: the abstract instance of `f` has `x`, `z`, `w`, `out` and the
+/// §6.29: the abstract instance of `f` has `x`, `z`, `w`, `out` and the
 /// block with `y`, in `llc`'s order; `f`'s own code, before or after `g`,
 /// names its retained `x` by its abstract origin. DWARF 5 and 4, both
 /// targets.

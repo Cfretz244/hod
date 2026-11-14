@@ -1060,7 +1060,7 @@ impl<'a> Writer<'a> {
             if let LocalWhat::List { .. } = what {
                 self.list_of_abstract(plan, l, node, kind, origin);
             } else if let LocalWhat::Retained = what {
-                // WP-210 (§6.28): a retained variable of a function with
+                // WP-210 (§6.29): a retained variable of a function with
                 // an abstract instance: its origin alone (111, 112).
                 self.retained_of_abstract(kind, origin);
             } else {

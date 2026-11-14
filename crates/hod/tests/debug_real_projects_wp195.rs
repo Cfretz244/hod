@@ -402,7 +402,7 @@ fn an_inlined_functions_import_is_under_its_abstract_instance() {
 
 /// An import in a block of an inlined function, or a retained import of
 /// a function also placed out of line, stays `debug:retained-nodes`
-/// (a retained variable is written since WP-210, §6.28).
+/// (a retained variable is written since WP-210, §6.29).
 #[test]
 fn other_retained_nodes_of_inlined_functions_are_refused() {
     for triple in TRIPLES {

@@ -66,13 +66,14 @@ const LAST_CHECKED: usize = fam::SUBPROGRAM_EMPTY;
 
 /// The families after [`LAST_CHECKED`], with option mask `mask`, whose
 /// version 4 shape was compared with `llc`'s all the same (WP-189:
-/// §6.24).
+/// §6.24; WP-206: §6.27).
 const fn checked_later(family: usize, mask: u32) -> bool {
     family == fam::METHOD_EXPLICIT_QUALIFIED
-        // WP-210: §6.27.
+        || family == fam::METHOD_ANY
+        // WP-210: §6.28.
         || family == fam::STATIC_VARIABLE_WIDE
         || family == fam::STATIC_MEMBER_WIDE
-        // WP-210 (§6.28): a retained variable's concrete DIE, its
+        // WP-210 (§6.29): a retained variable's concrete DIE, its
         // abstract origin alone (no list).
         || (mask == 0
             && (family == fam::FORMAL_PARAMETER_OF_ABSTRACT_LIST
@@ -580,7 +581,7 @@ impl Out {
             }
             form::FLAG_PRESENT => {}
             form::BLOCK1 => {
-                // WP-210: a wide constant (§6.27), copied as it is.
+                // WP-210: a wide constant (§6.28), copied as it is.
                 let len = *src.get(*pos).ok_or_else(bad)?;
                 *pos += 1 + usize::from(len);
                 if *pos > src.len() {

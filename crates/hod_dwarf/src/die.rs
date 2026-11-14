@@ -141,7 +141,7 @@ pub struct UnitPlan<'a> {
     /// `(DIE, value, signed)`, sorted: a static member's constant.
     pub(crate) values: Vec<(u32, u64, bool)>,
     /// `(DIE, bytes)`, sorted: a static member's constant wider than 64
-    /// bits, as `llc` writes it (§6.27).
+    /// bits, as `llc` writes it (§6.28).
     pub(crate) wide_values: Vec<(u32, Vec<u8>)>,
     /// The `__ARRAY_SIZE_TYPE__` DIE, or `NONE`.
     pub(crate) index_die: u32,
