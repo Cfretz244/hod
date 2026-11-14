@@ -303,7 +303,8 @@ pub struct FnCx<'a, T: Target> {
     /// (§9.6, WP-115).
     pub(crate) indirect_br: bool,
     pub(crate) frame_desc: FrameDesc,
-    /// The largest alignment a data island asked for.
+    /// The largest alignment a data island, or code that pads from the
+    /// function's start (`raise_align`), asked for.
     pub(crate) island_align: u32,
     /// The attributes of the function's return value.
     pub(crate) ret_attrs: ParamAttrs,
@@ -691,6 +692,16 @@ impl<'a, T: Target> FnCx<'a, T> {
         if let Some(entry) = self.s.pad_of_block.get_mut(block.index()) {
             *entry = index;
         }
+    }
+
+    /// Raises the function's alignment to at least `align` (a power of
+    /// two), for code that pads to a boundary counted from the
+    /// function's start: an alignment directive in an inline-assembly
+    /// template (`spec/asm.md` §17). The function then starts at an
+    /// offset of its section that is a multiple of `align`.
+    pub fn raise_align(&mut self, align: u32) {
+        debug_assert!(align.is_power_of_two());
+        self.island_align = self.island_align.max(align);
     }
 
     /// Emits the data islands after the function's exit sequences

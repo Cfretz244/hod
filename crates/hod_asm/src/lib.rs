@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 
 pub mod a64;
+pub mod align;
 pub mod expr;
 pub mod module;
 pub mod reason;
