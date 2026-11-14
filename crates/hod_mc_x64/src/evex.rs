@@ -1,5 +1,7 @@
-//! EVEX-encoded instructions (AVX-512 F, VL, BW, DQ, VBMI, VBMI2) and the
-//! opmask instructions (WP-208, `spec/mc-x64.md` "EVEX"; design 0007).
+//! EVEX-encoded instructions (AVX-512 F, VL, BW, DQ, VBMI, VBMI2; since
+//! WP-220 also FP16 in maps 5 and 6, BF16, and the EVEX forms of GFNI,
+//! VAES and VPCLMULQDQ) and the opmask instructions (WP-208,
+//! `spec/mc-x64.md` "EVEX"; design 0007).
 //!
 //! A vector register is a [`Zmm`] (its number, `0..=31`) and a vector
 //! length [`Vl`]: `Zmm(3)` at [`Vl::X`] is `xmm3`. An opmask register is a
@@ -407,6 +409,22 @@ evex_family! {
         /// others `a`'s; 128 bits only.
         Rcp14sd = (2, 1, true, 0x4d, XO, Elem(8), 0, 0, "vrcp14sd"),
         Rsqrt14sd = (2, 1, true, 0x4f, XO, Elem(8), 0, 0, "vrsqrt14sd"),
+        /// GFNI (WP-220): the products in GF(2^8) of the bytes.
+        Gf2p8mulb = (2, 1, false, 0xcf, XYZ, Full, 0, 0, "vgf2p8mulb"),
+        /// VAES (WP-220): one AES round on each 128-bit lane, `b` the
+        /// round key; no masking (`W` is ignored, written 0 as LLVM).
+        Aesenc = (2, 1, false, 0xdc, XYZ, Full, 0, NOMASK, "vaesenc"),
+        Aesenclast = (2, 1, false, 0xdd, XYZ, Full, 0, NOMASK, "vaesenclast"),
+        Aesdec = (2, 1, false, 0xde, XYZ, Full, 0, NOMASK, "vaesdec"),
+        Aesdeclast = (2, 1, false, 0xdf, XYZ, Full, 0, NOMASK, "vaesdeclast"),
+        /// AVX-512 BF16 (WP-220): `b`'s `float`s rounded to `bfloat` in the
+        /// low half of the result, `a`'s in the high half.
+        Cvtne2ps2bf16 = (2, 3, false, 0x72, XYZ, Full, 4, 0, "vcvtne2ps2bf16"),
+        /// AVX-512 FP16 (WP-220, map 5 and 6): `half` lanes, a broadcast
+        /// of 2 bytes.
+        Minph = (5, 0, false, 0x5d, XYZ, Full, 2, SAE, "vminph"),
+        Maxph = (5, 0, false, 0x5f, XYZ, Full, 2, SAE, "vmaxph"),
+        Vfmaddsub213ph = (6, 1, false, 0xa6, XYZ, Full, 2, ER, "vfmaddsub213ph"),
     }
 }
 
@@ -417,6 +435,12 @@ evex_family! {
         /// The truth table `imm8` of `dst`, `a`, `b` (`dst` is read).
         Pternlogd = (3, 1, false, 0x25, XYZ, Full, 4, 0, "vpternlogd"),
         Pternlogq = (3, 1, true, 0x25, XYZ, Full, 8, 0, "vpternlogq"),
+        /// GFNI (WP-220): the affine transform of each byte by the 8x8
+        /// bit matrix in the `b` quadword of its lane, plus `imm8`.
+        Gf2p8affineqb = (3, 1, true, 0xce, XYZ, Full, 8, 0, "vgf2p8affineqb"),
+        /// VPCLMULQDQ (WP-220): the carry-less product of the quadwords
+        /// `imm8` picks in each 128-bit lane; no masking.
+        Pclmulqdq = (3, 1, false, 0x44, XYZ, Full, 0, NOMASK, "vpclmulqdq"),
     }
 }
 
@@ -447,6 +471,20 @@ evex_family! {
         /// Widening: the source is half the length.
         Cvttps2qq = (1, 1, false, 0x7a, XYZ, Half, 4, SAE, "vcvttps2qq"),
         Cvttps2uqq = (1, 1, false, 0x78, XYZ, Half, 4, SAE, "vcvttps2uqq"),
+        /// AVX-512 BF16 (WP-220), narrowing: `float` to `bfloat`.
+        Cvtneps2bf16 = (2, 2, false, 0x72, XYZ, Full, 4, 0, "vcvtneps2bf16"),
+        /// AVX-512 FP16 (WP-220): `half` lanes.
+        Rcpph = (6, 1, false, 0x4c, XYZ, Full, 2, 0, "vrcpph"),
+        Rsqrtph = (6, 1, false, 0x4e, XYZ, Full, 2, 0, "vrsqrtph"),
+        Getexpph = (6, 1, false, 0x42, XYZ, Full, 2, SAE, "vgetexpph"),
+        Cvtph2w = (5, 1, false, 0x7d, XYZ, Full, 2, ER, "vcvtph2w"),
+        Cvttph2w = (5, 1, false, 0x7c, XYZ, Full, 2, SAE, "vcvttph2w"),
+        Cvttph2uw = (5, 0, false, 0x7c, XYZ, Full, 2, SAE, "vcvttph2uw"),
+        /// Narrowing to a quarter: `double` to `half` (an `xmm` at every
+        /// length).
+        Cvtpd2ph = (5, 1, true, 0x5a, XYZ, Full, 8, ER, "vcvtpd2ph"),
+        /// Widening from a quarter: `half` to `double`.
+        Cvtph2pd = (5, 0, false, 0x5a, XYZ, Quarter, 2, SAE, "vcvtph2pd"),
     }
 }
 
@@ -455,6 +493,8 @@ evex_family! {
     E2Imm {
         Rndscaleps = (3, 1, false, 0x08, XYZ, Full, 4, SAE, "vrndscaleps"),
         Rndscalepd = (3, 1, true, 0x09, XYZ, Full, 8, SAE, "vrndscalepd"),
+        /// AVX-512 FP16 (WP-220).
+        Rndscaleph = (3, 0, false, 0x08, XYZ, Full, 2, SAE, "vrndscaleph"),
         Permq = (3, 1, true, 0x00, YZ, Full, 8, 0, "vpermq"),
         Permpd = (3, 1, true, 0x01, YZ, Full, 8, 0, "vpermpd"),
     }
@@ -484,6 +524,8 @@ evex_family! {
     ECmp {
         Fpclassps = (3, 1, false, 0x66, XYZ, Full, 4, 0, "vfpclassps"),
         Fpclasspd = (3, 1, true, 0x66, XYZ, Full, 8, 0, "vfpclasspd"),
+        /// AVX-512 FP16 (WP-220).
+        Fpclassph = (3, 0, false, 0x66, XYZ, Full, 2, 0, "vfpclassph"),
     }
 }
 
@@ -1162,6 +1204,22 @@ mod tests {
         assert_eq!(kmov_kr(Size::Q, K::K1, Reg::Rax).bytes(), [0xc4, 0xe1, 0xfb, 0x92, 0xc8]);
         assert_eq!(kmov_kk(Size::B, K::K1, K::K2).bytes(), [0xc5, 0xf9, 0x90, 0xca]);
         assert_eq!(k2_kk(K2::Ortest, Size::W, K::K1, K::K2).bytes(), [0xc5, 0xf8, 0x98, 0xca]);
+        // `vgf2p8affineqb zmm31, zmm8, qword ptr [r12 - 64]{1to8}, 7`:
+        // `llvm-mc` 22 scales the broadcast's `disp8` by 8 (the SDM's Full
+        // tuple), 19 by 1 (`c0`); hod follows 22.
+        assert_eq!(
+            e3_rrbi(
+                E3Imm::Gf2p8affineqb,
+                Vl::Z,
+                Masking::NONE,
+                z(31),
+                z(8),
+                Mem::base(Reg::R12, -64),
+                7
+            )
+            .bytes(),
+            [0x62, 0x43, 0xbd, 0x58, 0xce, 0x7c, 0x24, 0xf8, 0x07]
+        );
     }
 
     #[test]

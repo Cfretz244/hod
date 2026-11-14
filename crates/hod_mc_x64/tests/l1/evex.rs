@@ -261,16 +261,29 @@ fn e3(b: &mut Batch) {
             for (i, (d, a)) in pairs().into_iter().enumerate() {
                 let s = SOME[(i * 5 + 2) % 8];
                 let imm = IMM8[i % 4];
-                emit_as!(
-                    b,
-                    mn,
-                    try_e3_rrri(op, vl, maskings()[i % 3], z(d), z(a), z(s), imm),
-                    "{{evex}} {mn} {}{}, {}, {}, {imm}",
-                    vr(vl, d),
-                    mk(maskings()[i % 3]),
-                    vr(vl, a),
-                    vr(vl, s)
-                );
+                let m = maskings()[i % 3];
+                if op.masks() || m == Masking::NONE {
+                    emit_as!(
+                        b,
+                        mn,
+                        try_e3_rrri(op, vl, m, z(d), z(a), z(s), imm),
+                        "{{evex}} {mn} {}{}, {}, {}, {imm}",
+                        vr(vl, d),
+                        mk(m),
+                        vr(vl, a),
+                        vr(vl, s)
+                    );
+                } else {
+                    reject!(
+                        b,
+                        try_e3_rrri(op, vl, m, z(d), z(a), z(s), imm),
+                        "{{evex}} {mn} {}{}, {}, {}, {imm}",
+                        vr(vl, d),
+                        mk(m),
+                        vr(vl, a),
+                        vr(vl, s)
+                    );
+                }
             }
             let none = M::base(0, 0).mem();
             reject!(b, try_e3_rrri(op, vl, Masking::zero(K::K0), z(1), z(2), z(3), 0));
@@ -292,7 +305,11 @@ fn e3(b: &mut Batch) {
             if e == 0 {
                 reject!(b, try_e3_rrbi(op, vl, Masking::NONE, z(0), z(1), M::base(0, 0).mem(), 0));
             } else {
-                for m in [M::base(0, 0), M::base(12, -8)] {
+                // LLVM 19 scales `vgf2p8affineqb`'s broadcast `disp8` by 1,
+                // LLVM 22 (as the SDM's Full tuple) by 8: the sweep keeps
+                // to displacements both encode alike.
+                let far = if op == E3Imm::Gf2p8affineqb { 0x408 } else { -8 };
+                for m in [M::base(0, 0), M::base(12, far)] {
                     emit_as!(
                         b,
                         mn,
@@ -312,8 +329,12 @@ fn e3(b: &mut Batch) {
 fn e2_lengths(op: E2, vl: Vl) -> (Vl, Vl) {
     use E2::*;
     match op {
-        Cvtpd2dq | Cvtpd2ps | Cvttpd2dq | Cvttpd2udq | Cvtqq2ps | Cvtuqq2ps => (half(vl), vl),
+        Cvtpd2dq | Cvtpd2ps | Cvttpd2dq | Cvttpd2udq | Cvtqq2ps | Cvtuqq2ps | Cvtneps2bf16 => {
+            (half(vl), vl)
+        }
         Cvttps2qq | Cvttps2uqq => (vl, half(vl)),
+        Cvtpd2ph => (Vl::X, vl),
+        Cvtph2pd => (vl, Vl::X),
         _ => (vl, vl),
     }
 }
@@ -326,6 +347,7 @@ fn e2_mem(op: E2, vl: Vl) -> (u8, u8) {
     let e = op.broadcast();
     match op {
         Cvttps2qq | Cvttps2uqq => (bytes / 2, bytes / 8),
+        Cvtph2pd => (bytes / 4, bytes / 8),
         _ => (bytes, bytes / e),
     }
 }
