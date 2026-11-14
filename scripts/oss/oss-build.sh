@@ -44,10 +44,9 @@
 # address space (KILN_OSS_LINK_VMEM_KB: mold maps every archive), the test
 # timeout and ctest's per-test default (DART_TESTING_TIMEOUT, 1500 s, for
 # a project that includes CTest) are times $HOD_OSS_X64_TEST_SLOWDOWN
-# (default 4), and the test step's
-# its address-space cap $HOD_OSS_X64_TEST_VMEM_KB (default 16 GB: a guest
-# thread is a host thread of qemu's), and
-# the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
+# (default 4), the test step's address-space cap is
+# $HOD_OSS_X64_TEST_VMEM_KB (default 16 GB: a guest thread is a host
+# thread of qemu's), and the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
 # are shared).
 #
 # Environment (source scripts/env.sh first: make draws from the shared
