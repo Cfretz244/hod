@@ -1049,3 +1049,123 @@ debug-call rows, and islands. x86-64 writes no jump tables.
 - The record (`spec/landed/asm/WP-218.md`) has the counts. It also has
   zstd's two modules built by kiln with `hod --strict`, whose loop heads
   are on their boundaries as `llc`'s are.
+
+## 19. Constraints with alternatives (WP-219)
+
+A constraint string with `|` (C++'s `,`) gives every operand the same
+number of alternatives. Which alternative is used, and which output is
+tied to which input, is LLVM's `TargetLowering::ParseConstraints` and
+`InlineAsm::ConstraintInfo::selectAlternative`. hod follows both on
+x86-64 (`hod_x64::barrier`, `barrier::template::decide`) and AArch64
+(`hod_a64::barrier`, `inline_asm::decide`). The shared part is
+`hod_cg::asm_constraints::Ties`. Every rule below was measured against
+`llc` 19 and 22 at `-O0` (AArch64 also with `-global-isel=0
+-fast-isel=0`); the two majors agree on every case.
+
+**Choice.** Each alternative's weight is the sum of its operands'
+weights. The first alternative with the highest sum wins. When every
+alternative has an invalid operand, alternative 0 is used.
+
+- An operand's weight is the best of its codes: invalid -1, a fixed
+  register or a digit 0, a register class 1, memory 2, an immediate 3.
+- On x86, every generic code weighs 0 for an integer operand.
+- `x` weighs 1 for a 128-bit value, or for a 256-bit value with AVX.
+  `v` also weighs 1 for a 512-bit value with AVX-512. Otherwise `x` and
+  `v` are invalid.
+- An indirect operand (`*`) is weighed by its pointer: `r`, `x` and `w`
+  are invalid, and `m` weighs 2. A direct output has no value yet, so
+  every code weighs 0 for it.
+
+**Ties.**
+
+- A digit in an input *without* alternatives ties the output at the top
+  level.
+- An output *with* alternatives keeps only the tie of the chosen
+  alternative, so such an input's digit is dropped.
+- A digit in an input with alternatives ties the output in that
+  alternative only.
+- Hence `=*imr|x,0` is untied: the output is memory, and the template
+  reads and writes the variable itself. The input's value is not stored.
+- `=*imr|x,0|0` is tied: the output is in a register, and the input is
+  stored through the pointer after the template.
+- A tied input whose output is in memory is placed in that memory. Its
+  own value is not read.
+
+C++'s `"+g,x"`, as kiln writes it (`=*imr|x,0`), therefore becomes the
+variable's memory for every type. Eigen's `EIGEN_OPTIMIZATION_BARRIER`
+compiles to nothing, as `llc` builds it, and so does AArch64's
+`"+g,w"` (`=*imr|w,0`).
+
+**Measured** (x86-64; `tests/asm_alternatives.rs`
+`alternatives_are_llcs_choice` compares the operand class, memory,
+xmm, ymm or gpr, of hod's and `llc`'s instruction):
+
+| constraints | integer, `float`, `double`, pointer | 128-bit vector, `i128` |
+|---|---|---|
+| `=*imr,X,0` (indirect, any order) | memory | memory |
+| `=*x,R,0` (both invalid) | xmm (the first) | xmm |
+| `=*r,X,0` | gpr (the first) | gpr: `llc` cannot allocate it |
+| `=r,X,0`, direct | gpr | gpr: `llc` cannot allocate it |
+| `=x,R,0`, direct | xmm | xmm (ymm for 256 bits with AVX) |
+| input `imr,X`, `rm,X`, `m,X`, `X,m` | memory | memory (`i128`: xmm) |
+| input `r,X` | gpr | xmm |
+| input `X,r` | gpr for integers, else xmm | xmm |
+
+In the table, `,` stands for IR's `|`: `X` is `x`, and `R` is `r`.
+hod's choice is `llc`'s in every row. Two placements were not taken
+before and still are not:
+
+- An `i128` in an SSE register in a template is
+  `x64:inline-asm-operand-type`.
+- A vector in a general register (`=*r|x,0`), which `llc` cannot
+  allocate, is `x64:inline-asm-operand`, as in base.
+AArch64 (`hod_a64/tests/asm_alternatives.rs`):
+
+- `=*imr|w,0` is memory, and `=*imr|w,0|0` is a register.
+- Input `imr|w` is memory.
+- Input `r|w` is a general register for integers and pointers, and a
+  vector register for floating point and vectors.
+
+**Refused by name** (not measured, or `llc` rejects it):
+
+- `x64:inline-asm-alternative` / `a64:inline-asm-alternative`. Each of
+  these is refused:
+  - an operand with fewer alternatives than the constraint string, but
+    more than one;
+  - with alternatives, a tie some alternative puts in effect between
+    operands of different types (`=*r|m,0|0` with `i32` and `i64`). The
+    dropped tie of `=*r|m,0` with different types (Benchmark's
+    `DoNotOptimize` of a struct) is not one: it compiles to memory, and
+    `llc` writes nothing;
+  - on x86, a 256-bit operand when the AVX level is only assumed, or a
+    512-bit one when AVX-512 is not known.
+- `asm:constraint/tied`, which `llc` reports as "failed to parse
+  constraints". An empty template on x86-64 gives
+  `x64:inline-asm-constraint` instead. Each of these is refused:
+  - an input with alternatives naming an output without them
+    (`=*imr,0|0`);
+  - a digit naming an input or a missing alternative;
+  - two inputs tied to one output.
+- A direct output untied with a memory code (`=rm|x,0`) crashes `llc`.
+  hod's behaviour there is unchanged.
+
+**Census.** These are every `,` alternative found in the real sources
+built so far (`.build/oss*/src`) and in `/usr/include`, with the
+occurrences and the files that hold them:
+
+- Google Benchmark's `DoNotOptimize`/`ClobberMemory`: `+m,r` 17 in 5
+  files, `r,m` 13 in 6, `+r,m` 9 in 5, and `i,r,m` 1 (protobuf's copy).
+- Eigen: `+x,m` 3 and `+w,m` 3 (`GeneralBlockPanelKernel.h`). The
+  `Macros.h` barriers are `+g,x`, `+g,w`, `+r,w`, `+r,v` and `+r,v,wa`
+  (1 each).
+
+In the saved kiln-built modules (`.build/corpus`, `corpus-x64`,
+`findings`), these occur, all with empty templates:
+
+- Benchmark's `=*r|m,0` (8), `=*m|r,0` (4) and `r|m` (4), all in the
+  conformance entry `dcl.asm`.
+- Eigen's `=*imr|x,0` (2, in findings).
+
+`+r,v` and `+r,v,wa` are Eigen's PowerPC barriers. `+r,w` is its
+AArch64 barrier for GCC 5 and older. None of the three is built for
+x86-64 or AArch64 here.

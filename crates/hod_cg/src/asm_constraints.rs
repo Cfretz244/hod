@@ -430,6 +430,145 @@ impl<C: Copy> Constraints<C> {
         }
         chosen
     }
+
+    /// The operands as LLVM's tie bookkeeping sees them ([`TieShape`]).
+    pub fn tie_shapes(&self) -> [TieShape; MAX_OPS] {
+        let mut shapes = [TieShape::default(); MAX_OPS];
+        for (shape, op) in shapes.iter_mut().zip(self.ops()) {
+            shape.output = op.kind == Kind::Output;
+            shape.nalts = op.nalts;
+            for (k, alt) in op.alts[..usize::from(op.nalts)].iter().enumerate() {
+                shape.tied[k] = (alt.codes & TIED != 0).then_some(alt.tied);
+            }
+        }
+        shapes
+    }
+
+    /// LLVM's ties of these operands ([`Ties::of`]).
+    ///
+    /// # Errors
+    /// [`AltError`].
+    pub fn ties(&self) -> Result<Ties, AltError> {
+        Ties::of(&self.tie_shapes()[..self.len])
+    }
+}
+
+/// One operand as LLVM's tie bookkeeping (`InlineAsm::ConstraintInfo`)
+/// sees it: whether it is an output, its number of alternatives, and per
+/// alternative the output a digit names.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TieShape {
+    /// An output (`=`).
+    pub output: bool,
+    /// The number of alternatives (1 for a constraint without `|`).
+    pub nalts: u8,
+    /// Per alternative, the output its digit names.
+    pub tied: [Option<u8>; MAX_ALTS],
+}
+
+/// Why a shape of alternatives is refused (`spec/asm.md` §19).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AltError {
+    /// An `llc` error: an input with alternatives whose digit names an
+    /// output with fewer alternatives, or two inputs naming one output
+    /// (in one alternative) — "failed to parse constraints".
+    Parse,
+    /// An operand with more than one alternative but fewer than another
+    /// operand: `llc` weighs and selects its missing alternatives from an
+    /// empty code list; not measured.
+    Count,
+}
+
+/// Which input LLVM records as tied to each output (`MatchingInput`),
+/// as `InlineAsm::ConstraintInfo::Parse` and `selectAlternative` keep it
+/// (`spec/asm.md` §19, measured on `llc` 19 and 22):
+///
+/// - an input without alternatives whose digit names output `N` sets
+///   `N`'s own tie, which an output WITH alternatives then loses when an
+///   alternative is selected (`selectAlternative` copies the
+///   alternative's tie over it): in `=*imr|x,0` the output is not tied,
+///   and its memory code is taken;
+/// - an input with alternatives whose alternative `k` has digit `N` sets
+///   the tie of `N`'s alternative `k`, kept when `k` is selected
+///   (`=*imr|x,0|0`: tied, a register).
+///
+/// Whatever the output's tie, an input whose selected codes have a digit
+/// is placed where its output is (a register, or the output's memory).
+#[derive(Clone, Copy, Debug)]
+pub struct Ties {
+    /// The greatest number of alternatives.
+    pub count: usize,
+    /// Per output, the input without alternatives that names it.
+    pub top: [Option<u8>; MAX_OPS],
+    /// Per alternative and output, the input with alternatives that names
+    /// it in that alternative.
+    pub alt: [[Option<u8>; MAX_OPS]; MAX_ALTS],
+    nalts: [u8; MAX_OPS],
+}
+
+impl Ties {
+    /// The ties of `shapes`.
+    ///
+    /// # Errors
+    /// [`AltError`].
+    pub fn of(shapes: &[TieShape]) -> Result<Ties, AltError> {
+        let count = shapes.iter().map(|s| usize::from(s.nalts)).max().unwrap_or(1).max(1);
+        let mut ties = Ties {
+            count,
+            top: [None; MAX_OPS],
+            alt: [[None; MAX_OPS]; MAX_ALTS],
+            nalts: [1; MAX_OPS],
+        };
+        for (i, shape) in shapes.iter().enumerate() {
+            ties.nalts[i] = shape.nalts.max(1);
+            if shape.nalts > 1 && usize::from(shape.nalts) < count {
+                return Err(AltError::Count);
+            }
+            if shape.output {
+                continue;
+            }
+            for (k, &tied) in shape.tied[..usize::from(shape.nalts)].iter().enumerate() {
+                let Some(n) = tied else { continue };
+                let n = usize::from(n);
+                let Some(target) = shapes.get(n).filter(|s| s.output) else {
+                    return Err(AltError::Parse);
+                };
+                let slot = if shape.nalts > 1 {
+                    if k >= usize::from(target.nalts) || target.nalts == 1 {
+                        return Err(AltError::Parse);
+                    }
+                    &mut ties.alt[k][n]
+                } else {
+                    &mut ties.top[n]
+                };
+                if slot.is_some() {
+                    return Err(AltError::Parse);
+                }
+                *slot = Some(i as u8);
+            }
+        }
+        Ok(ties)
+    }
+
+    /// The input LLVM records as tied to output `output` once alternative
+    /// `chosen` is selected.
+    pub fn matching(&self, output: usize, chosen: usize) -> Option<u8> {
+        if self.nalts[output] > 1 { self.alt[chosen][output] } else { self.top[output] }
+    }
+
+    /// Every (output, input) tie some alternative puts in effect: the
+    /// top-level tie of an output without alternatives, and each
+    /// alternative's tie of an output with them. The top-level tie of an
+    /// output with alternatives (`=*r|m,0`) is never in effect.
+    pub fn pairs(&self) -> impl Iterator<Item = (usize, u8)> + '_ {
+        (0..self.nalts.len()).flat_map(move |o| {
+            let top = self.top[o].filter(|_| self.nalts[o] <= 1);
+            let alts = (0..MAX_ALTS)
+                .filter(move |_| self.nalts[o] > 1)
+                .filter_map(move |k| self.alt[k][o]);
+            top.into_iter().chain(alts).map(move |i| (o, i))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -566,5 +705,42 @@ mod tests {
         assert_eq!(one.choose(&args, w), 0);
         let none = p(b"i|i,r|r").unwrap();
         assert_eq!(none.choose(&args, w), 0);
+    }
+
+    /// §19: LLVM's ties. A digit without alternatives ties an output
+    /// without alternatives; an output with alternatives is tied only by
+    /// an input's digit in the selected alternative.
+    #[test]
+    fn ties_as_llvm_keeps_them() {
+        let t = p(b"=*r|m,0").unwrap().ties().unwrap();
+        assert_eq!(
+            (t.count, t.top[0], t.matching(0, 0), t.matching(0, 1)),
+            (2, Some(1), None, None)
+        );
+        assert_eq!(t.pairs().count(), 0);
+        let t = p(b"=*r|m,0|r").unwrap().ties().unwrap();
+        assert_eq!(t.pairs().collect::<Vec<_>>(), [(0, 1)]);
+        let t = p(b"=r,=r,1,0").unwrap().ties().unwrap();
+        assert_eq!(t.pairs().collect::<Vec<_>>(), [(0, 3), (1, 2)]);
+        let t = p(b"=*r|m,0|0").unwrap().ties().unwrap();
+        assert_eq!((t.top[0], t.matching(0, 0), t.matching(0, 1)), (None, Some(1), Some(1)));
+        let t = p(b"=*r|m,0|r").unwrap().ties().unwrap();
+        assert_eq!((t.matching(0, 0), t.matching(0, 1)), (Some(1), None));
+        let t = p(b"=r,0").unwrap().ties().unwrap();
+        assert_eq!(t.matching(0, 0), Some(1));
+        let t = p(b"=r,=r,1,r|m").unwrap().ties().unwrap();
+        assert_eq!(
+            (t.matching(0, 0), t.matching(1, 0), t.matching(1, 1)),
+            (None, Some(2), Some(2))
+        );
+        // `llc`: "failed to parse constraints".
+        assert_eq!(p(b"=r,0|0").unwrap().ties().unwrap_err(), AltError::Parse);
+        assert_eq!(p(b"=r,0,0").unwrap().ties().unwrap_err(), AltError::Parse);
+        assert_eq!(p(b"=r|m,0|0,0|0").unwrap().ties().unwrap_err(), AltError::Parse);
+        let t = p(b"=r|m,0|r,r|0").unwrap().ties().unwrap();
+        assert_eq!((t.matching(0, 0), t.matching(0, 1)), (Some(1), Some(2)));
+        // Alternatives of different counts: not measured.
+        assert_eq!(p(b"=r|m|x,0|0").unwrap().ties().unwrap_err(), AltError::Count);
+        assert!(p(b"=r|m|x,0").unwrap().ties().is_ok());
     }
 }

@@ -31,8 +31,12 @@
 //! for each alternative, the sum over the operands of the best weight of
 //! its codes, the first highest sum wins (all invalid: the first).
 //! Codes of one alternative (`imr`) are LLVM's `ComputeConstraintToUse`:
-//! a register class when the output is tied, as measured on LLVM 19 and
-//! 22 (`tests/barrier.rs`).
+//! a register class when the output is tied, memory otherwise, as
+//! measured on LLVM 19 and 22 (`tests/barrier.rs`). Whether an output is
+//! tied is LLVM's bookkeeping (`spec/asm.md` §19): an output with
+//! alternatives is tied only by an input with alternatives, so in
+//! `=*imr|w,0` (clang's and kiln's `"+g,w"`) the output is memory and the
+//! input is not stored.
 
 use hod_cg::{CgResult, Class, FnCx};
 use hod_ir::{Const, Inst, MemFlags, Opcode, TypeId, TypeKind, Value, ValueKind};
@@ -59,9 +63,15 @@ pub const CLOBBER: &str = "a64:inline-asm-clobber";
 pub const OPERAND: &str = "a64:inline-asm-operand";
 /// A call of inline assembly with an operand bundle.
 pub const BUNDLE: &str = "a64:inline-asm-bundle";
+/// A choice among alternatives (`r|m`) hod did not measure
+/// (`spec/asm.md` §19): an operand with more than one alternative but
+/// fewer than another operand; a tie some alternative puts in effect
+/// between operands of different types.
+pub const ALTERNATIVE: &str = "a64:inline-asm-alternative";
 
 /// Every name this module refuses with.
-pub const UNSUPPORTED: &[&str] = &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE];
+pub const UNSUPPORTED: &[&str] =
+    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, ALTERNATIVE];
 
 /// The most operands (constraints that are not clobbers) and
 /// alternatives kept.
@@ -300,6 +310,43 @@ enum Effect {
     },
 }
 
+/// LLVM's ties of `ops` (`hod_cg::asm_constraints::Ties`, `spec/asm.md`
+/// §19); a choice hod did not measure is [`ALTERNATIVE`].
+fn ties(
+    cx: &FnCx<'_, A64>,
+    site: hod_ir::CallSite<'_>,
+    result: TypeId,
+    ops: &Ops,
+) -> CgResult<hod_cg::asm_constraints::Ties> {
+    use hod_cg::asm_constraints::{AltError, TieShape, Ties};
+    let mut shapes = [TieShape::default(); MAX_OPS];
+    for (shape, op) in shapes.iter_mut().zip(&ops.list[..ops.len]) {
+        shape.output = op.kind == Kind::Output;
+        shape.nalts = op.nalts;
+        for (k, alt) in op.alts[..usize::from(op.nalts)].iter().enumerate() {
+            shape.tied[k] = (alt.codes & TIED != 0).then_some(alt.tied);
+        }
+    }
+    let ties = Ties::of(&shapes[..ops.len]).map_err(|e| {
+        hod_cg::CgError::unsupported(match e {
+            AltError::Parse => CONSTRAINT,
+            AltError::Count => ALTERNATIVE,
+        })
+    })?;
+    if ties.count > 1 {
+        let args = site.args();
+        let ty_of = |op: &Op| match (op.indirect, op.arg) {
+            (true, Some(a)) => site.arg_attrs(usize::from(a)).mem_type().unwrap_or(TypeId::VOID),
+            (false, Some(a)) => value_ty(cx, args[usize::from(a)]),
+            (_, None) => result,
+        };
+        if ties.pairs().any(|(o, i)| ty_of(&ops.list[o]) != ty_of(&ops.list[usize::from(i)])) {
+            return unsupported(ALTERNATIVE);
+        }
+    }
+    Ok(ties)
+}
+
 /// The alternative LLVM takes: the first of the greatest total weight,
 /// or the first when every one is invalid.
 fn choose(cx: &FnCx<'_, A64>, ops: &Ops, args: &[Value]) -> usize {
@@ -335,9 +382,11 @@ fn effect<'a>(
 ) -> CgResult<Effect> {
     let args = site.args();
     let value_of = |op: &Op| op.arg.map(|a| args[usize::from(a)]);
+    let ties = ties(cx, site, inst.ty(), ops)?;
     let chosen = choose(cx, ops, args);
     let alt_of = |op: &Op| op.alts[if chosen < usize::from(op.nalts) { chosen } else { 0 }];
-    // The input tied to each output, under that alternative.
+    // The input tied to each output by its digit, under that alternative
+    // (it is placed where the output is).
     let mut tied_to: [Option<u8>; MAX_OPS] = [None; MAX_OPS];
     for (index, op) in ops.list[..ops.len].iter().enumerate() {
         let alt = alt_of(op);
@@ -364,12 +413,16 @@ fn effect<'a>(
         let register = alt.codes & (R | W | SPEC | XX) != 0;
         let memory = alt.codes & M != 0;
         let input = tied_to[index].map(|i| &ops.list[usize::from(i)]);
+        // §19: whether LLVM records the output as tied once the
+        // alternative is selected; an untied one takes its memory code.
+        let kept = ties.matching(index, chosen).is_some();
         let this = if op.indirect {
-            // `llc` takes memory for an output of memory codes only, and
-            // a register for a tied one with a register code.
+            // `llc` takes memory for an output of memory codes that is not
+            // tied or has no register code, and a register otherwise; an
+            // input in the output's register is stored through it.
             let ptr = value_of(op).expect("an indirect output has an operand");
             match input {
-                _ if memory && !register => Effect::None,
+                _ if memory && (!register || !kept) => Effect::None,
                 Some(input) if register => {
                     let value = value_of(input).expect("an input has an operand");
                     if input.indirect {
@@ -388,7 +441,7 @@ fn effect<'a>(
                 _ => return unsupported(OUTPUT),
             }
         } else {
-            let Some(input) = input.filter(|_| register && !memory) else {
+            let Some(input) = input.filter(|_| register && (!memory || kept)) else {
                 return unsupported(OUTPUT);
             };
             let value = value_of(input).expect("an input has an operand");

@@ -306,6 +306,9 @@ struct Plan {
     slots: [Option<FrameRef>; MAX_OPS],
     /// Every register the template may write.
     written: u64,
+    /// The inputs tied to an output in memory, whose values are not read
+    /// (§19), as bits by operand.
+    unread: u32,
 }
 
 fn reg_set_has(set: u64, r: PReg) -> bool {
@@ -369,17 +372,30 @@ fn fits(cx: &FnCx<'_, A64>, ty: TypeId, fpr: bool) -> bool {
 fn decide(cx: &FnCx<'_, A64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
     let site = inst.call().expect("checked by the caller");
     let args = site.args();
-    let chosen = choose(cx, ops, args);
     let tys = operand_types(cx, inst, site, ops)?;
-    let mut plan =
-        Plan { places: [None; MAX_OPS], tys, slots: [None; MAX_OPS], written: ops.clobbers };
-    // Which outputs an input is tied to.
-    let mut tied_by = [false; MAX_OPS];
-    for op in &ops.list[..ops.len] {
-        let alt = alt_of(op, chosen);
-        if op.kind == Kind::Input && alt.codes & TIED != 0 {
-            tied_by[usize::from(alt.tied)] = true;
+    // §19: LLVM's ties; an output with alternatives is tied only by an
+    // input with alternatives, and takes its memory code otherwise.
+    let ties = ops.ties().map_err(|e| match e {
+        hod_cg::asm_constraints::AltError::Parse => refused(hod_asm::reason::constraint("tied")),
+        hod_cg::asm_constraints::AltError::Count => {
+            CgError::unsupported(crate::barrier::ALTERNATIVE)
         }
+    })?;
+    if ties.count > 1 && ties.pairs().any(|(o, i)| tys[o] != tys[usize::from(i)]) {
+        return unsupported(crate::barrier::ALTERNATIVE);
+    }
+    let chosen = choose(cx, ops, args);
+    let mut plan = Plan {
+        places: [None; MAX_OPS],
+        tys,
+        slots: [None; MAX_OPS],
+        written: ops.clobbers,
+        unread: 0,
+    };
+    // Which outputs LLVM records as tied once the alternative is selected.
+    let mut tied_by = [false; MAX_OPS];
+    for (i, op) in ops.list[..ops.len].iter().enumerate() {
+        tied_by[i] = op.kind == Kind::Output && ties.matching(i, chosen).is_some();
     }
     // Registers named explicitly or clobbered are not chosen.
     let mut taken = ops.clobbers;
@@ -464,8 +480,13 @@ fn decide(cx: &FnCx<'_, A64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
             let out = usize::from(alt.tied);
             match plan.places[out] {
                 Some(Place::Reg(r)) => plan.places[i] = Some(Place::Reg(r)),
-                // Tied to a memory output: the same memory.
-                Some(Place::Mem(r)) => plan.places[i] = Some(Place::Mem(r)),
+                // Tied to a memory output: the same memory, whose address
+                // the output's pointer is; `llc` does not read the
+                // input's value (§19).
+                Some(Place::Mem(r)) => {
+                    plan.places[i] = Some(Place::Mem(r));
+                    plan.unread |= 1 << i;
+                }
                 _ => return Err(refused(hod_asm::reason::constraint("tied"))),
             }
         }
@@ -482,7 +503,7 @@ fn decide(cx: &FnCx<'_, A64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
             }
             Some(Place::Mem(r)) => {
                 plan.written |= 1 << r.index();
-                if !op.indirect && !fits(cx, plan.tys[i], true) {
+                if !op.indirect && plan.unread & (1 << i) == 0 && !fits(cx, plan.tys[i], true) {
                     return unsupported(OPERAND_TYPE);
                 }
             }
@@ -676,7 +697,8 @@ fn emit<'a>(
     for i in 0..ops.len {
         let op = ops.list[i];
         let Some(a) = op.arg else { continue };
-        let needs = matches!(plan.places[i], Some(Place::Reg(_) | Place::Mem(_)));
+        let needs = matches!(plan.places[i], Some(Place::Reg(_) | Place::Mem(_)))
+            && plan.unread & (1 << i) == 0;
         // An indirect output in memory needs its pointer; one in a
         // register needs it after the template; a direct input its value.
         if !needs {
@@ -768,6 +790,8 @@ fn emit<'a>(
                         zero_extend(cx, xr(r), bits);
                     }
                 }
+                // A tied input in memory is its output's memory.
+                Place::Mem(_) if plan.unread & (1 << i) != 0 => {}
                 Place::Mem(r) if !pass_fpr => {
                     let Some(slot) = plan.slots[i] else {
                         return cx.bug("an inline-assembly memory operand without a slot");
