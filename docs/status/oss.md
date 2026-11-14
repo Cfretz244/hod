@@ -11,7 +11,7 @@ Host: aarch64.
 | googletest | O0 | 85 | 85 | 85 | 0 | 0 | ok | ok | 62/63 | 62/63 | 62/63 | same | `hod-77f1f69` |
 | googletest | O0g | 85 | 85 | 85 | 0 | 0 | ok | ok | 62/63 | 62/63 | 62/63 | same | `hod-77f1f69` |
 | abseil | O0 | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 229/232 | 229/232 | same (rerun, note 1, note 2) | `hod-77f1f69` |
-| abseil | O0g | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 230/232 | 230/232 | same | `hod` |
+| abseil | O0g | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 231/232 | 231/232 | hod: 1 better; strict: 1 better | `hod-7b127f48` |
 | re2 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `hod-77f1f69` |
 | re2 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `hod-77f1f69` |
 | protobuf | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 4/4 | 4/4 | same | `hod` |
@@ -21,7 +21,7 @@ Host: aarch64.
 | yaml_cpp | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | yaml_cpp | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | glog | O0 | 23 | 47 | 45 | 0 | 0 | ok | ok | 22/24 | 22/24 | 22/24 | same | `hod-77f1f69` |
-| glog | O0g | 23 | 47 | 44 | 1 | 0 | ok | - | 23/24 | 23/24 | - | same | `hod-77f1f69` |
+| glog | O0g | 23 | 47 | 45 | 0 | 0 | ok | ok | 23/24 | 22/24 | 22/24 | hod: 1 worse (logging (note 4)); strict: 1 worse (logging (note 5)) | `hod-7b127f48` |
 | leveldb | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `hod-77f1f69` |
 | leveldb | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `hod-77f1f69` |
 | cli11 | O0 | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same | `hod-77f1f69` |
@@ -34,11 +34,9 @@ Notes:
 1. abseil O0 hod: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
 2. abseil O0 strict: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
 3. protobuf O0g hod: `full-test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
+4. glog O0g hod: `logging` passed 0 of 6 reruns.
+5. glog O0g strict: `logging` passed 0 of 3 reruns.
 
 ## Refusal census (hybrid builds)
 
-`first`: modules for which it was the reason hod gave (the module fell back for it); `census`: modules in which hod found it at all (`HOD_CENSUS=1`).
-
-| refusal | first | census | builds | functions (most frequent) |
-|---|---|---|---|---|
-| `debug:die-unsupported` | 1 | 1 | glog O0g | - |
+No refusal: every module kiln offered hod in the hybrid builds was built by hod.
