@@ -570,6 +570,11 @@ fn run_tool(tool: &Path, configure: impl Fn(&mut Command), what: &str) -> Result
         let first = said.lines().find(|l| l.contains("error:")).unwrap_or("").trim().to_owned();
         return Err(format!("{}: {first}", build::failure(what, &output, verify::LIMITS)));
     }
+    // A prefix is not the output: what follows the cap is not compared as
+    // missing (WP-210: a large module's relocations were cut off).
+    if output.truncated {
+        return Err(format!("{what} wrote more than {} bytes", process::OUTPUT_CAP));
+    }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
@@ -602,7 +607,7 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
     if let Err(e) = reference {
         return Outcome::Failed(e);
     }
-    let dump = |object: &Path, what: &[&str]| {
+    let dump = |object: &Path, what: &[&std::ffi::OsStr]| {
         run_tool(
             &tools.dwarfdump,
             |c| {
@@ -612,19 +617,31 @@ fn one(module: &Path, tools: &Tools, major: u32, dir: &Path) -> Outcome {
         )
     };
     for (object, who) in [(&hod_o, "hod"), (&llc_o, "llc")] {
-        if let Err(e) = dump(object, &["--verify"]) {
+        if let Err(e) = dump(object, &["--verify".as_ref()]) {
             return Outcome::Failed(format!("{who}'s object does not verify: {e}"));
         }
     }
-    let (ours, theirs) = match (dump(&hod_o, &["--debug-info"]), dump(&llc_o, &["--debug-info"])) {
+    // The DIE trees go through files: a large module's dump is more than
+    // the 16 MiB a captured stream keeps.
+    let info = |object: &Path, who: &str| {
+        let file = dir.join(format!("{who}.info.txt"));
+        dump(object, &["--debug-info".as_ref(), "-o".as_ref(), file.as_os_str()])?;
+        let text =
+            fs::read_to_string(&file).map_err(|e| format!("cannot read '{}': {e}", file.display()));
+        let _ = fs::remove_file(&file);
+        text
+    };
+    let (ours, theirs) = match (info(&hod_o, "hod"), info(&llc_o, "llc")) {
         (Ok(a), Ok(b)) => (parse_tree(&a), parse_tree(&b)),
         (Err(e), _) | (_, Err(e)) => return Outcome::Failed(e),
     };
+    // Only `.debug_info`'s relocations: all of a large object's are more
+    // than a captured stream keeps.
     let relocations = |object: &Path| {
         run_tool(
             &tools.objdump,
             |c| {
-                c.arg("-r").arg(object).env("LC_ALL", "C");
+                c.args(["-r", "-j", ".rela.debug_info"]).arg(object).env("LC_ALL", "C");
             },
             "llvm-objdump",
         )
@@ -1033,5 +1050,29 @@ RELOCATION RECORDS FOR [.debug_line]:\n0000000000000000 R_X86_64_64 .text\n";
             compare(&tree, &tree, &wrong, &ours, false, false, false),
             Outcome::Differs(_)
         ));
+    }
+
+    /// WP-210: a tool's output past the capture cap is a failure, not a
+    /// shorter listing (a large object's relocations were cut off before
+    /// `.debug_info`'s and reported as missing).
+    #[test]
+    fn output_past_the_cap_is_a_failure() {
+        let big = format!("head -c {} /dev/zero", process::OUTPUT_CAP + 1);
+        let failed = run_tool(
+            Path::new("/bin/sh"),
+            |c| {
+                c.args(["-c", &big]);
+            },
+            "sh",
+        );
+        assert!(failed.is_err_and(|e| e.contains("more than")));
+        let fits = run_tool(
+            Path::new("/bin/sh"),
+            |c| {
+                c.args(["-c", "echo ok"]);
+            },
+            "sh",
+        );
+        assert_eq!(fits.as_deref(), Ok("ok\n"));
     }
 }

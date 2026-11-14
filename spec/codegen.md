@@ -4413,6 +4413,83 @@ without them: the code of the x86-64 baseline is unchanged).
 
 Evidence: `spec/landed/codegen/WP-202.md`, `spec/landed/codegen/WP-207.md`.
 
+#### 5.6.34 The AArch64 intrinsic headers, built and refused (WP-205)
+
+What reaches the back end from every function and function-like macro of
+`<arm_neon.h>`, `<arm_fp16.h>` and `<arm_acle.h>` that clang 19 or 22
+compiles at `-O0` (one wrapper each, the features clang asks for added;
+`crates/hod_a64/tests/data/neon_census/census.py`), and what hod does
+with it (`census.tsv` there: one line per `llvm.*` name or IR
+instruction, the header functions that reach it, how many hod builds).
+A function counts as built when `hod --strict` writes an object for it
+under every clang that compiles it.
+
+| group | functions | built before | built after | refused |
+|---|---|---|---|---|
+| arithmetic | 810 | 810 | 810 | 0 |
+| load-store | 746 | 746 | 746 | 0 |
+| convert | 659 | 623 | 659 | 0 |
+| lane | 496 | 496 | 496 | 0 |
+| saturating | 371 | 369 | 371 | 0 |
+| compare | 302 | 302 | 302 | 0 |
+| fp8, lut, faminmax | 275 | 184 | 184 | 91 |
+| shift | 210 | 210 | 210 | 0 |
+| bf16 | 169 | 108 | 156 | 13 |
+| polynomial | 145 | 145 | 145 | 0 |
+| pairwise, reduce, table | 244 | 244 | 244 | 0 |
+| complex (`fcma`) | 70 | 70 | 70 | 0 |
+| min-max | 52 | 48 | 52 | 0 |
+| dot, matrix multiply | 39 | 25 | 25 | 14 |
+| rdm, fp16fml | 60 | 60 | 60 | 0 |
+| sha2, sha3, aes, crc | 46 | 46 | 46 | 0 |
+| sm3, sm4 | 9 | 0 | 9 | 0 |
+| ACLE scalar | 31 | 21 | 30 | 1 |
+| ACLE system | 19 | 9 | 9 | 10 |
+| all | 4753 | 4516 | 4624 | 129 |
+
+The fp8 group's 184 built are its functions without an fp8 type (the
+`mf8` loads, stores and lane moves, which are bytes). 130 header
+functions compile under neither clang for AArch64 (the AArch32 DSP and
+coprocessor functions, `__arm_rsr`/`__arm_wsr` and the MTE macros with
+non-constant operands, `vcmla*_f64`); they are not counted.
+
+Built by WP-205 (each by §5.5.1's NEON rules unless said):
+
+1. **`sm3partw1`, `sm3partw2`, `sm3tt1a`/`1b`/`2a`/`2b`, `sm4e`** tied
+   to the first operand (`mov` into the destination first, as the other
+   tied crypto forms); `sm3ss1` and `sm4ekey` three- and two-register.
+   `sm3tt*`'s `i64` is the lane of the third operand, 0 to 3; any other
+   is `a64:intrinsic-immediate`.
+2. **Half precision scalars** (`FEAT_FP16`, the single-precision word
+   with `ftype` 3): `fcvt{a,m,n,p,z}{s,u}` of `half` to `i32`/`i64`
+   into a general register; to `i16` the scalar SIMD form `fcvt* h, h`
+   (saturating to 16 bits) and its `fmov w` (zero-extended), which is
+   `llc` 22's (19 cannot select it); `vcvtfp2fx{s,u}` of `half` to
+   `i32`/`i64` the 16-bit fixed point `fcvtz{s,u} h, h, #n`, and
+   `vcvtfx{s,u}2fp` from `i32`/`i64` `{s,u}cvtf h, h, #n` of the
+   integer's low 16 bits, as `llc`; `n` 1 to 16, else
+   `a64:intrinsic-immediate`; `fmax`, `fmin`, `fmaxnm`, `fminnm` `.f16`.
+3. **`frint32x`, `frint32z`, `frint64x`, `frint64z`** of `float` and
+   `double` (`FEAT_FRINTTS`, the scalar forms of the vector names
+   already built); **`fjcvtzs`** (`FEAT_JSCVT`, `double` to `i32`).
+4. **Vectors of `bfloat` in the structure loads and stores** (`ld1x2`
+   to `ld1x4`, `ld2` to `ld4`, their `lane` and `r` forms, `st1x2` to
+   `st4lane`): moved as 16-bit integer lanes, the bits unchanged.
+5. **A vector constant whose other lanes are `poison` or `undef`** is a
+   splat of its defined lanes where an immediate is read from one
+   (clang's `vqshlub_n_s8`/`vqshluh_n_s16` set lane 0 only).
+
+Refused by name (`intrinsic:<name>`), on purpose: the fp8 names and
+`set.fpmr` (FEAT_FP8, the `fpm` register), `vluti2`/`vluti4q` (FEAT_LUT),
+`famax`/`famin` (FEAT_FAMINMAX), `llvm.vector.insert`/`extract` (only the
+fp8 functions write them), `rndr`/`rndrrs`, `gcspopm`/`gcsss`
+(`__gcspr` is `a64:named-register`), `ld64b`/`st64b*`, `chkfeat`,
+`ldxr`/`stxr` of `__swp`, and the scalar `bfcvt` of clang 19's
+`vcvth_bf16_f32` (clang 22 writes `fptrunc`, built). SVE, SME and
+scalable types stay refused as before.
+
+Evidence: `spec/landed/codegen/WP-205.md`.
+
 #### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208)
 
 Design: `docs/design/0007-avx512.md`. Evidence:
@@ -4521,89 +4598,34 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    executes AVX-512 (QEMU's user mode models none), so the variable is
    the one way to run it, on an AVX-512 host:
    `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
+3. **512-bit vectors and vectors of `i1` by value** (`spec/abi-x64.md`
+   §1.3, §3.2, §4.3, §5.1, §8.7, §9.1): under AVX-512 whose conventions
+   hod knows, a vector of 33 to 64 bytes travels in one `zmm` when the
+   function's 512-bit vectors are legal (`llc`'s `useAVX512Regs`, from
+   `avx512vl`, the preferred width and `"min-legal-vector-width"`), else
+   in two `ymm`; a mask of 32 elements in the byte lanes of a `ymm`, of
+   64 in those of a `zmm` (or two `ymm`) with `avx512bw`, any other
+   length up to 64 byte by byte. The pieces move with `vmovdqu64`
+   (`vector::load_wide`, `store_wide`), the lanes through a slot of the
+   register's size (`vcall.rs`). Evidence: hod's convention of every
+   signature of a grid over eighteen AVX-512 machines equals `llc` 19's
+   and 22's, read from their MIR (`abi::zmm_grid`), as does that of
+   every function clang 19 and 22 write for seven `-march` sets
+   (`abi::clang_signatures_agree_with_their_llc`); hod's code for
+   functions receiving and returning `zmm` and `ymm` pairs moves the
+   bytes `llc`'s does (`zmm_flows_agree_with_llc_by_dataflow`);
+   `vzeroupper` as `llc` writes it
+   (`vzeroupper_with_zmm_where_llc_writes_it`). With
+   `HOD_X64_AVX512_RUNNER` the grid also runs, hod against `llc` both
+   ways.
+
    **Evidence by name.**
 
    | Names | Executed | Dataflow against `llc` only |
    |---|---|---|
    | `llvm.masked.load`, `.store`, `.expandload`, `.compressstore` (1) | yes (`qemu-x86_64`) | |
    | the 174 `llvm.x86.avx512.*` names of (2), F, VL, BW, DQ and the VBMI2 compresses | | yes, until an AVX-512 host runs the command above |
-
-#### 5.6.34 The AArch64 intrinsic headers, built and refused (WP-205)
-
-What reaches the back end from every function and function-like macro of
-`<arm_neon.h>`, `<arm_fp16.h>` and `<arm_acle.h>` that clang 19 or 22
-compiles at `-O0` (one wrapper each, the features clang asks for added;
-`crates/hod_a64/tests/data/neon_census/census.py`), and what hod does
-with it (`census.tsv` there: one line per `llvm.*` name or IR
-instruction, the header functions that reach it, how many hod builds).
-A function counts as built when `hod --strict` writes an object for it
-under every clang that compiles it.
-
-| group | functions | built before | built after | refused |
-|---|---|---|---|---|
-| arithmetic | 810 | 810 | 810 | 0 |
-| load-store | 746 | 746 | 746 | 0 |
-| convert | 659 | 623 | 659 | 0 |
-| lane | 496 | 496 | 496 | 0 |
-| saturating | 371 | 369 | 371 | 0 |
-| compare | 302 | 302 | 302 | 0 |
-| fp8, lut, faminmax | 275 | 184 | 184 | 91 |
-| shift | 210 | 210 | 210 | 0 |
-| bf16 | 169 | 108 | 156 | 13 |
-| polynomial | 145 | 145 | 145 | 0 |
-| pairwise, reduce, table | 244 | 244 | 244 | 0 |
-| complex (`fcma`) | 70 | 70 | 70 | 0 |
-| min-max | 52 | 48 | 52 | 0 |
-| dot, matrix multiply | 39 | 25 | 25 | 14 |
-| rdm, fp16fml | 60 | 60 | 60 | 0 |
-| sha2, sha3, aes, crc | 46 | 46 | 46 | 0 |
-| sm3, sm4 | 9 | 0 | 9 | 0 |
-| ACLE scalar | 31 | 21 | 30 | 1 |
-| ACLE system | 19 | 9 | 9 | 10 |
-| all | 4753 | 4516 | 4624 | 129 |
-
-The fp8 group's 184 built are its functions without an fp8 type (the
-`mf8` loads, stores and lane moves, which are bytes). 130 header
-functions compile under neither clang for AArch64 (the AArch32 DSP and
-coprocessor functions, `__arm_rsr`/`__arm_wsr` and the MTE macros with
-non-constant operands, `vcmla*_f64`); they are not counted.
-
-Built by WP-205 (each by §5.5.1's NEON rules unless said):
-
-1. **`sm3partw1`, `sm3partw2`, `sm3tt1a`/`1b`/`2a`/`2b`, `sm4e`** tied
-   to the first operand (`mov` into the destination first, as the other
-   tied crypto forms); `sm3ss1` and `sm4ekey` three- and two-register.
-   `sm3tt*`'s `i64` is the lane of the third operand, 0 to 3; any other
-   is `a64:intrinsic-immediate`.
-2. **Half precision scalars** (`FEAT_FP16`, the single-precision word
-   with `ftype` 3): `fcvt{a,m,n,p,z}{s,u}` of `half` to `i32`/`i64`
-   into a general register; to `i16` the scalar SIMD form `fcvt* h, h`
-   (saturating to 16 bits) and its `fmov w` (zero-extended), which is
-   `llc` 22's (19 cannot select it); `vcvtfp2fx{s,u}` of `half` to
-   `i32`/`i64` the 16-bit fixed point `fcvtz{s,u} h, h, #n`, and
-   `vcvtfx{s,u}2fp` from `i32`/`i64` `{s,u}cvtf h, h, #n` of the
-   integer's low 16 bits, as `llc`; `n` 1 to 16, else
-   `a64:intrinsic-immediate`; `fmax`, `fmin`, `fmaxnm`, `fminnm` `.f16`.
-3. **`frint32x`, `frint32z`, `frint64x`, `frint64z`** of `float` and
-   `double` (`FEAT_FRINTTS`, the scalar forms of the vector names
-   already built); **`fjcvtzs`** (`FEAT_JSCVT`, `double` to `i32`).
-4. **Vectors of `bfloat` in the structure loads and stores** (`ld1x2`
-   to `ld1x4`, `ld2` to `ld4`, their `lane` and `r` forms, `st1x2` to
-   `st4lane`): moved as 16-bit integer lanes, the bits unchanged.
-5. **A vector constant whose other lanes are `poison` or `undef`** is a
-   splat of its defined lanes where an immediate is read from one
-   (clang's `vqshlub_n_s8`/`vqshluh_n_s16` set lane 0 only).
-
-Refused by name (`intrinsic:<name>`), on purpose: the fp8 names and
-`set.fpmr` (FEAT_FP8, the `fpm` register), `vluti2`/`vluti4q` (FEAT_LUT),
-`famax`/`famin` (FEAT_FAMINMAX), `llvm.vector.insert`/`extract` (only the
-fp8 functions write them), `rndr`/`rndrrs`, `gcspopm`/`gcsss`
-(`__gcspr` is `a64:named-register`), `ld64b`/`st64b*`, `chkfeat`,
-`ldxr`/`stxr` of `__swp`, and the scalar `bfcvt` of clang 19's
-`vcvth_bf16_f32` (clang 22 writes `fptrunc`, built). SVE, SME and
-scalable types stay refused as before.
-
-Evidence: `spec/landed/codegen/WP-205.md`.
+   | `zmm` arguments and results, masks by value (3) | | yes (conventions against `llc`'s MIR; the bytes of `zmm` and `ymm`-pair moves by dataflow), until an AVX-512 host runs `abi::zmm_grid` with `HOD_X64_AVX512_RUNNER` |
 
 #### 5.6.36 The large code model (WP-209)
 
@@ -5879,8 +5901,13 @@ branch relocation, the large code model's `movabs` of the callee
 pointer, which is also the function's DWARF frame base (variable
 locations are offsets from it). `cfi` rows are DWARF call-frame
 instructions as data: `DefCfa { reg, offset }`, `DefCfaOffset`,
-`DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, each
-with the code offset from which it holds. The target emits the rows for
+`DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, and
+`RememberState`/`RestoreState` from an inline-assembly template only
+(`spec/eh.md` §4.3, `spec/asm.md` §15), each with the code offset from
+which it holds. `cfi_at` inserts a row after every row at its offset or
+before it, so a prologue's rows added at `end_function` go ahead of a
+template's rows later in the code; without template rows that is the
+end of the list, as before. The target emits the rows for
 its prologue and its exit sequences. The exit sequences are the last code
 of the function, so nothing after them needs the body's state back; each
 tail exit, coming after another exit sequence, starts with rows that
@@ -5889,7 +5916,8 @@ than relying on remembered state. So does the shared trap of §6.1, which
 the core places after the exit sequences and the body branches to: before
 it, the core restates the net effect of the rows emitted before the
 epilogue was bound (one CFA rule, then the last rule of each saved
-register). `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
+register), applying a template's `RememberState`/`RestoreState` as a
+stack of those rules. `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
 re-exported, so the rows reach `.eh_frame` as they are. The rows are
 exact at every instruction boundary (asynchronous unwind tables), which
 is what debuggers and profilers need; `hod_eh` writes them into

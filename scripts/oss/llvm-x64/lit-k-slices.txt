@@ -1,0 +1,13 @@
+codegen-x86=@scripts/oss/llvm-x64/lit-codegen-x86.txt
+instcombine=@scripts/oss/llvm-x64/lit-instcombine.txt
+test/MC/X86
+test/Bitcode
+test/Object
+test/tools/llvm-objdump
+test/Analysis/BasicAA
+test/Transforms/SimplifyCFG
+test/DebugInfo/X86
+test/Verifier
+test/Transforms/GVN
+test/Linker
+test/Analysis/ScalarEvolution

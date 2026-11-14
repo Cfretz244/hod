@@ -1,0 +1,11 @@
+codegen-x86-b=@scripts/oss/llvm-x64/lit-codegen-x86-b.txt
+test/Assembler
+test/Transforms/SROA
+test/Transforms/InstSimplify
+test/Transforms/EarlyCSE
+test/Transforms/LICM
+test/tools/llvm-readobj
+test/DebugInfo/Generic
+test/Feature
+test/Other
+test/tools/llvm-ar

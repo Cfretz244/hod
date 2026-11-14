@@ -239,17 +239,28 @@ for 0; `DW_CFA_advance_loc` (delta in the low 6 bits) below 0x40;
 | `Restore { reg }` | `DW_CFA_restore \| reg` below 64; `DW_CFA_restore_extended` ULEB `reg` |
 | `NegateRaState` | `DW_CFA_AARCH64_negate_ra_state` (0x2d), §4.5 |
 | `BKeyFrame` | nothing; as the FDE's first row it selects the `B` CIE, §4.5 |
+| `RememberState` | `DW_CFA_remember_state` (0x0a), §4.3 |
+| `RestoreState` | `DW_CFA_restore_state` (0x0b), §4.3 |
 
 (`daf` is the data alignment factor.)
 
 ### 4.3 Remembered state
 
-hod's rows have no `DW_CFA_remember_state`/`DW_CFA_restore_state`: a target
-states the body's rules again after an exit sequence that is not the last
-code (`spec/codegen.md` §9.3). `llc` uses the pair in that place, so for
-such a function `hod_eh`'s bytes differ from `llc`'s while the rules at
-every offset are the same. The difference is deliberate: it keeps the rows
-a flat list a target appends to and the encoder stateless.
+A target's own rows use no `RememberState`/`RestoreState`: it states the
+body's rules again after an exit sequence that is not the last code
+(`spec/codegen.md` §9.3). `llc` uses the pair in that place, so for such
+a function `hod_eh`'s bytes differ from `llc`'s while the rules at every
+offset are the same. The difference is deliberate: it keeps the encoder
+stateless.
+
+The pair reaches the rows only from inline assembly (WP-212,
+`spec/asm.md` §15): a template's `.cfi_remember_state` and
+`.cfi_restore_state` become rows at their offsets in the template, and
+the encoder writes them as they are, one byte each. A row is written in
+order like any other; the encoder keeps no stack and checks no pairing.
+Whoever restates the rules at an offset from the rows (the core before
+the shared trap, `spec/codegen.md` §9.3) applies them: `RememberState`
+pushes the rules so far, `RestoreState` pops them back.
 
 ### 4.4 LEB128
 

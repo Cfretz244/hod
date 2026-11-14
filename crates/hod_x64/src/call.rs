@@ -38,7 +38,7 @@
 //! - The refusals of the forms the sequence does not handle (operand
 //!   bundles, a `callbr` that is not inline assembly).
 
-use hod_cg::abi::{AbiUnsupported, Assignment, Place, Sig};
+use hod_cg::abi::{AbiUnsupported, Assignment, PartKind, Place, Sig};
 use hod_cg::{CallArg, CgResult, Class, FnCx, FrameRef, RuntimeFn, Target};
 use hod_ir::{
     CallSite, Clause, Const, Inst, Intrinsic, LandingPad, Opcode, ParamAttrs, ParamMem, SymId,
@@ -362,16 +362,18 @@ fn byval_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
 
 /// WP-203 (`spec/abi-x64.md` §3.2, §8.7): 32 when an argument of
 /// `site` has a `ymm` piece on the stack (a 32-byte slot aligned to 32,
-/// which `llc`'s callee reads with `vmovaps`); 0 otherwise.
+/// which `llc`'s callee reads with `vmovaps`), WP-208: 64 when it has a
+/// `zmm` piece there; 0 otherwise.
 fn wide_stack_align(cx: &FnCx<'_, X64>, site: &CallSite<'_>) -> u64 {
     let features = cx.target.features.abi;
     let types = cx.types();
     let Some((tys, asg)) = call_assignment(cx, site) else { return 0 };
-    let on_stack = asg.args.iter().any(|part| {
-        matches!(part.place, Place::Stack(_))
-            && crate::abi::has_wide_leaf(types, tys[part.arg as usize], features)
-    });
-    if on_stack { 32 } else { 0 }
+    asg.args
+        .iter()
+        .filter(|part| matches!(part.place, Place::Stack(_)))
+        .map(|part| crate::abi::wide_slot(types, tys[part.arg as usize], features))
+        .max()
+        .unwrap_or(0)
 }
 
 /// WP-203: the types and the assignment of `site` as the call sequence
@@ -510,8 +512,12 @@ fn call_effect(cx: &FnCx<'_, X64>, inst: Inst<'_>) -> Option<(bool, bool)> {
         })
     });
     let Some((tys, asg)) = call_assignment(cx, &site) else { return Some((copies, false)) };
+    // WP-208: a mask whose lanes fill a `ymm` or `zmm` on the stack is
+    // built in that register too.
     let stored = asg.args.iter().any(|part| {
-        matches!(part.place, Place::Stack(_)) && touches_ymm(types, tys[part.arg as usize])
+        matches!(part.place, Place::Stack(_))
+            && (touches_ymm(types, tys[part.arg as usize])
+                || (matches!(part.kind, PartKind::Lanes { .. }) && part.size > 16))
     });
     let uses = asg
         .args
