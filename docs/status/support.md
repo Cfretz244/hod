@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 910 | 361 | 11 | 538 | 670 | 10 | 230 |
-| total | 1236 | 582 | 59 | 595 | 894 | 61 | 281 |
+| `intrinsic` | 922 | 361 | 11 | 550 | 682 | 10 | 230 |
+| total | 1248 | 582 | 59 | 607 | 906 | 61 | 281 |
 
 ## `module`
 
@@ -1441,6 +1441,18 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.avx512.pmultishift.qb.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.avx512.pmultishift.qb.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.avx512.pmultishift.qb.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.vgf2p8affineqb.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.vgf2p8mulb.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesenc.256` | rejected | supported (int, ptr, vector) | an x86 property. VAES (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesenclast.256` | rejected | supported (int, ptr, vector) | an x86 property. VAES (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesdec.256` | rejected | supported (int, ptr, vector) | an x86 property. VAES (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesdeclast.256` | rejected | supported (int, ptr, vector) | an x86 property. VAES (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesenc.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesenclast.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesdec.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.aesni.aesdeclast.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.pclmulqdq.256` | rejected | supported (int, ptr, vector) | an x86 property. VPCLMULQDQ (WP-220) |
+| `intrinsic:llvm.x86.pclmulqdq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 
 ## Structural rules
 

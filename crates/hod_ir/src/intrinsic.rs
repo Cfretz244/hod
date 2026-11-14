@@ -1015,6 +1015,19 @@ intrinsics! {
     X86Avx512PmultishiftQb128 = "llvm.x86.avx512.pmultishift.qb.128" [],
     X86Avx512PmultishiftQb256 = "llvm.x86.avx512.pmultishift.qb.256" [],
     X86Avx512PmultishiftQb512 = "llvm.x86.avx512.pmultishift.qb.512" [],
+    // GFNI, VAES and VPCLMULQDQ past 128 bits (WP-220).
+    X86Vgf2p8affineqb512 = "llvm.x86.vgf2p8affineqb.512" [],
+    X86Vgf2p8mulb512 = "llvm.x86.vgf2p8mulb.512" [],
+    X86AesniAesenc256 = "llvm.x86.aesni.aesenc.256" [],
+    X86AesniAesenclast256 = "llvm.x86.aesni.aesenclast.256" [],
+    X86AesniAesdec256 = "llvm.x86.aesni.aesdec.256" [],
+    X86AesniAesdeclast256 = "llvm.x86.aesni.aesdeclast.256" [],
+    X86AesniAesenc512 = "llvm.x86.aesni.aesenc.512" [],
+    X86AesniAesenclast512 = "llvm.x86.aesni.aesenclast.512" [],
+    X86AesniAesdec512 = "llvm.x86.aesni.aesdec.512" [],
+    X86AesniAesdeclast512 = "llvm.x86.aesni.aesdeclast.512" [],
+    X86Pclmulqdq256 = "llvm.x86.pclmulqdq.256" [],
+    X86Pclmulqdq512 = "llvm.x86.pclmulqdq.512" [],
 }
 
 /// The most overload types an intrinsic on the list has.

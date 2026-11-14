@@ -103,7 +103,7 @@ type Row = (&'static str, Avx512, &'static str, Op);
 
 #[allow(clippy::too_many_lines, reason = "one arm per name")]
 fn row(which: Intrinsic<'_>) -> Option<Row> {
-    use Avx512::{Bw, Dq, F, Vbmi};
+    use Avx512::{Bw, Dq, F, Gfni, Vaes, Vbmi, Vpclmulqdq};
     use Intrinsic as I;
     Some(match which {
         I::X86Avx512MaskGetexpPs512 => {
@@ -719,6 +719,40 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
             "vv",
             Op::E3(E3::Pmultishiftqb, Form::Plain),
         ),
+        // GFNI, VAES and VPCLMULQDQ at 512 bits (WP-220).
+        I::X86Vgf2p8affineqb512 => (
+            "intrinsic:llvm.x86.vgf2p8affineqb.512",
+            Gfni,
+            "vvi",
+            Op::E3Imm(E3Imm::Gf2p8affineqb, Form::Plain),
+        ),
+        I::X86Vgf2p8mulb512 => {
+            ("intrinsic:llvm.x86.vgf2p8mulb.512", Gfni, "vv", Op::E3(E3::Gf2p8mulb, Form::Plain))
+        }
+        I::X86AesniAesenc512 => {
+            ("intrinsic:llvm.x86.aesni.aesenc.512", Vaes, "vv", Op::E3(E3::Aesenc, Form::Plain))
+        }
+        I::X86AesniAesenclast512 => (
+            "intrinsic:llvm.x86.aesni.aesenclast.512",
+            Vaes,
+            "vv",
+            Op::E3(E3::Aesenclast, Form::Plain),
+        ),
+        I::X86AesniAesdec512 => {
+            ("intrinsic:llvm.x86.aesni.aesdec.512", Vaes, "vv", Op::E3(E3::Aesdec, Form::Plain))
+        }
+        I::X86AesniAesdeclast512 => (
+            "intrinsic:llvm.x86.aesni.aesdeclast.512",
+            Vaes,
+            "vv",
+            Op::E3(E3::Aesdeclast, Form::Plain),
+        ),
+        I::X86Pclmulqdq512 => (
+            "intrinsic:llvm.x86.pclmulqdq.512",
+            Vpclmulqdq,
+            "vvi",
+            Op::E3Imm(E3Imm::Pclmulqdq, Form::Plain),
+        ),
         _ => return None,
     })
 }
@@ -875,6 +909,10 @@ fn lower<'a>(
                         TypeKind::Int(bits) => matches!(bits, 8 | 16 | 32 | 64),
                         _ => crate::mask::mask_lanes(cx.types(), ty).is_some(),
                     }
+            }
+            // The immediates of `vgf2p8affineqb` and `vpclmulqdq` are `i8`.
+            b'i' if matches!(op, Op::E3Imm(E3Imm::Gf2p8affineqb | E3Imm::Pclmulqdq, _)) => {
+                matches!(cx.types().kind(ty), TypeKind::Int(8))
             }
             _ => matches!(cx.types().kind(ty), TypeKind::Int(32)),
         };

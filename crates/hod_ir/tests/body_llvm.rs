@@ -1573,6 +1573,18 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.x86.avx512.pmultishift.qb.128", "<16 x i8> (<16 x i8>, <16 x i8>)"),
     ("llvm.x86.avx512.pmultishift.qb.256", "<32 x i8> (<32 x i8>, <32 x i8>)"),
     ("llvm.x86.avx512.pmultishift.qb.512", "<64 x i8> (<64 x i8>, <64 x i8>)"),
+    ("llvm.x86.vgf2p8affineqb.512", "<64 x i8> (<64 x i8>, <64 x i8>, i8)"),
+    ("llvm.x86.vgf2p8mulb.512", "<64 x i8> (<64 x i8>, <64 x i8>)"),
+    ("llvm.x86.aesni.aesenc.256", "<4 x i64> (<4 x i64>, <4 x i64>)"),
+    ("llvm.x86.aesni.aesenclast.256", "<4 x i64> (<4 x i64>, <4 x i64>)"),
+    ("llvm.x86.aesni.aesdec.256", "<4 x i64> (<4 x i64>, <4 x i64>)"),
+    ("llvm.x86.aesni.aesdeclast.256", "<4 x i64> (<4 x i64>, <4 x i64>)"),
+    ("llvm.x86.aesni.aesenc.512", "<8 x i64> (<8 x i64>, <8 x i64>)"),
+    ("llvm.x86.aesni.aesenclast.512", "<8 x i64> (<8 x i64>, <8 x i64>)"),
+    ("llvm.x86.aesni.aesdec.512", "<8 x i64> (<8 x i64>, <8 x i64>)"),
+    ("llvm.x86.aesni.aesdeclast.512", "<8 x i64> (<8 x i64>, <8 x i64>)"),
+    ("llvm.x86.pclmulqdq.256", "<4 x i64> (<4 x i64>, <4 x i64>, i8)"),
+    ("llvm.x86.pclmulqdq.512", "<8 x i64> (<8 x i64>, <8 x i64>, i8)"),
 ];
 
 /// Names on the list that LLVM 22 upgrades to other IR on reading (so

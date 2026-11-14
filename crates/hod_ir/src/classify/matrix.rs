@@ -4102,6 +4102,18 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.avx512.pmultishift.qb.128", never(X64_ONLY), on(X86_SSE), AVX512_2),
     row("intrinsic:llvm.x86.avx512.pmultishift.qb.256", never(X64_ONLY), on(X86_SSE), AVX512_2),
     row("intrinsic:llvm.x86.avx512.pmultishift.qb.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.vgf2p8affineqb.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.vgf2p8mulb.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.aesni.aesenc.256", never(X64_ONLY), on(X86_SSE), "VAES (WP-220)"),
+    row("intrinsic:llvm.x86.aesni.aesenclast.256", never(X64_ONLY), on(X86_SSE), "VAES (WP-220)"),
+    row("intrinsic:llvm.x86.aesni.aesdec.256", never(X64_ONLY), on(X86_SSE), "VAES (WP-220)"),
+    row("intrinsic:llvm.x86.aesni.aesdeclast.256", never(X64_ONLY), on(X86_SSE), "VAES (WP-220)"),
+    row("intrinsic:llvm.x86.aesni.aesenc.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.aesni.aesenclast.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.aesni.aesdec.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.aesni.aesdeclast.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.pclmulqdq.256", never(X64_ONLY), on(X86_SSE), "VPCLMULQDQ (WP-220)"),
+    row("intrinsic:llvm.x86.pclmulqdq.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
 ];
 
 /// The value classes of the masked memory intrinsics' signatures

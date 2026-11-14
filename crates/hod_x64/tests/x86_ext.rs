@@ -227,6 +227,12 @@ const ROWS: &[Row] = &[
     ("llvm.x86.vgf2p8affineinvqb.256", B32, &[B32, B32, "i8"], "gfni avx"),
     ("llvm.x86.vgf2p8mulb.128", B16, &[B16, B16], "gfni"),
     ("llvm.x86.vgf2p8mulb.256", B32, &[B32, B32], "gfni avx"),
+    // WP-220: the 256-bit VAES and VPCLMULQDQ forms (VEX).
+    ("llvm.x86.aesni.aesenc.256", Q4, &[Q4, Q4], "vaes"),
+    ("llvm.x86.aesni.aesenclast.256", Q4, &[Q4, Q4], "vaes"),
+    ("llvm.x86.aesni.aesdec.256", Q4, &[Q4, Q4], "vaes"),
+    ("llvm.x86.aesni.aesdeclast.256", Q4, &[Q4, Q4], "vaes"),
+    ("llvm.x86.pclmulqdq.256", Q4, &[Q4, Q4, "i8"], "vpclmulqdq"),
 ];
 
 /// WP-173's scalar compares, whose predicate has five bits with AVX.
@@ -259,7 +265,7 @@ const GATHERS: &[Row] = &[
 
 /// Every feature of [`ROWS`], on every generated function.
 const FEATURES: &str = "+cx8,+fxsr,+mmx,+sse,+sse2,+x87,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,\
-                        +avx,+avx2,+fma,+f16c,+aes,+pclmul,+sha,+gfni";
+                        +avx,+avx2,+fma,+f16c,+aes,+pclmul,+sha,+gfni,+vaes,+vpclmulqdq";
 
 /// The bytes of one case: four vector operands of 32 bytes, then the
 /// `i32` count (128) and the two string lengths (132, 136).
@@ -284,7 +290,7 @@ fn immediates(name: &str) -> Vec<i64> {
         "sse41.insertps" => &[0x00, 0x1d, 0xc0, 0x4f, 0xff, 0x31],
         "sse41.mpsadbw" => &[0, 1, 2, 3, 4, 5, 6, 7],
         "avx2.mpsadbw" => &[0, 0x05, 0x2a, 0x3f, 0x38],
-        "pclmulqdq" => &[0, 1, 0x10, 0x11],
+        "pclmulqdq" | "pclmulqdq.256" => &[0, 1, 0x10, 0x11],
         "aesni.aeskeygenassist" => &[0, 1, 0x1b, 0x80],
         "sha1rnds4" => &[0, 1, 2, 3],
         _ if n.contains("pcmp") => {
@@ -813,6 +819,31 @@ fn only_with_the_feature() {
                 store <32 x i8> %r, ptr %p, align 1\n  ret void\n}\n\
                 attributes #0 = { \"target-features\"=\"+gfni\" }\n";
     assert_eq!(compile(gfni), Err(CgError::unsupported("intrinsic:llvm.x86.vgf2p8mulb.256")));
+    // VAES and VPCLMULQDQ go with what they imply (WP-220).
+    for (name, imm, features, ok) in [
+        ("aesni.aesenc.256", "", "+vaes,-aes", false),
+        ("aesni.aesenc.256", "", "+vaes,-avx2", false),
+        ("aesni.aesenc.256", "", "+aes,+avx2", false),
+        ("aesni.aesenc.256", "", "+vaes,-avx2,+avx2", false),
+        ("aesni.aesenc.256", "", "+avx512f,+vaes", true),
+        ("pclmulqdq.256", ", i8 1", "+vpclmulqdq,-pclmul", false),
+        ("pclmulqdq.256", ", i8 1", "+vpclmulqdq,-avx", false),
+        ("pclmulqdq.256", ", i8 1", "+pclmul,+avx2", false),
+        ("pclmulqdq.256", ", i8 1", "+vpclmulqdq,-avx2", true),
+    ] {
+        let ty = if imm.is_empty() { "" } else { ", i8" };
+        let text = format!(
+            "declare <4 x i64> @llvm.x86.{name}(<4 x i64>, <4 x i64>{ty})\n\
+             define void @f(ptr %p) #0 {{\n  %v = load <4 x i64>, ptr %p, align 1\n  \
+             %r = call <4 x i64> @llvm.x86.{name}(<4 x i64> %v, <4 x i64> %v{imm})\n  \
+             store <4 x i64> %r, ptr %p, align 1\n  ret void\n}}\n\
+             attributes #0 = {{ \"target-features\"=\"{features}\" }}\n"
+        );
+        let refusal: &'static str =
+            Box::leak(format!("intrinsic:llvm.x86.{name}").into_boxed_str());
+        let want = if ok { Ok(()) } else { Err(CgError::unsupported(refusal)) };
+        assert_eq!(compile(&text), want, "{name} under {features}");
+    }
 }
 
 /// Every intrinsic of this package is an x86-64 row and refused on

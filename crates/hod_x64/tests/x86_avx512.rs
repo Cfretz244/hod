@@ -755,6 +755,12 @@ mod dataflow {
                 ops.push(op);
             }
         }
+        // hod writes GFNI's 128-bit forms in their SSE encoding, `llc`
+        // with AVX in their VEX one: `op x, y` is `vop x, x, y`.
+        if mnemonic.starts_with("gf2p8") && !ops.is_empty() {
+            mnemonic.insert(0, 'v');
+            ops.insert(1, ops[0].clone());
+        }
         Line { mnemonic, ops, mask, zero }
     }
 
@@ -1347,8 +1353,17 @@ enum Fam {
     VBMI2,
     /// `avx512vbmi` (WP-220).
     VBMI,
+    /// `gfni`, `vaes`, `vpclmulqdq`, each with `avx512f`.
+    GFNI,
+    VAES,
+    VPCLMUL,
+    /// A VEX form of the 128- or 256-bit GFNI, VAES or VPCLMULQDQ names
+    /// (`x86::ext`), by its feature: compared here by dataflow, as no
+    /// emulator here has GFNI or VPCLMULQDQ (`tests/x86_ext.rs` executes
+    /// the VAES ones).
+    Vex(&'static str),
 }
-use Fam::{BW, DQ, F, VBMI, VBMI2};
+use Fam::{BW, DQ, F, GFNI, VAES, VBMI, VBMI2, VPCLMUL, Vex};
 
 /// The census's F/VL, BW and DQ names (design 0007 §5.1): the family,
 /// the role of each operand, the declaration. Roles: `v` a vector, `p`
@@ -1667,6 +1682,22 @@ const NAMES: &[(Fam, &str, &str)] = &[
     (VBMI, "vv", "<16 x i8> @llvm.x86.avx512.pmultishift.qb.128(<16 x i8>, <16 x i8>)"),
     (VBMI, "vv", "<32 x i8> @llvm.x86.avx512.pmultishift.qb.256(<32 x i8>, <32 x i8>)"),
     (VBMI, "vv", "<64 x i8> @llvm.x86.avx512.pmultishift.qb.512(<64 x i8>, <64 x i8>)"),
+    (GFNI, "vvi", "<64 x i8> @llvm.x86.vgf2p8affineqb.512(<64 x i8>, <64 x i8>, i8)"),
+    (GFNI, "vv", "<64 x i8> @llvm.x86.vgf2p8mulb.512(<64 x i8>, <64 x i8>)"),
+    (VAES, "vv", "<8 x i64> @llvm.x86.aesni.aesenc.512(<8 x i64>, <8 x i64>)"),
+    (VAES, "vv", "<8 x i64> @llvm.x86.aesni.aesenclast.512(<8 x i64>, <8 x i64>)"),
+    (VAES, "vv", "<8 x i64> @llvm.x86.aesni.aesdec.512(<8 x i64>, <8 x i64>)"),
+    (VAES, "vv", "<8 x i64> @llvm.x86.aesni.aesdeclast.512(<8 x i64>, <8 x i64>)"),
+    (VPCLMUL, "vvi", "<8 x i64> @llvm.x86.pclmulqdq.512(<8 x i64>, <8 x i64>, i8)"),
+    (Vex("vaes"), "vv", "<4 x i64> @llvm.x86.aesni.aesenc.256(<4 x i64>, <4 x i64>)"),
+    (Vex("vaes"), "vv", "<4 x i64> @llvm.x86.aesni.aesenclast.256(<4 x i64>, <4 x i64>)"),
+    (Vex("vaes"), "vv", "<4 x i64> @llvm.x86.aesni.aesdec.256(<4 x i64>, <4 x i64>)"),
+    (Vex("vaes"), "vv", "<4 x i64> @llvm.x86.aesni.aesdeclast.256(<4 x i64>, <4 x i64>)"),
+    (Vex("vpclmulqdq"), "vvi", "<4 x i64> @llvm.x86.pclmulqdq.256(<4 x i64>, <4 x i64>, i8)"),
+    (Vex("gfni"), "vvi", "<16 x i8> @llvm.x86.vgf2p8affineqb.128(<16 x i8>, <16 x i8>, i8)"),
+    (Vex("gfni"), "vvi", "<32 x i8> @llvm.x86.vgf2p8affineqb.256(<32 x i8>, <32 x i8>, i8)"),
+    (Vex("gfni"), "vv", "<16 x i8> @llvm.x86.vgf2p8mulb.128(<16 x i8>, <16 x i8>)"),
+    (Vex("gfni"), "vv", "<32 x i8> @llvm.x86.vgf2p8mulb.256(<32 x i8>, <32 x i8>)"),
 ];
 
 /// A declaration's result type, name and parameter types.
@@ -1793,6 +1824,11 @@ fn cases_of(row: usize) -> Vec<Case> {
             }
             'e' => (8..=11).for_each(|v| other(Arg::Const(v))),
             's' => [8, 12].into_iter().for_each(|v| other(Arg::Const(v))),
+            // An `i8` immediate (`vgf2p8affineqb`, `vpclmulqdq`) each
+            // selection of `vpclmulqdq`'s halves.
+            'i' if params[j] == "i8" => {
+                [0, 0x01, 0x10, 0x11, -1].into_iter().for_each(|v| other(Arg::Const(v)));
+            }
             'i' => [0, 0xff, 0x1a5].into_iter().for_each(|v| other(Arg::Const(v))),
             'c' => {
                 let (_, elem) = vector_of(&params[0]).unwrap();
@@ -1811,8 +1847,8 @@ fn cases_of(row: usize) -> Vec<Case> {
 /// The features every AVX-512 test function has (as clang 22 writes them
 /// for `-mavx512f -mavx512vl -mavx512bw -mavx512dq -mavx512vbmi2`,
 /// without `evex512`; WP-220's families after them).
-const AVX512_FEATURES: &str =
-    "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c,+avx512vbmi";
+const AVX512_FEATURES: &str = "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c,+avx512vbmi,\
+     +aes,+pclmul,+gfni,+vaes,+vpclmulqdq";
 
 /// The module of `cases`: `void <prefix>tK(ptr %out, ptr %a, ptr %b, ptr
 /// %c, i64 %m)` each, with `features`.
@@ -2314,12 +2350,21 @@ fn avx512_refusals_and_rows() {
     let x64 = hod_ir::Support::shipped(hod_ir::Arch::X86_64);
     let a64 = hod_ir::Support::shipped(hod_ir::Arch::Aarch64);
     let without = |fam: Fam| match fam {
-        F => "+avx2,+avx,+fma,+f16c",
-        BW => "+avx2,+avx,+avx512f,+avx512vl,+avx512dq,+fma,+f16c",
-        DQ => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512vbmi2,+fma,+f16c",
-        VBMI2 => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+fma,+f16c",
-        VBMI => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c",
+        F => "+avx2,+avx,+fma,+f16c".to_string(),
+        BW => "+avx2,+avx,+avx512f,+avx512vl,+avx512dq,+fma,+f16c".to_string(),
+        DQ => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512vbmi2,+fma,+f16c".to_string(),
+        VBMI2 => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+fma,+f16c".to_string(),
+        VBMI => {
+            "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c".to_string()
+        }
+        GFNI => format!("{AVX512_FEATURES},-gfni"),
+        VAES => format!("{AVX512_FEATURES},-vaes"),
+        VPCLMUL => format!("{AVX512_FEATURES},-vpclmulqdq"),
+        Vex(feature) => format!("{AVX512_FEATURES},-{feature}"),
     };
+    // GFNI, VAES and VPCLMULQDQ without `avx512f`: their EVEX forms are
+    // not there.
+    let no_f = "+avx2,+avx,+fma,+f16c,+aes,+pclmul,+gfni,+vaes,+vpclmulqdq";
     let (no_vl, no_512) =
         (format!("{AVX512_FEATURES},-avx512vl"), format!("{AVX512_FEATURES},-evex512"));
     let mut checked = 0;
@@ -2330,9 +2375,20 @@ fn avx512_refusals_and_rows() {
         let base = cases_of(row).swap_remove(0);
         let case = |args: &[Arg]| Case { row, args: args.to_vec() };
         assert_eq!(refusal_under(base.clone(), AVX512_FEATURES), None, "{name}");
-        assert_eq!(refusal_under(base.clone(), without(fam)), refused, "{name} without its family");
+        assert_eq!(
+            refusal_under(base.clone(), &without(fam)),
+            refused,
+            "{name} without its family"
+        );
+        if matches!(fam, GFNI | VAES | VPCLMUL) {
+            assert_eq!(refusal_under(base.clone(), no_f), refused, "{name} without avx512f");
+        }
+        // The VEX forms need no AVX-512.
+        if let Vex(_) = fam {
+            assert_eq!(refusal_under(base.clone(), no_f), None, "{name} without avx512f");
+        }
         let bytes = params.iter().chain([&ret]).map(|t| bytes_of(t)).max().unwrap();
-        let vl = bytes < 64 && !name.ends_with(".sd");
+        let vl = bytes < 64 && !name.ends_with(".sd") && !matches!(fam, Vex(_));
         let want = if vl { refused.clone() } else { None };
         assert_eq!(refusal_under(base.clone(), &no_vl), want, "{name} without avx512vl");
         let want = if bytes == 64 { refused.clone() } else { None };
@@ -2383,7 +2439,8 @@ fn avx512_driver(cases: &[Case]) -> String {
     c.push_str("};\nstatic const fn l[] = {");
     (0..cases.len()).for_each(|k| write!(c, "l_t{k},").unwrap());
     // Per function: the bytes of the result, and the features it needs
-    // (bits: 1 F, 2 VL, 4 BW, 8 DQ, 16 VBMI2, 32 VBMI).
+    // (bits: 1 F, 2 VL, 4 BW, 8 DQ, 16 VBMI2, 32 VBMI, 64 GFNI, 128 VAES,
+    // 256 VPCLMULQDQ).
     c.push_str("};\nstatic const int info[][2] = {");
     for case in cases {
         let (fam, _, text) = NAMES[case.row];
@@ -2399,7 +2456,16 @@ fn avx512_driver(cases: &[Case]) -> String {
             DQ => 8,
             VBMI2 => 4 | 16,
             VBMI => 4 | 32,
+            GFNI => 64,
+            VAES => 128,
+            VPCLMUL => 256,
+            Vex("gfni") => 64,
+            Vex("vaes") => 128,
+            Vex(_) => 256,
         };
+        if let Vex(_) = fam {
+            need &= !3;
+        }
         write!(c, "{{{},{need}}},", bytes_of(&ret)).unwrap();
     }
     c.push_str(
@@ -2430,6 +2496,9 @@ fn avx512_driver(cases: &[Case]) -> String {
            if (__builtin_cpu_supports(\"avx512dq\")) have |= 8;\n  \
            if (__builtin_cpu_supports(\"avx512vbmi2\")) have |= 16;\n  \
            if (__builtin_cpu_supports(\"avx512vbmi\")) have |= 32;\n  \
+           if (__builtin_cpu_supports(\"gfni\")) have |= 64;\n  \
+           if (__builtin_cpu_supports(\"vaes\")) have |= 128;\n  \
+           if (__builtin_cpu_supports(\"vpclmulqdq\")) have |= 256;\n  \
            long compared = 0, skipped = 0, wrong = 0;\n  \
            for (unsigned f = 0; f < sizeof h / sizeof *h; f++) {\n    \
              if ((info[f][1] & have) != info[f][1]) { skipped++; continue; }\n    \
