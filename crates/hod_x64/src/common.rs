@@ -139,9 +139,21 @@ thread_local! {
     /// The offsets of the `disp32` fields of the accesses to locals in the
     /// function being compiled, in offset order: `frame::end` adds the
     /// bias of the final frame to each and shortens those that fit a byte
-    /// (§5.6.17). One buffer per thread, reused across functions.
+    /// (§5.6.17), but not one marked [`KEEP_DISP32`]. One buffer per
+    /// thread, reused across functions.
     static LOCAL_SITES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
+
+/// The mark of a local site whose `disp32` is never shortened: an EVEX
+/// instruction's, whose `disp8` the CPU scales by the instruction's `N`
+/// (`disp8*N`, `spec/mc-x64.md`), so a raw byte would address another
+/// place. A field offset stays below it: a function's branches are
+/// `rel32`, so its code is under 2 GiB.
+const KEEP_DISP32: u32 = 1 << 31;
+
+/// The first byte of an EVEX instruction (in 64-bit mode `0x62` is
+/// nothing else, and hod writes no prefix before it).
+const EVEX_ESCAPE: u8 = 0x62;
 
 /// Forgets the local accesses of the previous function (`begin_function`).
 pub fn reset_local_sites() {
@@ -163,7 +175,8 @@ const DISP8_SAVES: u32 = 3;
 
 /// Adds `bias` to the displacement of every local access of the function
 /// (`end_function`), and writes each one that then fits a signed byte as
-/// `[rbp + disp8]` (`spec/codegen.md` §5.6.17): `ModRM` `mod` 10 → 01,
+/// `[rbp + disp8]`, an EVEX instruction's excepted (`spec/codegen.md`
+/// §5.6.17): `ModRM` `mod` 10 → 01,
 /// the byte written, the three bytes after it cut (`FnCx::cut`), so that
 /// whatever follows the displacement (an immediate) moves with the code.
 ///
@@ -173,7 +186,8 @@ const DISP8_SAVES: u32 = 3;
 pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
     let ok = LOCAL_SITES.with(|sites| {
         let sites = sites.borrow();
-        for &field in sites.iter() {
+        for &site in sites.iter() {
+            let field = site & !KEEP_DISP32;
             let at = field as usize;
             let code = cx.code_mut();
             let Some(disp) = mc::Fixup::Abs32.extract(code, at).map(|d| d + bias) else {
@@ -181,8 +195,9 @@ pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
             };
             // A local is `[rbp + disp32]`, `ModRM` right before the
             // field; any other shape keeps its `disp32`.
-            let short = at
-                .checked_sub(1)
+            let short = Some(at)
+                .filter(|_| site & KEEP_DISP32 == 0)
+                .and_then(|at| at.checked_sub(1))
                 .filter(|&m| code[m] & MODRM_MOD_RM == MODRM_RBP_DISP32)
                 .filter(|_| i8::try_from(disp).is_ok());
             match short {
@@ -240,7 +255,8 @@ pub fn frame_inst_shifted(
     put(cx, inst);
     if local && let Some(site) = inst.site() {
         let field = at + site.offset as u32;
-        LOCAL_SITES.with(|sites| sites.borrow_mut().push(field));
+        let keep = if inst.bytes()[0] == EVEX_ESCAPE { KEEP_DISP32 } else { 0 };
+        LOCAL_SITES.with(|sites| sites.borrow_mut().push(field | keep));
     }
 }
 
