@@ -1059,6 +1059,10 @@ impl<'a> Writer<'a> {
         if let Some(origin) = plan.inline.die(node) {
             if let LocalWhat::List { .. } = what {
                 self.list_of_abstract(plan, l, node, kind, origin);
+            } else if let LocalWhat::Retained = what {
+                // WP-210 (§6.29): a retained variable of a function with
+                // an abstract instance: its origin alone (111, 112).
+                self.retained_of_abstract(kind, origin);
             } else {
                 self.var_of_abstract(kind, origin);
             }
