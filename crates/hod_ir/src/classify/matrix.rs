@@ -4114,6 +4114,12 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.aesni.aesdeclast.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
     row("intrinsic:llvm.x86.pclmulqdq.256", never(X64_ONLY), on(X86_SSE), "VPCLMULQDQ (WP-220)"),
     row("intrinsic:llvm.x86.pclmulqdq.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.128", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.256", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512bf16.cvtneps2bf16.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.vcvtneps2bf16128", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.vcvtneps2bf16256", never(X64_ONLY), on(X86_SSE), AVX512_2),
 ];
 
 /// The value classes of the masked memory intrinsics' signatures

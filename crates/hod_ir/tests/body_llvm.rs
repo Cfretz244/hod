@@ -1585,6 +1585,12 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.x86.aesni.aesdeclast.512", "<8 x i64> (<8 x i64>, <8 x i64>)"),
     ("llvm.x86.pclmulqdq.256", "<4 x i64> (<4 x i64>, <4 x i64>, i8)"),
     ("llvm.x86.pclmulqdq.512", "<8 x i64> (<8 x i64>, <8 x i64>, i8)"),
+    ("llvm.x86.avx512bf16.cvtne2ps2bf16.128", "<8 x bfloat> (<4 x float>, <4 x float>)"),
+    ("llvm.x86.avx512bf16.cvtne2ps2bf16.256", "<16 x bfloat> (<8 x float>, <8 x float>)"),
+    ("llvm.x86.avx512bf16.cvtne2ps2bf16.512", "<32 x bfloat> (<16 x float>, <16 x float>)"),
+    ("llvm.x86.avx512bf16.cvtneps2bf16.512", "<16 x bfloat> (<16 x float>)"),
+    ("llvm.x86.vcvtneps2bf16128", "<8 x bfloat> (<4 x float>)"),
+    ("llvm.x86.vcvtneps2bf16256", "<8 x bfloat> (<8 x float>)"),
 ];
 
 /// Names on the list that LLVM 22 upgrades to other IR on reading (so

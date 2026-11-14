@@ -1028,6 +1028,13 @@ intrinsics! {
     X86AesniAesdeclast512 = "llvm.x86.aesni.aesdeclast.512" [],
     X86Pclmulqdq256 = "llvm.x86.pclmulqdq.256" [],
     X86Pclmulqdq512 = "llvm.x86.pclmulqdq.512" [],
+    // AVX-512 BF16 (WP-220).
+    X86Avx512bf16Cvtne2ps2bf16128 = "llvm.x86.avx512bf16.cvtne2ps2bf16.128" [],
+    X86Avx512bf16Cvtne2ps2bf16256 = "llvm.x86.avx512bf16.cvtne2ps2bf16.256" [],
+    X86Avx512bf16Cvtne2ps2bf16512 = "llvm.x86.avx512bf16.cvtne2ps2bf16.512" [],
+    X86Avx512bf16Cvtneps2bf16512 = "llvm.x86.avx512bf16.cvtneps2bf16.512" [],
+    X86Vcvtneps2bf16128 = "llvm.x86.vcvtneps2bf16128" [],
+    X86Vcvtneps2bf16256 = "llvm.x86.vcvtneps2bf16256" [],
 }
 
 /// The most overload types an intrinsic on the list has.

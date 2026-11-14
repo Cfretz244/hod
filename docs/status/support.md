@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 922 | 361 | 11 | 550 | 682 | 10 | 230 |
-| total | 1248 | 582 | 59 | 607 | 906 | 61 | 281 |
+| `intrinsic` | 928 | 361 | 11 | 556 | 688 | 10 | 230 |
+| total | 1254 | 582 | 59 | 613 | 912 | 61 | 281 |
 
 ## `module`
 
@@ -1453,6 +1453,12 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.aesni.aesdeclast.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.pclmulqdq.256` | rejected | supported (int, ptr, vector) | an x86 property. VPCLMULQDQ (WP-220) |
 | `intrinsic:llvm.x86.pclmulqdq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512bf16.cvtneps2bf16.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.vcvtneps2bf16128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.vcvtneps2bf16256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 
 ## Structural rules
 

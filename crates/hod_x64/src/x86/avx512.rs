@@ -103,7 +103,7 @@ type Row = (&'static str, Avx512, &'static str, Op);
 
 #[allow(clippy::too_many_lines, reason = "one arm per name")]
 fn row(which: Intrinsic<'_>) -> Option<Row> {
-    use Avx512::{Bw, Dq, F, Gfni, Vaes, Vbmi, Vpclmulqdq};
+    use Avx512::{Bf16, Bw, Dq, F, Gfni, Vaes, Vbmi, Vpclmulqdq};
     use Intrinsic as I;
     Some(match which {
         I::X86Avx512MaskGetexpPs512 => {
@@ -753,6 +753,35 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
             "vvi",
             Op::E3Imm(E3Imm::Pclmulqdq, Form::Plain),
         ),
+        // BF16 (WP-220). `vcvtneps2bf16` at 128 and 256 bits is also
+        // AVX-NE-CONVERT's (VEX): that feature alone is not taken.
+        I::X86Avx512bf16Cvtne2ps2bf16128 => (
+            "intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.128",
+            Bf16,
+            "vv",
+            Op::E3(E3::Cvtne2ps2bf16, Form::Plain),
+        ),
+        I::X86Avx512bf16Cvtne2ps2bf16256 => (
+            "intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.256",
+            Bf16,
+            "vv",
+            Op::E3(E3::Cvtne2ps2bf16, Form::Plain),
+        ),
+        I::X86Avx512bf16Cvtne2ps2bf16512 => (
+            "intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.512",
+            Bf16,
+            "vv",
+            Op::E3(E3::Cvtne2ps2bf16, Form::Plain),
+        ),
+        I::X86Avx512bf16Cvtneps2bf16512 => {
+            ("intrinsic:llvm.x86.avx512bf16.cvtneps2bf16.512", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
+        }
+        I::X86Vcvtneps2bf16128 => {
+            ("intrinsic:llvm.x86.vcvtneps2bf16128", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
+        }
+        I::X86Vcvtneps2bf16256 => {
+            ("intrinsic:llvm.x86.vcvtneps2bf16256", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
+        }
         _ => return None,
     })
 }
@@ -796,6 +825,8 @@ fn vector(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<(u32, u32, u32)> {
         TypeKind::Int(bits @ (8 | 16 | 32 | 64)) => bits,
         TypeKind::Float => 32,
         TypeKind::Double => 64,
+        // The BF16 and FP16 rows' (WP-220).
+        TypeKind::Half | TypeKind::BFloat => 16,
         _ => return None,
     };
     let bytes = bits * len / 8;
@@ -921,6 +952,17 @@ fn lower<'a>(
         }
     }
     let Some((lanes, bits, src_bytes)) = first else { return unsupported(SIGNATURE) };
+    // A compress of `half` or `bfloat` lanes is not one the census or the
+    // tests have: not taken.
+    if op == Op::Compress
+        && matches!(
+            cx.types().kind(ret_ty),
+            TypeKind::Vector { elem, .. }
+                if matches!(cx.types().kind(elem), TypeKind::Half | TypeKind::BFloat)
+        )
+    {
+        return unsupported(SIGNATURE);
+    }
     let ret_bytes = match (op, ret) {
         (Op::Cmp(_), None) if crate::mask::mask_lanes(cx.types(), ret_ty) == Some(lanes) => 0,
         (Op::Cmp(_), _) | (_, None) => return unsupported(SIGNATURE),
