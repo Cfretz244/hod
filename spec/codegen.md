@@ -122,9 +122,12 @@ producer (`abi-a64.md` §7: with `zeroext`/`signext`, and a plain `i1` to
 document lets its consumer assume. A conditional branch or a
 `select` on `i1` tests bit 0. In memory an integer occupies
 its store size with the bits above its width zero (`spec/ir.md` §4.3);
-`store` writes that and `load` may rely on it. A frame slot hod makes for
-a `Gpr` value is a full register wide, written and read whole, so the
-invariant carries through a spill.
+`store` writes that and `load` may rely on it. A spill slot is a full
+register wide, written and read whole, so the invariant carries through a
+spill. A home or incoming slot of an integer is its store size rounded up
+to a power of two (§5.1 "Value slots"), written and read with exactly
+those bytes: the bits above the width are unspecified in the register
+after the load, as the invariant allows.
 
 ## 3. Where a value lives
 
@@ -190,7 +193,10 @@ alike, read as follows; the policy is only sound with these readings:
   (§9.5). This is the only way debug information changes the code.
 
 A home slot is assigned on the first mention of the value, definition or
-use, so blocks may be laid out in any order. Home slots are never reused.
+use, so blocks may be laid out in any order. A home slot is never reused
+while its value can still be read: only the home of a value whose
+definition and every use are in one block (a **block slot**) is handed
+out again, in another block (§5.1 "Value slots").
 
 ### 4.2 At a use
 
@@ -360,9 +366,69 @@ into an addressing mode (§5.4). The local area holds, in this order:
 2. the body's stack slots (`Body::slots`), laid out by the driver after
    `begin_function` and before the first instruction, so `Value::slot(n)`
    is a constant from the start;
-3. home slots, incoming slots and spill slots, in order of first need.
+3. home slots, incoming slots and spill slots, in order of first need,
+   some of them in the alignment holes of 2. and 3. ("Value slots"
+   below).
 
 `FrameRef::Incoming(offset)` names the caller's stack-argument area.
+
+**Value slots** (WP-198). Home, incoming and spill slots are *value
+slots*; the body's stack slots and the slots a lowering takes with
+`FnCx::alloc_slot` are not, and are laid out as above, never moved,
+never shared (the stack protector's guarded block, §5.6.24, is one of
+them and keeps its place). Three rules make value slots small, none of
+them an analysis:
+
+1. **Size.** A home or incoming slot of class `Gpr` holding an integer
+   is the integer's store size rounded up to a power of two (1, 2, 4 or
+   8 bytes); of class `Fpr`, 4 bytes for a `float` and 8 for a `double`;
+   anything else of those classes (a pointer, a vector) a register's
+   bytes; of class `Mem`, the type's allocation size at its alignment
+   (capped at the stack alignment). Each is aligned to its size, written
+   and read with exactly that many bytes, phi copies included (§4.5). A
+   spill slot stays a register wide (§4.3). In a coroutine body (§7.6)
+   every `Gpr` and `Fpr` home is a register wide: its shadow homes are.
+2. **Holes.** The bytes a slot's alignment skips are remembered (at most
+   16 holes per function); a new value slot of at most 16 bytes goes in
+   the lowest hole that holds it at its alignment before the area grows.
+   Only value slots fill holes, so the body's slots keep the offsets the
+   bump gives them.
+3. **Block slots.** The home of a value that is an instruction result
+   (not an argument, not a `phi`), defined in the block being emitted,
+   with no use outside that block (a use by a `phi` is a use in the
+   incoming block, §4.1) and not named by a `#dbg_declare`, is a block
+   slot: it holds the value from its definition to the end of the block
+   and is free again when the next block begins. Every use of the value
+   is emitted inside the block, so no read of it follows the block's
+   end in any execution that did not pass the definition again. Block
+   slots of up to 16 bytes come in size classes of 1, 2, 4, 8 and 16
+   bytes, aligned to the class (or the stack alignment if smaller); a
+   block takes a free slot of the request's class, else of the next
+   larger class that has one, else makes a slot of the request's class.
+   Each class's slots are taken in the order they were made, so a
+   block's state is a count per class. A larger `Mem` block slot is a
+   plain value slot, never reused. An `insertvalue` of class `Mem` whose
+   home is a block slot takes over the block slot of its aggregate
+   operand when that operand is a `Mem` home in a block slot, defined in
+   the same block, with this as its only use: the lowering copies the
+   aggregate into the result (nothing when the two are one slot) and
+   then writes the field.
+
+   There are no block slots in a function where code can run a second
+   time or where the debugger reads a value's location over a range:
+   - a coroutine body (§7.6);
+   - a function with a `#dbg_value` record (`spec/dwarf.md` §6.23: a
+     record's range may outlast the block);
+   - a function that calls a `returns_twice` function or sets
+     `FnCx::never_reuse_spill_slots` (§4.3): the code after the call can
+     run again after other blocks have run. The driver learns this
+     during emission; it then throws the function's code away and
+     compiles it again without block slots, as it retries a function in
+     far-branch form (§6.3).
+
+These rules change where values live, never the code's semantics: a
+named variable's storage is its body slot or a `#dbg_declare` home, and
+neither is ever a block slot.
 
 **Over-aligned slots.** A stack slot whose alignment exceeds the stack
 alignment is not in the local area. The entry code
@@ -2316,34 +2382,83 @@ decisions that are not instruction selection are §5.5.1 "Integers
   `float`/`double` return part in `st0`/`st1` is `x64:ret-x87-part`
   (§5.6.9), a value returned in memory at `ret` is WP-126's.
 
-#### 5.6.2 Target features (WP-116)
+#### 5.6.2 Target features (WP-116, WP-201)
 
 As §5.5.2, with `hod_x64::features`'s table (design 0006 §10.1). hod
 emits the base x86-64 instruction set (SSE2) and never chooses an
 instruction by a feature, so a feature that only makes instructions
-available is **accepted and ignored**, `+` or `-`: `sse3`, `ssse3`,
-`sse4.1`, `sse4.2`, `popcnt`, `lzcnt`, `bmi`, `bmi2`, `fma`, `f16c`,
-`movbe`, `avx`, `avx2`, `cx16` (X-atomic uses `cmpxchg16b` inline with
-it, libatomic without), `crc32`, `sahf`, `xsave`, and the baseline
-`mmx`, `fxsr`, `cmov`, `cx8`. `target-cpu` is accepted with any value.
-Refused by name:
+available is **accepted and ignored**, `+` or `-`. WP-201 judged every
+feature of LLVM 19's and 22's x86 lists (`llc -mattr=help`) and every
+feature clang 19, clang 22 and kiln write for the `-march=` CPUs they
+accept (`x86-64-v2` to `-v4`, `nehalem` to `diamondrapids`, `znver1` to
+`znver5`, ...): `crates/hod_x64/tests/features/x64_features.tsv` is the
+table, `x64_census.tsv` the census, `x64_cpus.tsv` the CPUs against
+outcomes.
 
-| item | reason |
-|---|---|
-| `-sse`, `-sse2` | `attr:target-feature-no-sse` |
-| `-x87` | `attr:target-feature-no-x87`, only for a function that has an `x86_fp80` value (§5.6.9); in `-mattr`, always |
-| `+soft-float` | `attr:target-feature-soft-float` |
-| `+retpoline*` | `attr:target-feature-retpoline` |
-| `+harden-sls-*` | `attr:target-feature-harden-sls` |
-| `+lvi-*` | `attr:target-feature-lvi` |
-| anything else, or an item that is not `+name`/`-name` | `attr:target-feature-unknown` |
+- **Available** (`AVAILABLE`): the baseline `mmx`, `fxsr`, `cmov`, `cx8`,
+  `nopl` and every instruction feature above it: SSE3 to SSE4.2, `sse4a`,
+  `popcnt`, `lzcnt`, `bmi*`, `movbe`, `crc32`, `sahf`, `avx`, `avx2`,
+  `fma`, `fma4`, `f16c`, `xop`, `aes`, `pclmul`, `vaes`, `vpclmulqdq`,
+  `gfni`, `sha`, `sha512`, `sm3`, `sm4`, the `xsave*` and the system and
+  state features (`fsgsbase`, `invpcid`, `rdrnd`, `rdseed`, ...), `cx16`
+  (X-atomic uses `cmpxchg16b` inline with it, libatomic without; on a CPU
+  with the instruction libatomic uses it too, so both halves of a program
+  agree on lock-freedom), the AVX-512 and AVX10 families and `evex512`,
+  the AVX-VNNI/IFMA/NE-convert ones, AMX (`amx-*`), and APX (`egpr`,
+  `ndd`, `ppx`, `push2pop2`, `ccmp`, `cf`, `nf`, `zu`: `r16`..`r31` are
+  caller-saved and carry no argument).
+- **Tuning** (`tuning`): accepted either way: `fast-*`, `slow-*`,
+  `prefer-*`, `false-deps-*`, `tuning-*`, `no-bypass-delay*` and the named
+  ones (`macrofusion`, `ermsb`, `idivq-to-divl`, `vzeroupper`,
+  `inline-asm-use-gpr32`, ...). `target-cpu` and `tune-cpu` are accepted
+  with any value.
+- **Refused by name**:
 
-`+sse`, `+sse2`, `+x87` and `-soft-float`, `-retpoline*`,
-`-harden-sls-*`, `-lvi-*` are accepted. Whether a wide vector argument
-travels in `ymm` under `+avx` is the argument assignment's
-(`x64:wide-vector-abi`, WP-118), with the function's own features
-(§5.6.9, `spec/abi-x64.md` §1.3). `-mattr` items are checked the same
-way, by the module's target.
+  | item | reason |
+  |---|---|
+  | `-sse`, `-sse2` | `attr:target-feature-no-sse` |
+  | `-x87` | `attr:target-feature-no-x87`, only for a function that has an `x86_fp80` value (§5.6.9); in `-mattr`, always |
+  | `+soft-float` | `attr:target-feature-soft-float` |
+  | `+x32` | `attr:target-feature-x32` (32-bit pointers) |
+  | `+16bit-mode`, `+32bit-mode`, `-64bit`, `-64bit-mode` | `attr:target-feature-mode` |
+  | `+tagged-globals` | `attr:target-feature-tagged-globals` |
+  | `+retpoline*` | `attr:target-feature-retpoline` |
+  | `+harden-sls-*` | `attr:target-feature-harden-sls` |
+  | `+lvi-*` | `attr:target-feature-lvi` |
+  | `+seses` | `attr:target-feature-seses` |
+  | anything else, or an item that is not `+name`/`-name` | `attr:target-feature-unknown` |
+
+  The opposite sign of each is accepted (it is what hod's code keeps).
+
+**The evidence (WP-201).** "Available" means no call boundary can tell:
+for every census string (and its CPU alone), every feature enabled alone
+on `x86-64` and every feature disabled on `x86-64-v4`,
+`sapphirerapids`, `diamondrapids`, `znver5`, `haswell` and `x86-64`,
+`llc -O0 -stop-after=finalize-isel` 19 and 22 give 26 probe signatures
+(integers, `i128`, `float`, `double`, `x86_fp80`, `half`, `bfloat`,
+128-, 256- and 512-bit vectors, vectors of `i1`, structures of them,
+stack arguments, `byval`, `fastcc`, `preserve_mostcc`, `preserve_allcc`
+and a variadic call) the same argument registers and stack slots, return
+registers and call register masks as a function without features, except
+(a) a vector wider than 128 bits under anything that implies AVX, and a
+vector of `i1` under AVX-512, which `x64:wide-vector-abi` refuses with the
+function's features (§5.6.9; `sha512`, `sm3` and `sm4` imply AVX), and
+(b) `preserve_allcc`, whose call's register mask keeps all of
+`ymm0`..`ymm15` under AVX while §5.6.23's callee keeps their low halves:
+`llc`'s own callee returns through `vzeroupper` whenever it called
+anything (and saves nothing it does not touch when it is a leaf), so the
+upper halves are lost under `llc` as under hod and no program tells the
+two apart (`features_census::preserve_all_under_avx_is_llc_s`). AVX-512 is therefore judged per signature,
+not per function: a function carrying `+avx512f` compiles unless a
+signature it touches has a wide vector or a vector of `i1`; nothing else
+differs (`csr_64` is the register mask of every `ccc` call under every
+feature; hod never writes a `ymm`/`zmm` upper half, so no `vzeroupper`
+is owed; a 64-byte-aligned value's alignment is the IR's, not the
+feature's). x86-64 `-march=native` on an AArch64 host makes clang 19 and
+22 write AArch64 names (`+neon`, `+lse`, ...) into the x86-64 string;
+they stay unknown (kiln writes the baseline).
+
+`-mattr` items are checked the same way, by the module's target.
 
 #### 5.6.3 Control flow (WP-124)
 
@@ -3566,7 +3681,7 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    `maxps`/`minps`/`maxss`/... (the second operand when either is NaN or
    both are zeros); `cmp.ss`/`cmp.sd` are `cmpss`/`cmpsd` with the
    `immarg` predicate's low three bits (the legacy encoding's, as `llc`
-   encodes 8 to 31); `comi{eq,ge,gt,le,lt,neq}.ss` and `.sd` are
+   encodes 8 to 31; with AVX, §5.6.33 (4)); `comi{eq,ge,gt,le,lt,neq}.ss` and `.sd` are
    `comiss`/`comisd`, the `ucomi` ones `ucomiss`/`ucomisd`, then the
    predicate from the flags: `gt` `seta`, `ge` `setae`, `lt` and `le` the
    same with the operands swapped, `eq` `sete` and `setnp`, `neq`
@@ -3615,10 +3730,10 @@ result types are not LLVM's declaration is `x64:x86-intrinsic-signature`.
    its feature is `intrinsic:` and its LLVM name, as `llc` cannot select
    it. Every `llvm.x86.*` name hod does not list is `intrinsic:` and its
    name from `classify` (`spec/ir.md`): `sse3.monitor`/`mwait` (no
-   encoding in `hod_mc_x64`), the `x86_mmx` forms clang 19
-   writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`), and all of
-   `sse41.*` and `sse42.*` but `sse42.crc32.*` (§5.6.29). AArch64 refuses
-   every `llvm.x86.*` name.
+   encoding in `hod_mc_x64`), and the `x86_mmx` forms clang 19
+   writes (`mmx.*`, `sse.cvtpi2ps`, ..., the 64-bit `ssse3.*`). SSE4.1,
+   SSE4.2 and later are §5.6.29 (`sse42.crc32.*`) and §5.6.33 (WP-202).
+   AArch64 refuses every `llvm.x86.*` name.
 
 Evidence: `spec/landed/codegen/WP-173.md`.
 
@@ -3694,19 +3809,27 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    matters (never weaker than `llc`), and costs one guard more in
    functions `llc` leaves alone. `"stack-protector-buffer-size"` is read
    with the attribute and changes nothing. A protected presplit
-   coroutine is refused, `ssp:coroutine` (its resume stubs enter the
-   body past the entry code); a target without the hook,
-   `ssp:target`.
+   coroutine is built (rule 6: its resume and destroy stubs repeat the
+   entry code); one that would need the low guard (rule 4) is refused,
+   `ssp:coroutine`, a shape the coroutine plan already refuses (dynamic
+   `alloca`s and over-aligned machine-stack slots, §7.6). A target
+   without the hook, `ssp:target`.
 2. **Which slots move.** A slot **escapes** when its address is used
    other than as the pointer operand of a `load` or `store` whose access
    lies inside the slot (a `getelementptr`, a call argument, a stored
    value, a `phi`, a cast, ...). Only an escaping slot can be written out
    of bounds. The escaping slots of a protected function whose alignment
-   is at most the stack alignment form the **guarded block**, in body
-   order, each at its alignment from the block's start; the **guard
-   word** (8 bytes) follows the last slot at once, unaligned if need be,
-   so that a one-byte overflow of the last slot reaches it (`llc` may
-   leave padding there; hod never detects later than `llc`). The block is
+   is at most the stack alignment, and not in a coroutine's heap frame
+   (§7.6), form the **guarded block**, from its top down by decreasing
+   size, ties in body order, each at its alignment; the **guard word**
+   (8 bytes) follows the top slot at once, unaligned if need be, so that
+   a one-byte overflow of it reaches the guard (`llc` may leave padding
+   there). `llc` puts arrays nearest its guard, then the other
+   address-taken locals, the first in body order nearest; hod keeps no
+   slot types, and size is what tells a buffer from the small objects
+   whose address C++ takes (a `this`, an awaiter). With several slots,
+   an overflow of a lower one reaches the guard after the slots above
+   it, in both builds. The block is
    rounded up to 16. Each slot of the block is addressed through a
    pointer slot (`SlotPlace::Indirect`, as an over-aligned slot, §5.1);
    the pointer slots are the first slots after `begin_function`'s. Its
@@ -3752,7 +3875,15 @@ are target-neutral (`hod_cg::guard`); each target emits the code
    (§5.6) whose displacement `end_function` writes before biasing; on
    AArch64 the guard word's address is made by `add x16, x29, #lo12` ·
    `add x16, x16, #hi12, lsl #12`, patched in `end_function`, and each
-   slot's address is `x16` less its distance from the guard.
+   slot's address is `x16` less its distance from the guard. A
+   coroutine's resume and destroy stubs (§7.6) rebuild a machine frame
+   and jump into the body past this code, so each stub repeats it
+   (`guard::stub_enter` of each target, after the frame word's store), with the
+   final offsets, which are known by then: x86-64 `mov r10, fs:[0x28]` ·
+   `mov [rbp + guard], r10` · per slot `lea r10, [rbp + slot]` · `mov
+   [rbp + pointer], r10`; AArch64 the same through `x16`/`x17`. Every
+   activation of the coroutine body then has a fresh guard and checks it
+   at its exit (rule 7), as `llc` does in each function CoroSplit makes.
 7. **The check** starts every exit sequence (the epilogue and every tail
    exit, so a `musttail` call is checked before its jump; a `noreturn`
    call and `unreachable` have none; unwinding through a protected frame
@@ -3919,14 +4050,24 @@ byte-identical to what it was.
    the bottom of the frame (§5.5), so its `stp` is the touch of the
    bottom page and the top is touched first. A `FRAME` with `FRAME + 1024
    <= P` is the unprobed prologue. Otherwise, with `k = (FRAME - 16) / P`
-   and `r = (FRAME - 16) % P`: `str xzr, [sp, #-16]!` (CFA `sp + 16`),
-   then for `k <= 4` (`llc`'s unroll limit) `k` times `sub sp, sp, #P` ·
-   `str xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), for `k > 4`
-   `sub x17, sp, #kP` (CFA `x17 + 16 + kP`) · `1: sub sp, sp, #P` · `str
-   xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` (CFA register `sp`), then `r`
-   in one or two `sub`s (CFA `sp + FRAME`), then `stp x29, x30, [sp]` as
-   always. `x17` because `x16` may hold the incoming base and `x9`..`x15`
-   are `preserve_most`'s. The prologue reserves 36 bytes more. A dynamic
+   and `r = (FRAME - 16) % P`: for `k <= 4` (`llc`'s unroll limit) `str
+   xzr, [sp, #-16]!` (CFA `sp + 16`), `k` times `sub sp, sp, #P` · `str
+   xzr, [sp]` (CFA `sp + 16 + iP` after each `sub`), then `r` in one or
+   two `sub`s (CFA `sp + FRAME`). For `k > 4` the loop runs under a
+   temporary frame record (WP-194): `stp x29, x30, [sp, #-16]!` (the top
+   touch; CFA `sp + 16`, `x29` and `x30` at CFA `- 16` and `- 8`) · `mov
+   x29, sp` (CFA `x29 + 16`) · `sub x17, sp, #kP` · `1: sub sp, sp, #P` ·
+   `str xzr, [sp]` · `cmp sp, x17` · `b.ne 1b` · `r` in one or two `sub`s
+   (no row: the CFA does not follow `sp`) · `ldr x29, [x29]` (the
+   caller's `x29` back; CFA `sp + FRAME`). Either way `stp x29, x30,
+   [sp]` follows as always, and from it the usual rows. With the CFA on
+   `x29` an unwinder that emulates frame 0 instead of reading its rows
+   (lldb) follows the loop; with it on `sp` or `x17` it lost one page per
+   pass. Nothing reads the temporary record after the usual `stp`, so the
+   local area's top 16 bytes, which it overlaps, are not reserved;
+   nothing is written below `sp`. `x17` because `x16` may hold the
+   incoming base and `x9`..`x15` are `preserve_most`'s. The prologue
+   reserves 36 bytes more. A dynamic
    allocation: `1: sub sp, sp, #P` · `cmp sp, x16` · `b.ls 2f` · `str
    xzr, [sp]` · `b 1b` · `2: mov sp, x16` · `ldr xzr, [sp]`, `llc`'s loop.
    An outgoing argument area of more than 1024 bytes: `sub sp, sp, #c` ·
@@ -4080,6 +4221,151 @@ to the result's slot.
 
 Evidence: `spec/landed/codegen/WP-173.md` for the rules this reuses,
 `spec/landed/codegen/WP-190.md` for these.
+
+#### 5.6.30 The hardening pieces together (WP-194)
+
+Stack protectors (§5.6.24), branch tracking or protection (§5.6.25,
+§5.6.26) and stack probing (§5.6.27) compose with each other, with a
+dynamic area, `byval` and stack arguments, `nest`, `musttail`,
+`returns_twice`, `invoke` and varargs, and on x86-64 with
+`preserve_most`/`preserve_all`. Each piece keeps its own place and its
+own registers, so no combination is refused for being one.
+
+1. **x86-64 prologue:** `endbr64` (`cet::entry`, first) · `push rbp` ·
+   `mov rbp, rsp` · the pushes of the preserved set (§5.6.23) · the save
+   area and `sub rsp, FRAME`, written in `end` as the probed allocation
+   (its 105 reserved bytes cut with the rest) · the guard's entry store
+   and the low guard (`guard::reserve`, `Local(0)`) · the `xmm` saves of
+   `preserve_all`. Epilogue: the guard check · the `xmm` reloads · `lea
+   rsp, [rbp - 8n]` · the pops · `ret`. Registers: the guard's entry
+   uses `r10` and `r11`, its check `r10`; the probe loop and the dynamic
+   loop use `r11`. None of them is preserved by any convention, and the
+   preserved set is saved before any of them is written.
+2. **AArch64 prologue:** `bti c` or `paciasp`/`pacibsp` at offset 0
+   (`protect::entry`; its rows, `B key` at 0 and the negated RA state
+   after the signing instruction, are written first in `end`) · `[mov
+   x16, sp]` (the incoming base) · the allocation (§5.6.27 item 2: two
+   `sub`s, or the probes, or the looped shape under its temporary
+   record) · `stp x29, x30, [sp]` · `mov x29, sp` · the saves of
+   `preserve_most` and the coroutine's `x19` · the incoming base and
+   result slots · the guard's entry store. `guard::place` makes the
+   guard block last in the local area, at its top; the low guard of a
+   dynamic area is at `x29 - 16`. Epilogue: the guard check · `[mov sp,
+   x29]` · `ldp x29, x30, [sp]` · `add sp` · `autiasp`/`autibsp` (the
+   stack pointer is the entry's again) · `ret`, or the tail branch.
+   Registers: `x16` (the incoming base, the dynamic loop's bound), `x17`
+   (the probe loop's bound, the guard's scratch); the guard check saves
+   `x16` with `str x16, [sp, #-16]!` (a tail branch through `x16`
+   needs it), compares through both and reloads it, after the body and
+   before anything is restored. `x30` is signed
+   before the temporary record stores it, so the CFA the unwinder
+   authenticates it against is the entry stack pointer in every row.
+3. **Property notes:** the GNU property note is written from the module
+   flags as alone (BTI, PAC, GCS on AArch64; IBT, SHSTK on x86-64), and
+   is the same as `llc`'s for every flag set measured.
+
+Evidence: `spec/landed/codegen/WP-194.md`.
+
+#### 5.6.33 x86 vector intrinsics past SSSE3 (WP-202)
+
+The `llvm.x86.*` calls clang 19 and 22 write at `-O0` for the functions
+of `<smmintrin.h>`/`<nmmintrin.h>` (SSE4.1, SSE4.2), `<wmmintrin.h>`
+(AES, PCLMUL), `<shaintrin.h>`, `<avxintrin.h>`, `<avx2intrin.h>`,
+`<fmaintrin.h>`, `<f16cintrin.h>` and the 128- and 256-bit forms of
+`<gfniintrin.h>` (`crates/hod_x64/src/x86/ext.rs`; 173 `hod_ir`
+`Intrinsic` members, matrix rows `never(X64_ONLY)` / `on(X86_SSE)`). A
+section of its own: it shares §5.6.22's signature rule
+(`x64:x86-intrinsic-signature`) and feature rule, and §5.6.29's
+"refused by name" for a function without the feature. With the feature
+hod writes the instruction `llc` selects or instructions that compute
+the same bits, so it writes SSE4, AES, SHA, GFNI and `VEX` instructions
+there (§5.6.2's "SSE2 only" holds for every function and construct
+without them: the code of the x86-64 baseline is unchanged).
+
+1. **Features.** Each row needs the feature of clang's header function;
+   the last item of the function's `target-features` that turns it on or
+   off decides, none is off, a `target-cpu` alone does not count:
+
+   | need | on by | off by |
+   |---|---|---|
+   | `sse4.1`, `sse4.2` | that level or a later one of §5.6.22's chain (`avx`, every `avx*`, `fma`, `f16c`, ...) | it, an earlier level, `sse`, `sse2` |
+   | `avx` | `avx` or any `avx*`, `fma`, `f16c`, `xop`, `fma4` | as above, and `avx` |
+   | `avx2` | `avx2` or any `avx*` but `avx` (AVX-512, AVX10, `avxvnni`, ...) | `avx2`, or what turns `avx` off |
+   | `fma`, `f16c` | it, or an `avx512*`/`avx10*` feature | it, or what turns `avx` off |
+   | `aes`, `pclmul` | it, or `vaes`, `vpclmulqdq` | it, `sse`, `sse2` |
+   | `sha`, `gfni` | it | it, `sse`, `sse2` |
+
+   The 256-bit GFNI forms need `gfni` and `avx`. (`aes`, `pclmul`,
+   `sha` and `gfni` are not judged by §5.6.2's feature check yet: a
+   module that names them is refused there before code generation.)
+2. **128-bit vectors** (class `Fpr`): the legacy encoding in place on
+   the first operand's register, also where AVX is on and `llc` writes
+   the `VEX` form (the same lanes; the upper half of a `ymm` holds none
+   of hod's values): `sse41.packusdw`, `phminposuw`, `ptestz`/`c`/`nzc`
+   (`ptest`, then `sete`/`setb`/`seta` zero-extended), `round.ps`/`pd`/
+   `ss`/`sd`, `dpps`, `dppd`, `insertps`, `mpsadbw`; `pclmulqdq`;
+   `aesni.aesenc`/`aesenclast`/`aesdec`/`aesdeclast`/`aesimc`/
+   `aeskeygenassist`; `sha1rnds4`, `sha1nexte`, `sha1msg1`/`2`,
+   `sha256msg1`/`2`; `vgf2p8affineqb.128`, `vgf2p8affineinvqb.128`,
+   `vgf2p8mulb.128`. An `immarg` is the immediate (its low byte). Built
+   otherwise:
+   - `sse41.blendvps`/`blendvpd`/`pblendvb` (the instruction reads its
+     mask from `xmm0`): the sign of each mask element spread to all its
+     bits in `xmm14` (`psrad 31`, and `pshufd 0xf5` for `pd`; `pcmpgtb`
+     against zero for bytes), then `b & m | a & ~m` by `pand`/`pandn`/
+     `por`.
+   - `sse42.pcmpistr*128` and `pcmpestr*128`: the lengths moved to `eax`
+     and `edx`; `pcmpistri`/`pcmpestri` leave the index in `ecx`, the
+     `a`/`c`/`o`/`s`/`z` forms the flag (`seta`, `setb`, `seto`, `sets`,
+     `sete`); `pcmpistrm`/`pcmpestrm` write `xmm0`, which is kept in
+     `xmm15` around them. `eax`, `ecx`, `edx` never hold values.
+   - `sha256rnds2`: `xmm0` saved to a slot, the third operand moved
+     into it, the instruction on `xmm14`, `xmm0` reloaded.
+   - The AVX-only 128-bit forms are their `VEX.128` instruction:
+     `avx.vpermilvar.ps`/`pd`, `avx.vtestz`/`c`/`nzc.ps`/`pd`,
+     `avx2.psllv`/`psrlv` `.d`/`.q`, `psrav.d`, `avx.maskload`/
+     `maskstore.ps`/`pd`, `avx2.maskload`/`maskstore.d`/`q`,
+     `fma.vfmaddsub.ps`/`pd` (`vfmaddsub213`), `vcvtps2ph.128`.
+   A third vector operand is copied to `xmm15` and its register given
+   back before the other two are asked for: no lowering pins three
+   registers of the class.
+3. **256-bit vectors** (class `Mem`, the bytes in a frame slot, §4.1,
+   `spec/abi-x64.md` §1.3; no value of hod's is ever kept in a `ymm`):
+   the first operand loaded into `ymm14` by `vmovdqu`, the `VEX.256`
+   instruction with the second operand from its slot (a 128-bit shift
+   count from its register, a third operand loaded into `ymm15`), and
+   `ymm14` stored to the result's slot by `vmovdqu`; an `i32` or 128-bit
+   result is moved from `eax`/`xmm14` to its register. The instructions
+   are `llc`'s, one per intrinsic: `avx.addsub`/`max`/`min`/`hadd`/
+   `hsub` `.pd.256`/`.ps.256`, `blendv.*.256`, `dp.ps.256`,
+   `cmp.ps.256`/`.pd.256` (the five-bit predicate), the conversions
+   `cvt.pd2.ps.256`, `cvt.ps2dq.256`, `cvt(t).pd2dq.256`,
+   `cvtt.ps2dq.256`, `rcp.ps.256`, `rsqrt.ps.256`, `round.*.256`,
+   `vpermilvar.*.256`, `vtest*.256`, `ptest*.256`, `movmsk.*.256`,
+   `ldu.dq.256` (`vmovdqu`), `maskload`/`maskstore` `.256`; `avx2.pack*`,
+   `pavg.b`/`.w`, `pblendvb`, `phadd`/`phsub` `.d`/`.w`/`.sw`,
+   `pmadd.ub.sw`, `pmadd.wd`, `pmovmskb`, `pmul.hr.sw`, `pmulh.w`,
+   `pmulhu.w`, `psad.bw`, `pshuf.b`, `psign.*`, `psll`/`psrl`/`psra` by
+   a vector and the `i` forms by an `i32` (a constant the immediate,
+   saturated at 255, a variable one through `movd xmm15`, as §5.6.22),
+   `psllv`/`psrlv`/`psrav` `.256`, `permd`/`permps` (the index operand
+   in `ymm14`: `vpermd` takes it in `vvvv`), `mpsadbw`, `maskload`/
+   `maskstore` `.256`; `fma.vfmaddsub.*.256`; `vcvtps2ph.256`;
+   `vgf2p8affineqb.256`, `vgf2p8affineinvqb.256`, `vgf2p8mulb.256`.
+   `avx.vzeroupper` and `avx.vzeroall` are `vzeroupper`: hod keeps no
+   value in an upper half, and `vzeroall` would clear the `xmm`s that
+   hold values (`llc` keeps its live ones in memory around it); what
+   the registers hold is not observable by the program.
+4. **§5.6.22's compares with AVX.** `sse.cmp.ss` and `sse2.cmp.sd` with
+   a predicate of 8 to 31 in a function with AVX are `vcmpss`/`vcmpsd`
+   with the whole predicate, as `llc`'s (the legacy encoding reads
+   three bits, which is right only without AVX).
+5. **Refused by name** (`classify`): the gathers (`avx2.gather.*`, 16
+   names), every AVX-512, AVX10, VAES, VPCLMULQDQ and 512-bit GFNI name
+   (counted in `spec/landed/codegen/WP-202.md`), and every other
+   `llvm.x86.*` name not listed. AArch64 refuses every `llvm.x86.*` name.
+
+Evidence: `spec/landed/codegen/WP-202.md`.
 
 ## 6. Control flow
 
@@ -4864,7 +5150,8 @@ islands; local `STT_FUNC` symbols `F.resume` and `F.destroy` (F's own
 symbol's size ends at the first stub). Each builds the same machine frame
 as F's prologue (same CFI rows: first the entry state, then the
 prologue's, then x19's), sets x19 := x0, mode := 1, the frame word := x0,
-`w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
+in a protected function the guard word and the pointer slots (§5.6.24
+rule 6), `w0` := 0 (resume) or 1 (destroy), loads the index and branches to that
 suspend's re-entry label (`cmp` / `b.eq` per suspend), and ends in
 `brk #1`. Entering after the suspend with `w0` as its result, the
 switch takes the 0 or 1 edge.
@@ -5014,7 +5301,8 @@ with (awaiter, frame), C convention.
 after F's code. Each states the entry CFI (CFA = `rsp + 8`, `rbp` and
 the save set restored), then builds F's machine frame with F's rows
 (`push rbp`, `mov rbp, rsp`, the save set's pushes, `sub rsp, FRAME`),
-then `mov rbx, rdi`, mode := 1, the frame word := `rdi`
+then `mov rbx, rdi`, mode := 1, the frame word := `rdi`, in a protected
+function the guard word and the pointer slots (§5.6.24 rule 6)
 (`coro_stub_ready` here), `mov eax, 0 | 1`, one `cmp dword [rbx +
 index], k` / `je` per suspend, and `ud2`. Their displacements are the
 final ones (`frame::base_offset`): they are emitted after the frame's

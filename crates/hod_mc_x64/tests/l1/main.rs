@@ -16,12 +16,14 @@ mod text;
 
 mod alu;
 mod atomic;
+mod avx;
 mod bits;
 mod branch;
 mod bt;
 mod cond;
 mod coverage;
 mod fixups;
+mod inline;
 mod link;
 mod mem;
 mod mov;
@@ -69,6 +71,11 @@ pub const GROUPS: &[Group] = &[
     ("x87-llc-text", x87::llc_text),
     // processor state and extensions (WP-190).
     ("state-and-extensions", state::build),
+    // inline assembly (WP-199).
+    ("inline-assembly", inline::build),
+    // SSE4 and VEX (WP-202).
+    ("three-byte-maps", avx::legacy),
+    ("vex", avx::vex_forms),
 ];
 
 fn check(group: &str) {
@@ -113,4 +120,9 @@ differential! {
     x87_llc_text_matches_llvm => "x87-llc-text";
     // WP-190.
     state_and_extensions_match_llvm => "state-and-extensions";
+    // WP-199.
+    inline_assembly_matches_llvm => "inline-assembly";
+    // WP-202.
+    three_byte_maps_match_llvm => "three-byte-maps";
+    vex_matches_llvm => "vex";
 }
