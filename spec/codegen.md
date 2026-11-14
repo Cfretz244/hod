@@ -5901,8 +5901,13 @@ branch relocation, the large code model's `movabs` of the callee
 pointer, which is also the function's DWARF frame base (variable
 locations are offsets from it). `cfi` rows are DWARF call-frame
 instructions as data: `DefCfa { reg, offset }`, `DefCfaOffset`,
-`DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, each
-with the code offset from which it holds. The target emits the rows for
+`DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, and
+`RememberState`/`RestoreState` from an inline-assembly template only
+(`spec/eh.md` §4.3, `spec/asm.md` §15), each with the code offset from
+which it holds. `cfi_at` inserts a row after every row at its offset or
+before it, so a prologue's rows added at `end_function` go ahead of a
+template's rows later in the code; without template rows that is the
+end of the list, as before. The target emits the rows for
 its prologue and its exit sequences. The exit sequences are the last code
 of the function, so nothing after them needs the body's state back; each
 tail exit, coming after another exit sequence, starts with rows that
@@ -5911,7 +5916,8 @@ than relying on remembered state. So does the shared trap of §6.1, which
 the core places after the exit sequences and the body branches to: before
 it, the core restates the net effect of the rows emitted before the
 epilogue was bound (one CFA rule, then the last rule of each saved
-register). `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
+register), applying a template's `RememberState`/`RestoreState` as a
+stack of those rules. `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
 re-exported, so the rows reach `.eh_frame` as they are. The rows are
 exact at every instruction boundary (asynchronous unwind tables), which
 is what debuggers and profilers need; `hod_eh` writes them into

@@ -507,7 +507,7 @@ function's `target-features` (it assembles `prefetchw`, `crc32b`,
 
 | form | refusal | templates |
 |---|---|---|
-| `.cfi_*` in a body (valgrind's `CALL_FN_*`) | `asm:directive/cfi_remember_state` | 15 |
+| `.cfi_*` in a body (valgrind's `CALL_FN_*`): taken since WP-212, §15 | — | 15 |
 | a call or branch to a symbol (`call __bolt_fini_trampoline`): taken since WP-204, §14 | — | 3 |
 | the control registers (`mov %cr3, %rax`) | `asm:operand/register` | 2 |
 | AVX (`vdivpd`) | `asm:mnemonic/v*` | 2 |
@@ -576,8 +576,8 @@ in the addend; a GOT field keeps the symbol (a `.L` name is
 relocated, iterated to the least fixed point. `asm::check` admits
 x86-64; the classify row `module:asm` is on for both targets.
 
-**`.symver name, base@V`** (`@`, `@@`, `@@@`; x86-64 only, AArch64 still
-refuses it as `asm:directive/symver`), applied after every module
+**`.symver name, base@V`** (`@`, `@@`, `@@@`; x86-64, and AArch64 since
+WP-212, §15), applied after every module
 symbol is defined, as `llvm-mc` 19 and 22 do: a defined name gets an
 alias `base@V` (`base@@V`) with its section, value, size, type, binding
 and visibility, the name kept; `@@@` renames a defined name `base@@V`;
@@ -626,7 +626,7 @@ modules (176) and the census (220):
 
 | form | refusal | corpus | census |
 |---|---|---|---|
-| `.cfi_*` in a template (valgrind's `CALL_FN_*`) | `asm:directive/cfi_*` | 0 | 15 |
+| `.cfi_*` in a template (valgrind's `CALL_FN_*`): taken since WP-212, §15 | — | 0 | 15 |
 | a `callbr` with a template (`asm goto`, `jmp ${0:l}`) | `x64:inline-asm` | 2 | 0 |
 | the control registers | `asm:operand/register` | 0 | 2 |
 | AVX | `asm:mnemonic/v*` | 0 | 2 |
@@ -637,7 +637,87 @@ modules (176) and the census (220):
 | an x87 register operand in an instruction | `asm:operand/register` | 0 | 0 |
 | `.symver` of an undefined name with `@@` | `asm:symbol` | 0 | 0 |
 
-`.cfi_*` in a body needs two changes outside the assembler: `hod_eh`'s
-CFI program has no remember/restore state, and the x86-64 prologue
-writes its callee-saved rows after the body, which `cfi_at`'s ordering
-refuses (WP-204's record).
+`.cfi_*` in a body needed two changes outside the assembler, made in
+WP-212 (§15): remember/restore state in `hod_eh`'s rows, and `cfi_at`
+inserting the prologue's rows in offset order.
+
+## 15. Call-frame directives in x86-64 templates (WP-212)
+
+**Where they come from.** `valgrind.h`'s `CALL_FN_*` macros on amd64
+(the census's 15 templates): to call a function without redirection,
+the template saves `rbp`, points it at the CFA, says so to the unwinder,
+moves `rsp` down and calls; then it restores both:
+
+```
+movq %rbp, %r15
+movq %rax, %rbp            # the CFA, an input
+.cfi_remember_state
+.cfi_def_cfa rbp, 0
+... call ...
+movq %r15, %rbp
+.cfi_restore_state
+```
+
+The CFA input is `__builtin_dwarf_cfa()` (`llvm.eh.dwarf.cfa`), which
+hod does not lower (`intrinsic:llvm.eh.dwarf.cfa`, a follow-up); a
+function computing it otherwise (`llvm.frameaddress(0)` plus 16, as the
+tests do) is lowered in full.
+
+**The directives** (`x64::assemble_with_cfi`; `x64::assemble` still
+refuses each as `asm:directive/<name>`): `.cfi_remember_state`,
+`.cfi_restore_state`, `.cfi_def_cfa reg, n`, `.cfi_def_cfa_offset n`,
+`.cfi_def_cfa_register reg`, `.cfi_offset reg, n`, `.cfi_restore reg`.
+Each emits no bytes and becomes a row at its offset in the template
+(after layout, so relaxed branches before it count). A register is a
+64-bit general register (DWARF numbers by encoding: `rax` 0, `rdx` 1,
+`rcx` 2, `rbx` 3, `rsi` 4, `rdi` 5, `rbp` 6, `rsp` 7, `r8`..`r15`
+8..15), `rip` (16), `xmm0`..`xmm15` (17..32), with or without `%`, or a
+number; another (a 32-bit name) is `asm:operand/register`. A CFA offset
+is 0 or more and a `.cfi_offset` a multiple of 8 (the data alignment
+factor is −8), else `asm:operand/range`. The wrong count of operands is
+`asm:operand/syntax`. `.cfi_adjust_cfa_offset`, `.cfi_rel_offset`,
+`.cfi_escape`, `.cfi_startproc`, `.cfi_endproc` and every other
+directive stay `asm:directive/<name>`: LLVM tracks the CFA offset across
+a remember/restore pair only approximately, and hod states no rule it
+does not track.
+
+**The rows** (`hod_x64::barrier::template::emit`): after the bytes and
+relocations, each row is added at the template's start plus its offset
+with `FnCx::cfi_at`, which keeps rows in offset order (`spec/codegen.md`
+§9.3), so the prologue's rows, added at the end of the function, stay
+ahead of them. `hod_eh` writes `RememberState`/`RestoreState` as
+`DW_CFA_remember_state`/`DW_CFA_restore_state` (`spec/eh.md` §4.3); the
+core's restatement before the shared trap applies them as a stack. The
+template's rows hold until the next row, as written: a template that
+leaves a rule changed at its end changes it for the code after, as
+`llc`'s does. `.debug_frame` (a `nounwind` function with debug
+information) gets the same rows.
+
+**Checked** (`crates/hod_x64/tests/inline_asm_cfi.rs`): the
+`llvm-dwarfdump` instructions of `.eh_frame` and `.debug_frame` inside
+the template (found by a marker `nopl` in `.text`) equal `llc` 19's and
+22's, hod plain and stressed, for valgrind's shape, every directive and
+nested pairs; a C++ exception thrown by a function the template calls is
+caught by the caller of the function holding the template, under every
+linker, dynamic and static (without the rows it aborts); `gdb` stopped
+in the callee walks back through the template to `main` (without the
+rows it does not). `llc`'s own build of such a template is compared,
+not run: it does not keep `rsp` 16-byte aligned at the template.
+
+**AArch64**: no template of the AArch64 corpus uses a call-frame
+directive (nor of the x86-64 corpus; the census is x86-64's), so they
+stay `asm:directive/<name>` there.
+
+The x86-64 census: 212 of 220 bodies assemble (197 before).
+
+**`asm goto` with a template** on x86-64 (a `callbr` whose template is
+not empty) stays refused as `x64:inline-asm` (§11, §14's table: 2
+corpus modules); it is WP-212's second part, a follow-up.
+
+**`.symver` on AArch64** (`module.rs`, `hod_cg::emit::module_asm`):
+§14's `.symver`, read and applied the same way on AArch64 (the code was
+already the target's; only the directive was x86-64's). An undefined
+name with `@@` stays `asm:symbol`. `emit_module_asm.rs`'s `symver` case
+(`@`, `@@`, `@@@`, defined, weak, hidden, internal, undefined and
+unreferenced names) has `llc` 19's and 22's sections, symbols (as sets)
+and relocations; module text without `.symver` reads as before.
