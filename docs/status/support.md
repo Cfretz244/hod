@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 737 | 361 | 11 | 365 | 497 | 10 | 230 |
-| total | 1062 | 580 | 60 | 422 | 718 | 63 | 281 |
+| `intrinsic` | 742 | 364 | 11 | 367 | 501 | 10 | 231 |
+| total | 1067 | 583 | 60 | 424 | 722 | 63 | 282 |
 
 ## `module`
 
@@ -542,6 +542,11 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.stackrestore` | supported | supported |  |
 | `intrinsic:llvm.frameaddress` | supported (int, ptr) | supported (int, ptr) |  |
 | `intrinsic:llvm.returnaddress` | supported (int, ptr) | supported (int, ptr) |  |
+| `intrinsic:llvm.eh.dwarf.cfa` | rejected | supported (int, ptr) | `llc` 19 and 22 for AArch64 return the CFA less 16 (the frame pointer), not the CFA their own unwind tables and GCC define |
+| `intrinsic:llvm.eh.return.i64` | rejected | supported (int, ptr) | `llc` 19 and 22 for AArch64 emit nothing for it: the code falls through into what follows |
+| `intrinsic:llvm.eh.unwind.init` | supported | supported |  |
+| `intrinsic:llvm.sponentry` | supported (ptr) | rejected | x86_64: `llc` 19 and 22 for x86-64 abort in instruction selection; clang has no builtin for it there |
+| `intrinsic:llvm.addressofreturnaddress` | supported (ptr) | supported (ptr) |  |
 | `intrinsic:llvm.trap` | supported | supported |  |
 | `intrinsic:llvm.debugtrap` | supported | supported |  |
 | `intrinsic:llvm.ubsantrap` | supported (int) | supported (int) |  |

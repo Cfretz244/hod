@@ -641,3 +641,37 @@ fn what_llc_cannot_build_is_refused_by_name() {
         assert_eq!(classify(ok), None);
     }
 }
+
+/// What compiling `text` (the header added) reports.
+fn compile(text: &str) -> Result<(), String> {
+    let (m, bodies) = parse(&format!("{}{text}", ll_header()));
+    hod_x64::compile_to_object(&m, &bodies, &pic(Stress::default()))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// §5.6.38: `eh.return` under the shadow stack, and in functions whose
+/// exits restore other registers, is refused by name.
+#[test]
+fn eh_return_where_its_exit_cannot_be_is_refused() {
+    let eh_return = "declare void @llvm.eh.return.i64(i64, ptr)\n";
+    let cases = [
+        (
+            format!(
+                "{eh_return}define void @f(i64 %o, ptr %h) {{\n  call void @llvm.eh.return.i64(i64 %o, ptr %h)\n  unreachable\n}}\n\
+                 !llvm.module.flags = !{{!0}}\n!0 = !{{i32 8, !\"cf-protection-return\", i32 1}}\n"
+            ),
+            "x64:eh-return-shadow-stack",
+        ),
+        (
+            format!(
+                "{eh_return}define preserve_mostcc void @f(i64 %o, ptr %h) {{\n  call void @llvm.eh.return.i64(i64 %o, ptr %h)\n  unreachable\n}}\n"
+            ),
+            "x64:eh-return-convention",
+        ),
+    ];
+    for (text, want) in &cases {
+        let got = compile(text).expect_err(want);
+        assert!(got.contains(want), "{want}: {got}");
+    }
+}
