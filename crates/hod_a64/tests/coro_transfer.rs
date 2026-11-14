@@ -34,6 +34,7 @@ const PIC: Options = Options {
     stress: Stress { min_pool: false, far: false, displace: false, coro_frame: false },
     debug_compression: hod_obj::Compression::None,
     split_dwarf: hod_dwarf::SplitDwarf::Off,
+    tls_descriptors: false,
 };
 
 /// `llc` code that keeps `0x1234` in x19 across a call of `f(arg)`: 1

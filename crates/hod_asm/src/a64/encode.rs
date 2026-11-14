@@ -15,7 +15,7 @@ use hod_mc_a64::{
 };
 
 use super::operand::{Gp, IndexExt, Mem, Offset, Op, View};
-use super::{Features, RefKind, sysreg};
+use super::{Features, RefKind, prefetch, sysreg};
 use crate::expr::{Name, Value};
 use crate::reason::{self, Refusal, operand, other};
 
@@ -277,6 +277,7 @@ pub fn encode<'a>(mnemonic: &str, ops: &[Op<'a>], features: Features) -> R<Encod
         "ldr" | "str" | "ldrb" | "strb" | "ldrh" | "strh" | "ldrsb" | "ldrsh" | "ldrsw"
         | "ldur" | "stur" | "ldurb" | "sturb" | "ldurh" | "sturh" | "ldursb" | "ldursh"
         | "ldursw" => load_store(m, ops),
+        "prfm" | "prfum" => prefetch_insn(m == "prfum", ops),
         "ldp" | "stp" | "ldpsw" => pair(m, ops),
         "ldxr" | "ldxrb" | "ldxrh" | "ldaxr" | "ldaxrb" | "ldaxrh" | "ldar" | "ldarb" | "ldarh"
         | "stlr" | "stlrb" | "stlrh" => exclusive_load(m, ops),
@@ -315,14 +316,26 @@ pub fn encode<'a>(mnemonic: &str, ops: &[Op<'a>], features: Features) -> R<Encod
             let b = barrier(o)?;
             Ok(word(if m == "dmb" { mc::dmb(b) } else { mc::dsb(b) }))
         }
-        "svc" | "brk" | "udf" => {
+        "svc" | "brk" | "udf" | "hlt" => {
             let [i] = ops else { return form() };
             let v = uimm(i, 0xffff)? as u16;
             Ok(word(match m {
                 "svc" => mc::svc(v),
                 "brk" => mc::brk(v),
+                // `HLT #imm16` (`spec/asm.md` §16): `hod_mc_a64` has no
+                // encoder; the exception-generation class of `brk`
+                // with `opc` 2.
+                "hlt" => 0xd440_0000 | u32::from(v) << 5,
                 _ => mc::udf(v),
             }))
+        }
+        // `XPACLRI`: strip the pointer authentication code of `lr`, the
+        // hint-space form (`HINT #7`), a no-op without the extension.
+        "xpaclri" => {
+            if !ops.is_empty() {
+                return form();
+            }
+            Ok(word(mc::hint(7)))
         }
         "mrs" => {
             let [r, s] = ops else { return form() };
@@ -597,15 +610,23 @@ fn logical<'a>(m: &str, ops: &[Op<'a>]) -> R<Encoded<'a>> {
             return form();
         }
         let v = logical_imm(sz, v)?;
+        // `bic`, `orn`, `eon`, `bics` with an immediate are `and`, `orr`,
+        // `eor`, `ands` of the inverted immediate, as LLVM's assembler
+        // writes them (`spec/asm.md` §16).
+        let inv = match sz {
+            Size::X => !v,
+            Size::W => !v & 0xffff_ffff,
+        };
         let rn = zr(rn)?;
         return checked(match m {
             "and" => mc::try_and_imm(sz, sp(rd)?, rn, v),
             "orr" => mc::try_orr_imm(sz, sp(rd)?, rn, v),
             "eor" => mc::try_eor_imm(sz, sp(rd)?, rn, v),
             "ands" => mc::try_ands_imm(sz, zr(rd)?, rn, v),
-            // `bic`, `orn`, `eon`, `bics` with an immediate are aliases
-            // of the inverted immediate: not covered.
-            _ => return fail(operand::FORM),
+            "bic" => mc::try_and_imm(sz, sp(rd)?, rn, inv),
+            "orn" => mc::try_orr_imm(sz, sp(rd)?, rn, inv),
+            "eon" => mc::try_eor_imm(sz, sp(rd)?, rn, inv),
+            _ => mc::try_ands_imm(sz, zr(rd)?, rn, inv),
         });
     }
     let rm = zr_of(&rest[0], sz)?;
@@ -1051,6 +1072,56 @@ fn load_store<'a>(m: &str, ops: &[Op<'a>]) -> R<Encoded<'a>> {
                 }
                 _ => return form(),
             })
+        }
+    }
+}
+
+/// The operation of a prefetch: a name of [`prefetch::NAMES`] (any case)
+/// or `#imm5`.
+fn prefetch_op(op: &Op<'_>) -> R<u32> {
+    match op {
+        Op::Imm(..) => uimm(op, 31),
+        _ => op.ident().and_then(prefetch::named).ok_or(Refusal(operand::OPTION)),
+    }
+}
+
+/// `prfm` and `prfum` (`spec/asm.md` §16). `prfm` with an offset its
+/// scaled form does not take (negative, or not a multiple of 8) but the
+/// signed 9-bit form does is `prfum`, as `llvm-mc` 22 writes it (`llvm-mc`
+/// 19 rejects it).
+fn prefetch_insn<'a>(unscaled: bool, ops: &[Op<'a>]) -> R<Encoded<'a>> {
+    let [op, addr] = ops else { return form() };
+    let prfop = prefetch_op(op)?;
+    let mem = match addr {
+        Op::Mem(mem) => *mem,
+        Op::Name(to) if !unscaled => {
+            return Ok(fixed(prefetch::prfm_lit(prfop), RefKind::Literal19, *to));
+        }
+        Op::Imm(..) if !unscaled => return fail(operand::SYMBOL),
+        Op::Literal => return fail(operand::LITERAL_POOL),
+        _ => return form(),
+    };
+    if mem.writeback {
+        return form();
+    }
+    let rn = base(&mem)?.code();
+    match mem.offset {
+        Offset::Reg(ix) => {
+            if unscaled {
+                return form();
+            }
+            let (rm, idx, scaled) = index(ix, 3)?;
+            Ok(word(prefetch::prfm_reg(prfop, rn, rm.code(), idx as u32, scaled)))
+        }
+        Offset::None | Offset::Imm(_) => {
+            let off = if let Offset::Imm(o) = mem.offset { o } else { 0 };
+            if !unscaled && (0..=32760).contains(&off) && off % 8 == 0 {
+                return Ok(word(prefetch::prfm_off(prfop, rn, off as u32)));
+            }
+            if (-256..=255).contains(&off) {
+                return Ok(word(prefetch::prfum(prfop, rn, off)));
+            }
+            fail(operand::RANGE)
         }
     }
 }

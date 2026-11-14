@@ -575,7 +575,15 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// Adds a relocation at `offset` of the function's code (§9.2).
     #[inline]
     pub fn reloc(&mut self, offset: u32, kind: RelocKind, sym: SymRef, addend: i64) {
-        self.out.relocs.push(Reloc { offset, kind, sym, addend });
+        self.out.relocs.push(Reloc { offset, kind, sym, addend, branch: false });
+    }
+
+    /// Adds a relocation at `offset` that addresses the target of a call
+    /// or tail call with a `kind` that is not a branch relocation
+    /// ([`Reloc::branch`]): it goes to a local copy as a branch does.
+    #[inline]
+    pub fn branch_reloc(&mut self, offset: u32, kind: RelocKind, sym: SymRef, addend: i64) {
+        self.out.relocs.push(Reloc { offset, kind, sym, addend, branch: true });
     }
 
     /// Adds a call-frame instruction that holds from the current offset
@@ -590,21 +598,23 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// Adds a call-frame instruction that holds from `offset`, an offset
     /// of code already emitted (§9.3): for the rows of a prologue that
     /// `begin_function` emitted before the frame size its rows state was
-    /// known, added in `end_function`. Rows stay in offset order, so
-    /// `offset` is at least that of the function's last row and at most
-    /// the current offset.
+    /// known, added in `end_function`. Rows stay in offset order: the row
+    /// goes after every row at `offset` or before it, so ahead of the
+    /// rows an inline-assembly body wrote later in the code (WP-212); in
+    /// a function without such rows that is the end.
     ///
     /// # Errors
-    /// `Internal` for an offset out of that order.
+    /// `Internal` for an offset past the current one.
     pub fn cfi_at(&mut self, offset: u32, op: CfiOp) -> CgResult<()> {
-        let last = self.out.cfi[self.mark.cfi as usize..].last().map_or(0, |row| row.offset);
-        if offset < last || offset > self.offset() {
+        if offset > self.offset() {
             return internal(format!(
-                "a CFI row at {offset}, out of order (last row at {last}, code at {})",
+                "a CFI row at {offset}, past the code (at {})",
                 self.offset()
             ));
         }
-        self.out.cfi.push(CfiRow { offset, op });
+        let rows = &self.out.cfi[self.mark.cfi as usize..];
+        let at = self.mark.cfi as usize + rows.partition_point(|row| row.offset <= offset);
+        self.out.cfi.insert(at, CfiRow { offset, op });
         Ok(())
     }
 

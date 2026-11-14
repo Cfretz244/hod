@@ -1501,7 +1501,7 @@ everywhere.
   space too); the program's output must equal it byte for byte. Bytes that
   are not valid UTF-8 cannot be written.
 - `llc-args` is a list of words, each one of: `-code-model=<v>`,
-  `-data-sections`, `-debugger-tune=<v>`, `-fp-contract=<v>`,
+  `-data-sections`, `-debugger-tune=<v>`, `-enable-tlsdesc`, `-fp-contract=<v>`,
   `-function-sections`, `-mcpu=<v>`, `-x86-branches-within-32B-boundaries`,
   where `<v>` is letters, digits, `.`, `_`, `+` and `-`. These are what a
   compiler driver gives `llc` that change the code and name no file. The
@@ -3968,7 +3968,9 @@ other build system is an error naming the row.
   The build (`make -k`, the shared jobserver, else `-j 4`) and the tests
   run in the mode. Every compile runs under the row's address-space cap
   (`vmem_kb`, `KILN_OSS_VMEM_KB`) and a 600 s limit (the wrapper's); the
-  tests run under the same cap, under the row's `test_timeout`, ctest
+  tests run under the same cap (or the row's `test_vmem_kb`, at most
+  100 GB, for a test that reserves address space it never touches),
+  under the row's `test_timeout`, ctest
   with `CTEST_PARALLEL_LEVEL` 4 unless set, with `TMPDIR` and
   `TEST_TMPDIR` in the tree.
 - **C.** A `c = "kiln"` row compiles its C through `kiln-cc` and kiln's
@@ -4041,7 +4043,7 @@ gives the counts; with fewer reruns, or a failed one, it stays worse,
 with its note.
 
 **Test environment.** Tests run under the row's address-space cap
-(`ulimit -v`, `vmem_kb`) with `MALLOC_ARENA_MAX=4` (glibc reserves 64 MB
+(`ulimit -v`, `vmem_kb`, or `test_vmem_kb` when the row sets it) with `MALLOC_ARENA_MAX=4` (glibc reserves 64 MB
 of address space per malloc arena, up to eight per CPU, so a test with
 many threads would otherwise exhaust the cap on a many-CPU host without
 using the memory, and sooner the slower its code), the same in every
@@ -4049,6 +4051,21 @@ mode and in reruns. `TMPDIR` and `TEST_TMPDIR` are the tree's `test-tmp`
 directory; a row whose tests write many small files or need file-system
 behaviour the workspace's bind mount lacks (glog) names a fresh
 directory under `/tmp` in its `test` command and removes it afterwards.
+
+**Targets, strict after a fallback, reductions.** `--target x86_64`
+(oss-run.sh, oss-build.sh, and oss-report.py before its command; WP-191,
+`spec/landed/harness/WP-191.md`) cross-builds the same rows for
+`x86_64-unknown-linux-gnu` on the AArch64 host: CMake's cross settings, the
+wrappers' `--target=<triple>`, the tests under
+`CMAKE_CROSSCOMPILING_EMULATOR` (qemu-x86_64 with the system root; `projects.py
+emulate-tests` puts the commands CMake does not wrap under it too), test
+timeouts times `$HOD_OSS_X64_TEST_SLOWDOWN`, and the trees and findings
+under `x64-build/`, `x64-install/` and `<findings>/x64/` (the sources are
+shared). `oss-run.sh --strict` runs the strict build even after a fallback:
+its refused compiles fail, `make -k` builds the rest and the tests that link
+run. After each project, `oss-reduce.py` reduces every kept refusal to
+`min.ll` beside it (`llvm-extract`, then `llvm-reduce` while hod's census
+still holds the reason).
 
 **Job slots.** Project builds and their tests (make, `cmake --install`,
 ctest, and `oss-report.py rerun`) draw from a jobserver pool of their own,

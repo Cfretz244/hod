@@ -258,3 +258,95 @@ fn vzeroupper_where_llc_writes_it() {
         eprintln!("vzeroupper {attrs}: {zeroed} of {} functions write one", hod.len());
     }
 }
+
+/// WP-208: the shapes of §8.7's rule with `zmm` pieces and masks in
+/// `ymm`/`zmm` lanes or byte by byte.
+const ZMM_BODIES: &str = r"
+declare void @g()
+declare <16 x float> @z(<16 x float>)
+declare void @zm(<32 x i1>, <64 x i1>)
+declare void @zb(<5 x i1>)
+declare void @vf(i32, ...)
+define void @zarg(<16 x float> %v, ptr %p) #0 {
+  store <16 x float> %v, ptr %p, align 1
+  call void @g()
+  ret void
+}
+define void @zcall(ptr %p) #0 {
+  %v = load <16 x float>, ptr %p, align 1
+  %r = call <16 x float> @z(<16 x float> %v)
+  store <16 x float> %r, ptr %p, align 1
+  call void @g()
+  ret void
+}
+define <16 x float> @zret(ptr %p) #0 {
+  call void @g()
+  %v = load <16 x float>, ptr %p, align 1
+  ret <16 x float> %v
+}
+define void @masks(<32 x i1> %a, <64 x i1> %b, ptr %p) #0 {
+  store <32 x i1> %a, ptr %p, align 1
+  call void @g()
+  call void @zm(<32 x i1> %a, <64 x i1> %b)
+  call void @g()
+  ret void
+}
+define <32 x i1> @maskret(<5 x i1> %a, ptr %p) #0 {
+  call void @zb(<5 x i1> %a)
+  call void @g()
+  %m = load <32 x i1>, ptr %p, align 1
+  ret <32 x i1> %m
+}
+define void @zvar(ptr %p) #0 {
+  %v = load <16 x float>, ptr %p, align 1
+  call void (i32, ...) @vf(i32 1, <16 x float> %v)
+  call void @g()
+  ret void
+}
+";
+
+/// WP-208: the AVX-512 machines, 512-bit vectors legal or not, with BW
+/// or without.
+const ZMM_MACHINES: [&str; 5] = [
+    "\"target-cpu\"=\"x86-64\" \"target-features\"=\"+avx512f\"",
+    "\"target-cpu\"=\"skylake-avx512\"",
+    "\"target-cpu\"=\"skylake-avx512\" \"min-legal-vector-width\"=\"0\"",
+    "\"target-cpu\"=\"skylake-avx512\" \"target-features\"=\"-avx512bw\" \
+     \"min-legal-vector-width\"=\"0\"",
+    "\"target-cpu\"=\"knl\" \"target-features\"=\"+vzeroupper\"",
+];
+
+/// §8.7 (WP-208): with `zmm` pieces and masks, hod writes `vzeroupper`
+/// where `llc` 19 and 22 do.
+#[test]
+fn vzeroupper_with_zmm_where_llc_writes_it() {
+    let Some(_) = tool("llvm-objdump") else { return };
+    let scratch = Scratch::new("x64-vzeroupper-zmm");
+    for (index, attrs) in ZMM_MACHINES.iter().enumerate() {
+        let text = format!("{}{ZMM_BODIES}\nattributes #0 = {{ {attrs} }}\n{PIE_FLAGS}", header());
+        let (module, bodies) = parse(&text);
+        let bytes = hod_x64::compile_to_object(&module, &bodies, &pic(Stress::default()))
+            .unwrap_or_else(|e| panic!("{attrs}: {e:?}"));
+        let ours = scratch.write(&format!("hod{index}.o"), bytes);
+        let hod = events(&ours);
+        let zeroed = hod.iter().filter(|(_, e)| e.chars().any(char::is_uppercase)).count();
+        assert!(zeroed > 0, "{attrs}: {hod:?}");
+        let source = scratch.write(&format!("m{index}.ll"), &text);
+        for major in [19, 22] {
+            let Some(llc) = llc_of(major) else { continue };
+            for fast in ["-fast-isel=1", "-fast-isel=0"] {
+                let object = scratch.join(format!("llc{index}-{major}{fast}.o"));
+                let mut command = Command::new(&llc);
+                command
+                    .args(["-O0", fast, "-relocation-model=pic", "-filetype=obj"])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&object);
+                let outcome = run_with(&mut command, &[], Duration::from_mins(2));
+                assert!(outcome.success(), "llc {major}: {}", outcome.stderr_text());
+                assert_eq!(hod, events(&object), "llc {major} {fast} {attrs}");
+            }
+        }
+        eprintln!("vzeroupper zmm {attrs}: {zeroed} of {} functions write one", hod.len());
+    }
+}

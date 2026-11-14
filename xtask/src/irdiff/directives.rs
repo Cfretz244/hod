@@ -391,10 +391,11 @@ const PRE_OPT: &str = "pre-opt";
 /// The `llc` options a test may pass with `llc-args`, by name: the ones a
 /// compiler driver gives `llc` that change the code and name no file. A
 /// name that ends in `=` takes a value.
-const LLC_ARGS: [&str; 7] = [
+const LLC_ARGS: [&str; 8] = [
     "-code-model=",
     "-data-sections",
     "-debugger-tune=",
+    "-enable-tlsdesc",
     "-fp-contract=",
     "-function-sections",
     "-mcpu=",
@@ -975,6 +976,7 @@ mod tests {
             "-code-model=small",
             "-data-sections",
             "-debugger-tune=lldb",
+            "-enable-tlsdesc",
             "-fp-contract=fast",
             "-function-sections",
             "-mcpu=apple-m1",

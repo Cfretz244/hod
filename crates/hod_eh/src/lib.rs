@@ -50,7 +50,9 @@ use hod_obj::{
 use leb::{Sink, sleb, uleb};
 pub use leb::{uleb_len, write_sleb, write_uleb};
 pub use lsda::{CallSite, Clause, FuncLsda, LsdaOptions, NO_PAD, Pad, write_lsdas};
-pub use target::{AARCH64, CfiTarget, X86_64, for_arch, pe};
+pub use target::{
+    AARCH64, AARCH64_LARGE, CfiTarget, X86_64, X86_64_LARGE, for_arch, for_model, pe,
+};
 
 /// A DWARF call-frame instruction, as data (`spec/codegen.md` §9.3,
 /// `spec/eh.md` §4). Registers are DWARF register numbers; offsets are in
@@ -80,6 +82,14 @@ pub enum Op {
         /// The register.
         reg: u16,
     },
+    /// Pushes the rules of every register and of the CFA, to be popped
+    /// by [`Op::RestoreState`] (`DW_CFA_remember_state`, 0x0a): what an
+    /// inline-assembly body's `.cfi_remember_state` writes (`spec/eh.md`
+    /// §4.3, WP-212).
+    RememberState,
+    /// Pops the rules [`Op::RememberState`] pushed
+    /// (`DW_CFA_restore_state`, 0x0b): `.cfi_restore_state`.
+    RestoreState,
     /// AArch64: the return address's signing state flips
     /// (`DW_CFA_AARCH64_negate_ra_state`, 0x2d): after the instruction
     /// that signs it (`paciasp`, `pacibsp`) and after the one that
@@ -317,6 +327,8 @@ const DW_CFA_ADVANCE_LOC2: u8 = 0x03;
 const DW_CFA_ADVANCE_LOC4: u8 = 0x04;
 const DW_CFA_OFFSET_EXTENDED: u8 = 0x05;
 const DW_CFA_RESTORE_EXTENDED: u8 = 0x06;
+const DW_CFA_REMEMBER_STATE: u8 = 0x0a;
+const DW_CFA_RESTORE_STATE: u8 = 0x0b;
 const DW_CFA_DEF_CFA: u8 = 0x0c;
 const DW_CFA_DEF_CFA_REGISTER: u8 = 0x0d;
 const DW_CFA_DEF_CFA_OFFSET: u8 = 0x0e;
@@ -470,6 +482,8 @@ fn instruction<S: Sink>(out: &mut S, target: &CfiTarget, op: Op) -> Option<()> {
                 uleb(out, u64::from(reg));
             }
         }
+        Op::RememberState => out.byte(DW_CFA_REMEMBER_STATE),
+        Op::RestoreState => out.byte(DW_CFA_RESTORE_STATE),
         Op::NegateRaState => out.byte(DW_CFA_AARCH64_NEGATE_RA_STATE),
         Op::BKeyFrame => {}
     }
@@ -659,10 +673,23 @@ fn write_cie(
 /// The output depends only on the set of FDEs, not on the order of the
 /// slice (§5). On an error `obj` is unchanged.
 pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<SectionId>, Error> {
+    write_eh_frame_for(obj, fdes, for_arch(obj.arch()))
+}
+
+/// [`write_eh_frame`] with the encodings of `target`, which must be one
+/// of the object's architecture: [`X86_64_LARGE`] under x86-64's large
+/// code model (`spec/eh.md` §2.1, WP-209).
+///
+/// # Errors
+/// As [`write_eh_frame`].
+pub fn write_eh_frame_for(
+    obj: &mut Object,
+    fdes: &[Fde<'_>],
+    target: &CfiTarget,
+) -> Result<Option<SectionId>, Error> {
     if fdes.is_empty() {
         return Ok(None);
     }
-    let target = for_arch(obj.arch());
     let (sorted, cies) = layout(fdes)?;
     let rows: usize = fdes.iter().map(|f| f.rows.len()).sum();
     let with_lsda = fdes.iter().filter(|f| f.lsda.is_some()).count();
@@ -687,8 +714,9 @@ pub fn write_eh_frame(obj: &mut Object, fdes: &[Fde<'_>]) -> Result<Option<Secti
             let mut stage = Staging::new();
             stage.bytes(&[0; 4]); // length, patched below
             stage.bytes(&pointer.to_le_bytes());
-            stage.bytes(&[0; 4]); // initial location, relocated
-            stage.bytes(&fde.size.to_le_bytes());
+            let fde_size = target.fde_size();
+            stage.bytes(&[0; 8][..fde_size]); // initial location, relocated
+            stage.bytes(&u64::from(fde.size).to_le_bytes()[..fde_size]);
             if personality.is_some() {
                 let size = usize::from(target.pointer_size);
                 stage.byte(size as u8); // augmentation length (ULEB128)

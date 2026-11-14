@@ -95,13 +95,15 @@ const READ_ON_AARCH64: &[&str] = &[
     "module asm \".set x, 42\"\n",
     "module asm \"x = 42\"\n",
     "module asm \".pushsection .rodata\"\nmodule asm \".popsection\"\n",
+    // WP-212 (`spec/asm.md` §15): an undefined unreferenced name writes
+    // nothing, on both targets.
+    "module asm \".symver a, a@V1\"\n",
 ];
 
 /// Module text `llc` warns about or refuses, or whose effect depends on
 /// its assembler's precedence rules, with the name `hod` refuses it by
-/// on AArch64 (`hod_asm`'s, WP-112), and on x86-64 but `.symver` (WP-204).
+/// on AArch64 (`hod_asm`'s, WP-112), and on x86-64 (WP-204).
 const REFUSED: &[(&str, &str)] = &[
-    ("module asm \".symver a, a@V1\"\n", "asm:directive/symver"),
     ("module asm \".size U, 4\"\n", "asm:symbol"),
     ("module asm \".internal U\"\n", "asm:directive/internal"),
     ("module asm \".globl \\22a b\\22\"\n", "asm:operand/syntax"),
@@ -238,12 +240,10 @@ fn other_assembly_is_refused_by_name() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     // WP-204: x86-64 reads module assembly too (`spec/asm.md` §14): the
-    // same text is read, and refused by the same names, but `.symver`,
-    // which x86-64 applies (an undefined unreferenced name writes nothing).
+    // same text is read, and refused by the same names.
     let x86_64 = hod_ir::Support::shipped(hod_ir::Arch::X86_64);
     let read = READ_ON_AARCH64.iter().map(|ir| (*ir, None));
-    let refused =
-        REFUSED.iter().map(|&(ir, name)| (ir, (name != "asm:directive/symver").then_some(name)));
+    let refused = REFUSED.iter().map(|&(ir, name)| (ir, Some(name)));
     for (ir, name) in read.chain(refused) {
         let text = format!("{}{ir}", header(Arch::X86_64, 22));
         let parsed = hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default())

@@ -492,7 +492,9 @@ fn the_other_forms_are_refused_by_name() {
 }
 
 /// A frame beyond what the prologue expresses is the skeleton's
-/// `limit:frame-size`; a code model other than small is `a64:code-model`.
+/// `limit:frame-size`; a code model other than small and large is
+/// `a64:code-model`, and the large one under PIC is
+/// `module:code-model-large-pic` (WP-209).
 #[test]
 fn the_limits_are_refused_by_name() {
     assert_eq!(
@@ -505,9 +507,19 @@ fn the_limits_are_refused_by_name() {
         "{}@g = global i64 0\ndefine i64 @f() {{\n %v = load i64, ptr @g\n ret i64 %v }}",
         ll_header(22)
     ));
+    for model in [hod_ir::CodeModel::Medium, hod_ir::CodeModel::Kernel] {
+        let options = Options { code_model: Some(model), ..Options::default() };
+        assert_eq!(
+            chunk(&m, &bodies, &options).map(|_| ()),
+            Err(CgError::unsupported(hod_a64::common::CODE_MODEL)),
+            "{model:?}"
+        );
+    }
     let options = Options { code_model: Some(hod_ir::CodeModel::Large), ..Options::default() };
+    assert_eq!(chunk(&m, &bodies, &options).map(|_| ()), Ok(()));
+    let pic = Options { reloc_model: RelocModel::Pic, ..options };
     assert_eq!(
-        chunk(&m, &bodies, &options).map(|_| ()),
-        Err(CgError::unsupported(hod_a64::common::CODE_MODEL))
+        chunk(&m, &bodies, &pic).map(|_| ()),
+        Err(CgError::unsupported(hod_cg::MODULE_CODE_MODEL_LARGE_PIC))
     );
 }

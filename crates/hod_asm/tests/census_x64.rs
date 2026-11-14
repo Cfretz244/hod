@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use hod_asm::x64::assemble;
+use hod_asm::x64::assemble_with_cfi;
 use hod_testutil::{Scratch, run, tool};
 
 /// What hod does with a census body.
@@ -191,17 +191,19 @@ const CENSUS: &[Row] = &[
         1,
         No("asm:operand/expression"),
     ),
+    // Call-frame directives (WP-212, `spec/asm.md` §15): rows of the
+    // function's unwind program at their place.
     row(
         "movq %rbp, %r15\nmovq %rax, %rbp\n.cfi_remember_state\n.cfi_def_cfa rbp, 0",
         "valgrind.h CALL_FN_* on amd64 (15 macros)",
         15,
-        No("asm:directive/cfi_remember_state"),
+        Ok(0),
     ),
 ];
 
 fn hod(body: &str) -> Result<(Vec<u8>, usize), hod_asm::Refusal> {
     let (mut code, mut refs) = (Vec::new(), Vec::new());
-    assemble(body, &mut code, &mut refs, &mut String::new())?;
+    assemble_with_cfi(body, &mut code, &mut refs, &mut Vec::new(), &mut String::new())?;
     Result::Ok((code, refs.len()))
 }
 
@@ -272,6 +274,8 @@ fn accepted_census_bodies_are_llvm_mc_bytes() {
         source.push_str(r.body);
         source.push('\n');
     }
+    // The call-frame directives stand inside a frame, as in a function.
+    let source = format!(".cfi_startproc\n{source}.cfi_endproc\n");
     let scratch = Scratch::new("hod-asm-census-x64");
     for major in [22, 19] {
         let Some(theirs) = llvm(major, &source, &scratch) else { continue };

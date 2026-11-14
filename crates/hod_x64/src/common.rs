@@ -139,9 +139,21 @@ thread_local! {
     /// The offsets of the `disp32` fields of the accesses to locals in the
     /// function being compiled, in offset order: `frame::end` adds the
     /// bias of the final frame to each and shortens those that fit a byte
-    /// (§5.6.17). One buffer per thread, reused across functions.
+    /// (§5.6.17), but not one marked [`KEEP_DISP32`]. One buffer per
+    /// thread, reused across functions.
     static LOCAL_SITES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
+
+/// The mark of a local site whose `disp32` is never shortened: an EVEX
+/// instruction's, whose `disp8` the CPU scales by the instruction's `N`
+/// (`disp8*N`, `spec/mc-x64.md`), so a raw byte would address another
+/// place. A field offset stays below it: a function's branches are
+/// `rel32`, so its code is under 2 GiB.
+const KEEP_DISP32: u32 = 1 << 31;
+
+/// The first byte of an EVEX instruction (in 64-bit mode `0x62` is
+/// nothing else, and hod writes no prefix before it).
+const EVEX_ESCAPE: u8 = 0x62;
 
 /// Forgets the local accesses of the previous function (`begin_function`).
 pub fn reset_local_sites() {
@@ -163,7 +175,8 @@ const DISP8_SAVES: u32 = 3;
 
 /// Adds `bias` to the displacement of every local access of the function
 /// (`end_function`), and writes each one that then fits a signed byte as
-/// `[rbp + disp8]` (`spec/codegen.md` §5.6.17): `ModRM` `mod` 10 → 01,
+/// `[rbp + disp8]`, an EVEX instruction's excepted (`spec/codegen.md`
+/// §5.6.17): `ModRM` `mod` 10 → 01,
 /// the byte written, the three bytes after it cut (`FnCx::cut`), so that
 /// whatever follows the displacement (an immediate) moves with the code.
 ///
@@ -173,7 +186,8 @@ const DISP8_SAVES: u32 = 3;
 pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
     let ok = LOCAL_SITES.with(|sites| {
         let sites = sites.borrow();
-        for &field in sites.iter() {
+        for &site in sites.iter() {
+            let field = site & !KEEP_DISP32;
             let at = field as usize;
             let code = cx.code_mut();
             let Some(disp) = mc::Fixup::Abs32.extract(code, at).map(|d| d + bias) else {
@@ -181,8 +195,9 @@ pub fn bias_local_sites(cx: &mut FnCx<'_, X64>, bias: i64) -> CgResult<()> {
             };
             // A local is `[rbp + disp32]`, `ModRM` right before the
             // field; any other shape keeps its `disp32`.
-            let short = at
-                .checked_sub(1)
+            let short = Some(at)
+                .filter(|_| site & KEEP_DISP32 == 0)
+                .and_then(|at| at.checked_sub(1))
                 .filter(|&m| code[m] & MODRM_MOD_RM == MODRM_RBP_DISP32)
                 .filter(|_| i8::try_from(disp).is_ok());
             match short {
@@ -240,7 +255,8 @@ pub fn frame_inst_shifted(
     put(cx, inst);
     if local && let Some(site) = inst.site() {
         let field = at + site.offset as u32;
-        LOCAL_SITES.with(|sites| sites.borrow_mut().push(field));
+        let keep = if inst.bytes()[0] == EVEX_ESCAPE { KEEP_DISP32 } else { 0 };
+        LOCAL_SITES.with(|sites| sites.borrow_mut().push(field | keep));
     }
 }
 
@@ -577,12 +593,21 @@ pub fn put_reloc(
 /// [`add_addend`]. Writes `rd`, and for an addend beyond 32 bits the
 /// general scratch register other than `rd`.
 ///
+/// Under the large code model, [`far_address`] (§5.6.36).
+///
 /// # Errors
-/// [`CODE_MODEL`] for a code model other than small. A thread-local
-/// symbol is `tls::address`'s (WP-134).
+/// [`CODE_MODEL`] for a code model other than small and large. A
+/// thread-local symbol is `tls::address`'s (WP-134).
 pub fn sym_address(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, addend: i64) -> CgResult<()> {
-    if cx.options.code_model(cx.module) != CodeModel::Small {
-        return unsupported(CODE_MODEL);
+    match cx.options.code_model(cx.module) {
+        CodeModel::Small => {}
+        CodeModel::Large => {
+            if let Access::Tls(model) = hod_cg::sym_access(cx.module, cx.options, sym) {
+                return crate::tls::address(cx, rd, sym, model, addend);
+            }
+            return far_address(cx, rd, SymRef::Module(sym), addend);
+        }
+        _ => return unsupported(CODE_MODEL),
     }
     let target = SymRef::Module(sym);
     match hod_cg::sym_access(cx.module, cx.options, sym) {
@@ -599,6 +624,169 @@ pub fn sym_address(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, addend: i64) -> 
         }
         Access::Tls(model) => return crate::tls::address(cx, rd, sym, model, addend),
     }
+    Ok(())
+}
+
+/// Whether the function is compiled for the large code model (§5.6.36).
+///
+/// # Errors
+/// [`CODE_MODEL`] for a code model other than small and large.
+pub fn large(cx: &FnCx<'_, X64>) -> CgResult<bool> {
+    match cx.options.code_model(cx.module) {
+        CodeModel::Small => Ok(false),
+        CodeModel::Large => Ok(true),
+        _ => unsupported(CODE_MODEL),
+    }
+}
+
+/// How the large code model reaches a symbol (§5.6.36).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Far {
+    /// Outside PIC: its absolute address, `R_X86_64_64`.
+    Abs,
+    /// PIC, a symbol that binds locally: the GOT's address plus the
+    /// symbol's offset from it, `R_X86_64_GOTOFF64`.
+    GotOff,
+    /// PIC, a preemptible symbol: loaded from its GOT entry, whose offset
+    /// in the GOT is `R_X86_64_GOT64`.
+    Got,
+}
+
+/// The access of `target` under the large code model, as `llc` 19 and 22
+/// choose it (`X86Subtarget::classifyGlobalReference`): outside PIC every
+/// symbol by its absolute address, whatever its binding; in PIC (a
+/// program or a shared object alike) through the GOT unless the symbol is
+/// `dso_local`. A function of the run-time library is reached through
+/// the GOT; the noop coroutine frame, a private constant, by its offset.
+fn far_access(cx: &FnCx<'_, X64>, target: SymRef) -> Far {
+    if !cx.options.reloc_model.is_pic() {
+        return Far::Abs;
+    }
+    match target {
+        SymRef::Module(sym) => match hod_cg::sym_access(cx.module, cx.options, sym) {
+            Access::Direct => Far::GotOff,
+            _ => Far::Got,
+        },
+        // `_TLS_MODULE_BASE_` (§5.6.37) is named only by the descriptor
+        // pair and by `DTPOFF32`, never through here; an undefined
+        // symbol would be reached through the GOT.
+        SymRef::Runtime(_) | SymRef::TlsModuleBase => Far::Got,
+        SymRef::NoopCoroFrame => Far::GotOff,
+    }
+}
+
+/// Puts the address of `target` + `addend` in `rd` under the large code
+/// model (§5.6.36), with no 32-bit displacement to a symbol, the GOT or
+/// another section; flags kept; writes `rd` only, and for an addend of a
+/// GOT entry beyond 32 bits the general scratch register other than `rd`
+/// (as [`add_addend`]).
+///
+/// - Outside PIC: `movabs rd, target + addend` (`R_X86_64_64`).
+/// - PIC: the GOT's address first, as `llc` computes it:
+///   `lea rd, [rip - 7]` (the `lea`'s own address), then
+///   `movabs t, _GLOBAL_OFFSET_TABLE_ - lea` (`R_X86_64_GOTPC64`, addend
+///   the immediate's distance from the `lea`) and `lea rd, [rd + t]`;
+///   then `movabs t, target@GOTOFF + addend` (`R_X86_64_GOTOFF64`) and
+///   `lea rd, [rd + t]`, or `movabs t, target@GOT` (`R_X86_64_GOT64`),
+///   `mov rd, [rd + t]` and the addend added. `t` is the general scratch register other than `rd`, saved
+///   around the sequence by `push`/`pop` (nothing lives below `rsp`).
+///
+/// # Errors
+/// `Internal` only for an encoder without a relocatable field.
+pub fn far_address(cx: &mut FnCx<'_, X64>, rd: Reg, target: SymRef, addend: i64) -> CgResult<()> {
+    far(cx, rd, target, addend, false)
+}
+
+/// The address of the callee `target` in `r11`, as [`far_address`]: the
+/// field naming `target` is marked as a callee's
+/// ([`FnCx::branch_reloc`]), so a call of an `available_externally`
+/// `alwaysinline` function goes to its local copy as a `call rel32`
+/// does (`spec/codegen.md` §9.7.2).
+///
+/// # Errors
+/// As [`far_address`].
+pub fn far_callee(cx: &mut FnCx<'_, X64>, target: SymRef) -> CgResult<()> {
+    far(cx, R11, target, 0, true)
+}
+
+/// [`far_address`], the field naming `target` a callee's when `branch`.
+fn far(cx: &mut FnCx<'_, X64>, rd: Reg, target: SymRef, addend: i64, branch: bool) -> CgResult<()> {
+    let access = far_access(cx, target);
+    if access == Far::Abs {
+        return put_abs64(cx, rd, X64Reloc::Abs64, target, addend, branch);
+    }
+    let t = other_scratch(rd);
+    let Some(t_index) = t.index() else {
+        return cx.bug("a scratch register that cannot index");
+    };
+    let sum = Mem::base_index(rd, t_index, mc::Scale::S1, 0);
+    put(cx, mc::push_r(t));
+    let base = cx.offset();
+    let lea = mc::lea(Size::Q, rd, Mem::rip(0));
+    let Some(lea) = lea.with_disp(-(lea.len() as i64)) else {
+        return cx.bug("a RIP-relative lea without a displacement field");
+    };
+    put(cx, lea);
+    let field = cx.offset() + abs64_offset(t)?;
+    let got = SymRef::Runtime(hod_cg::RuntimeFn::GlobalOffsetTable);
+    put_abs64(cx, t, X64Reloc::GotPc64, got, i64::from(field - base), false)?;
+    put(cx, mc::lea(Size::Q, rd, sum));
+    if access == Far::GotOff {
+        put_abs64(cx, t, X64Reloc::GotOff64, target, addend, branch)?;
+        put(cx, mc::lea(Size::Q, rd, sum));
+        put(cx, mc::pop_r(t));
+    } else {
+        put_abs64(cx, t, X64Reloc::Got64, target, 0, branch)?;
+        put(cx, mc::mov_rm(Size::Q, rd, sum));
+        put(cx, mc::pop_r(t));
+        add_addend(cx, rd, addend);
+    }
+    Ok(())
+}
+
+/// The offset of `movabs`'s `imm64` in its instruction.
+fn abs64_offset(rd: Reg) -> CgResult<u32> {
+    match mc::movabs_ri(rd, 0).site() {
+        Some(site) => Ok(site.offset as u32),
+        None => Err(CgError::internal("a movabs without an immediate field")),
+    }
+}
+
+/// `movabs rd, imm64` with relocation `kind` against `target` + `addend`
+/// at the immediate (an absolute field: the relocation's addend is
+/// `addend` itself), marked as a callee's when `branch`
+/// ([`FnCx::branch_reloc`]).
+fn put_abs64(
+    cx: &mut FnCx<'_, X64>,
+    rd: Reg,
+    kind: X64Reloc,
+    target: SymRef,
+    addend: i64,
+    branch: bool,
+) -> CgResult<()> {
+    let inst = mc::movabs_ri(rd, 0);
+    if !branch {
+        return put_reloc(cx, inst, kind, target, addend);
+    }
+    let Some(site) = inst.site() else {
+        return cx.bug("a movabs without an immediate field");
+    };
+    let at = cx.offset();
+    put(cx, inst);
+    cx.branch_reloc(at + site.offset as u32, RelocKind::X64(kind), target, site.addend + addend);
+    Ok(())
+}
+
+/// A direct call or tail call of `target` under the large code model
+/// (§5.6.36): its address in `r11` by [`far_address`], then `call r11` or
+/// `jmp r11`. `r11` carries no argument, and `r10` (saved around the
+/// address) no `nest` value: `x64:nest` is refused.
+///
+/// # Errors
+/// As [`far_address`].
+pub fn far_branch(cx: &mut FnCx<'_, X64>, target: SymRef, tail: bool) -> CgResult<()> {
+    far_callee(cx, target)?;
+    put(cx, if tail { mc::jmp_r(R11) } else { mc::call_r(R11) });
     Ok(())
 }
 

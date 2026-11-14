@@ -76,7 +76,12 @@ impl X64 {
     /// `target-cpu` and `target-features` decide, and its coroutine mark.
     pub fn of_attrs(attrs: hod_ir::FnAttrsView<'_>) -> X64 {
         let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
-        let features = features::of_function(text(FnStr::TargetCpu), text(FnStr::TargetFeatures));
+        let features = features::of_function_with(
+            text(FnStr::TargetCpu),
+            text(FnStr::TuneCpu),
+            text(FnStr::TargetFeatures),
+            text(FnStr::MinLegalVectorWidth),
+        );
         let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
         X64 { features, coro, own: true }
     }
@@ -86,7 +91,14 @@ impl X64 {
 /// `target-features` (the baseline x86-64 CPU, no AVX).
 pub const X64: X64 = X64 {
     features: FnFeatures {
-        abi: abi::Features { avx: false, avx512: false, assumed: false },
+        abi: abi::Features {
+            avx: false,
+            avx512: false,
+            assumed: false,
+            avx512_known: false,
+            zmm: false,
+            bw: false,
+        },
         no_x87: false,
         vzeroupper: false,
     },

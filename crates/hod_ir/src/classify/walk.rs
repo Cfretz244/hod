@@ -23,7 +23,7 @@ use crate::ids::{BlockId, ConstId, SymId, TypeId};
 use crate::inst::{InstData, MemFlags, Opcode, RmwOp, TailKind};
 use crate::intrinsic::Intrinsic;
 use crate::module::Module;
-use crate::props::{FramePointer, PicLevel};
+use crate::props::{CodeModel, FramePointer, PicLevel};
 use crate::symbol::{Symbol, SymbolKind, TlsModel, UnnamedAddr, Visibility};
 use crate::types::TypeKind;
 use crate::value::{InstId, Value, ValueKind};
@@ -530,6 +530,9 @@ impl<'a, S: Sink> Walker<'a, S> {
         }
         if let Some(model) = props.code_model {
             self.row(at::MODULE_CODE_MODEL + model as usize, at)?;
+            if model == CodeModel::Large && props.pic != PicLevel::None {
+                self.row(at::MODULE_LARGE_PIC, at)?;
+            }
         }
         if props.large_data_threshold.is_some() {
             self.row(at::MODULE_LARGE_DATA, at)?;

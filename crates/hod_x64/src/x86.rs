@@ -47,7 +47,10 @@
 //! The system and state intrinsics (`<fxsrintrin.h>`, `<ia32intrin.h>`,
 //! `<xsave*intrin.h>`, `<bmi*intrin.h>`, `<crc32intrin.h>`, ...;
 //! §5.6.29, WP-190) are in [`sys`].
+//!
+//! The AVX-512 intrinsics (§5.6.35, WP-208) are in [`avx512`].
 
+pub mod avx512;
 pub mod ext;
 pub mod sys;
 
@@ -456,7 +459,8 @@ pub fn intrinsic<'a>(
     let Some((ret, params, op)) = row(which) else {
         return sys::intrinsic(cx, inst, which, args)
             .or_else(|| ext::intrinsic(cx, inst, which, args))
-            .or_else(|| crate::vector::masked(cx, inst, which, args));
+            .or_else(|| crate::vector::masked(cx, inst, which, args))
+            .or_else(|| avx512::intrinsic(cx, inst, which, args));
     };
     Some(lower(cx, inst, which, args, ret, params, op))
 }

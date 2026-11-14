@@ -533,6 +533,10 @@ fn module_row(name: &str, arch: Arch) -> Program {
             "code-model-kernel" => m.props.code_model = Some(CodeModel::Kernel),
             "code-model-medium" => m.props.code_model = Some(CodeModel::Medium),
             "code-model-large" => m.props.code_model = Some(CodeModel::Large),
+            "code-model-large-pic" => {
+                m.props.code_model = Some(CodeModel::Large);
+                m.props.pic = PicLevel::Big;
+            }
             "large-data-threshold" => m.props.large_data_threshold = Some(65536),
             "uwtable" => m.props.uwtable = UwTable::Async,
             "frame-pointer" => m.props.frame_pointer = FramePointer::All,

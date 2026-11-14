@@ -37,6 +37,12 @@ pub const LIMIT_FRAME_SIZE: &str = "limit:frame-size";
 /// A function whose own code a far branch cannot span (§6.3).
 pub const LIMIT_FUNCTION_SIZE: &str = "limit:function-size";
 
+/// The large code model under PIC on a target that does not build it
+/// (AArch64, `spec/codegen.md` §5.6.36): the classifier's row of the
+/// same name, named again by the target's code for a module whose
+/// relocation model is given by an option.
+pub const MODULE_CODE_MODEL_LARGE_PIC: &str = "module:code-model-large-pic";
+
 /// A `musttail` call of a function that returns in memory without an
 /// `sret` parameter: the buffer's address would have to be forwarded.
 pub const CALL_MUSTTAIL_RET_MEMORY: &str = "call:musttail-ret-memory";
