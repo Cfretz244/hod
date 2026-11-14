@@ -298,7 +298,13 @@ def cmd_collect(a):
                     if len(have) >= KEEP or kept_source(d, src):
                         continue
                     n = len(have) + 1
-                    shutil.copyfile(ll, os.path.join(d, f"{n}.ll"))
+                    # A hard link, not a copy: one module is kept under each of
+                    # its census reasons, and a vector-heavy project's modules
+                    # (100 MB, hundreds of reasons) would fill the disk (WP-200).
+                    try:
+                        os.link(ll, os.path.join(d, f"{n}.ll"))
+                    except OSError:
+                        shutil.copyfile(ll, os.path.join(d, f"{n}.ll"))
                     fn = rec.get("function") if reason == first else None
                     if not fn:
                         fns = functions_with(ll, reason or "")
