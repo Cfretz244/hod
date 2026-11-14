@@ -667,7 +667,10 @@ fn far_access(cx: &FnCx<'_, X64>, target: SymRef) -> Far {
             Access::Direct => Far::GotOff,
             _ => Far::Got,
         },
-        SymRef::Runtime(_) => Far::Got,
+        // `_TLS_MODULE_BASE_` (§5.6.37) is named only by the descriptor
+        // pair and by `DTPOFF32`, never through here; an undefined
+        // symbol would be reached through the GOT.
+        SymRef::Runtime(_) | SymRef::TlsModuleBase => Far::Got,
         SymRef::NoopCoroFrame => Far::GotOff,
     }
 }
