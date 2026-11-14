@@ -187,6 +187,28 @@ fn fp_same(ops: &[Op<'_>]) -> R<(FpSize, [VReg; 4])> {
     Ok((sz, regs))
 }
 
+// ---- scalar SIMD forms (§17) ----
+
+// `hod_mc_a64` has no scalar SIMD encoder (code generation writes the
+// vector forms), so the words are built here, as `prefetch.rs` builds
+// its own: the "advanced SIMD scalar" classes, `sz` (bit 22) 0 for `S`
+// and 1 for `D`. `tests/llvm_mc.rs` holds each to `llvm-mc` 22's and 19's
+// words.
+
+/// `FCVTZS <V><d>, <V><n>` (vector, integer; scalar).
+const FCVTZS: u32 = 0x5ea1_b800;
+/// `FCVTZU <V><d>, <V><n>` (vector, integer; scalar).
+const FCVTZU: u32 = 0x7ea1_b800;
+/// `FCMEQ <V><d>, <V><n>, <V><m>` (register; scalar).
+const FCMEQ: u32 = 0x5e20_e400;
+/// `FCMEQ <V><d>, <V><n>, #0.0` (zero; scalar).
+const FCMEQ_ZERO: u32 = 0x5ea0_d800;
+
+fn scalar_simd(base: u32, sz: FpSize, rm: u8, rn: VReg, rd: VReg) -> u32 {
+    let sz = u32::from(sz == FpSize::D);
+    base | sz << 22 | u32::from(rm) << 16 | u32::from(rn.index()) << 5 | u32::from(rd.index())
+}
+
 // ---- the table ----
 
 /// Encodes one instruction statement: `mnemonic` (any case) with its
@@ -1427,6 +1449,7 @@ fn float<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encoded<'a
                 | "fcvtmu"
                 | "fcvtzs"
                 | "fcvtzu"
+                | "fcmeq"
         );
     if !known {
         return Ok(None);
@@ -1454,6 +1477,30 @@ fn float<'a>(m: &str, ops: &[Op<'a>], features: Features) -> R<Option<Encoded<'a
     }
     let e = match m {
         "fmov" => fmov(ops)?,
+        // §17: the scalar SIMD forms, `S` or `D` registers alike.
+        "fcmeq" => {
+            let [d, n, b] = ops else { return form() };
+            if matches!(b, Op::FpImm(_) | Op::Imm(..)) {
+                let zero = match b {
+                    Op::FpImm(f) => *f == 0.0 && f.is_sign_positive(),
+                    _ => matches!(b, Op::Imm(0, true)),
+                };
+                if !zero {
+                    return fail(operand::FP_IMMEDIATE);
+                }
+                let (sz, r) = fp_same(&[*d, *n])?;
+                word(scalar_simd(FCMEQ_ZERO, sz, 0, r[1], r[0]))
+            } else {
+                let (sz, r) = fp_same(ops)?;
+                word(scalar_simd(FCMEQ, sz, r[2].index(), r[1], r[0]))
+            }
+        }
+        "fcvtzs" | "fcvtzu" if matches!(ops.first(), Some(Op::Fp(..))) => {
+            let [_, _] = ops else { return form() };
+            let (sz, r) = fp_same(ops)?;
+            let base = if m == "fcvtzs" { FCVTZS } else { FCVTZU };
+            word(scalar_simd(base, sz, 0, r[1], r[0]))
+        }
         "fcmp" | "fcmpe" => {
             let [a, b] = ops else { return form() };
             let (rn, v) = fp(a)?;

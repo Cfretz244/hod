@@ -216,6 +216,11 @@ impl<T: Target> FnCx<'_, T> {
         if !current {
             edits.build(&cuts, &relax, &chosen);
         }
+        // Code that pads from the function's start (`raise_align`,
+        // `spec/asm.md` §17) stays where its padding was counted.
+        if edits.ranges.first().is_some_and(|&(at, _)| at < self.aligned_code_end) {
+            return Err(crate::error::CgError::unsupported(crate::error::LIMIT_ALIGNED_CODE_MOVED));
+        }
 
         // The short forms: the opcode now, the field when patched below.
         let base = self.mark.code as usize;

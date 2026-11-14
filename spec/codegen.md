@@ -6300,7 +6300,9 @@ pub enum CgError {
 - `classify` decides what is supported, before code generation
   (`spec/ir.md` §8). Code generation reports `Unsupported` only for what
   cannot be known until code exists: `limit:frame-size`,
-  `limit:function-size`, and limits of the same kind added with a test;
+  `limit:function-size`, and limits of the same kind added with a test
+  (`limit:aligned-code-moved`, `spec/asm.md` §17: shrinking would move
+  an aligned inline-assembly template);
   also the `call:` reasons for a call the assignment cannot place
   (`call:musttail-ret-memory`, `call:part-register-class`,
   `call:byval-not-on-stack`). A function has at most 1 GiB of code

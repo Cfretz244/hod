@@ -84,7 +84,8 @@ pub use debug_calls::{DebugCallRow, DebugCallee};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};
 pub use error::{
-    CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE, MODULE_CODE_MODEL_LARGE_PIC,
+    CgError, CgResult, LIMIT_ALIGNED_CODE_MOVED, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE,
+    MODULE_CODE_MODEL_LARGE_PIC,
 };
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
 pub use guard::{GUARD_BYTES, GuardPlan, SSP_COROUTINE, SSP_TARGET};

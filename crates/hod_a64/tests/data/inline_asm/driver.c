@@ -14,6 +14,17 @@ void indirect_r(int32_t*); int64_t call_helper(int64_t); int64_t uid_variant(int
 int64_t live_across(int64_t, int64_t, int64_t); int32_t goto_zero(int64_t); int32_t goto_phi(int64_t);
 int32_t invoke_asm(int32_t); int32_t goto_out(int32_t); int64_t goto_out2(int64_t);
 int64_t prefetch_sum(int64_t*, int64_t, int32_t); int64_t xpaclri_lr(int64_t);
+int64_t align_probe(void); int64_t align_fill(int64_t); int64_t zstd_loop(int64_t);
+void upb_longvarint(unsigned char*, uint64_t, uint64_t);
+/* What upb's table writes from entry `skip` on. */
+static int upb_ok(uint64_t val, uint64_t skip) {
+  unsigned char got[9] = {0}, want[9] = {0};
+  upb_longvarint(got, val, skip);
+  for (uint64_t k = skip; k < 8; k++) want[8 - k] = (unsigned char)(0x80 | (val >> (56 - 7 * k)));
+  want[0] = (unsigned char)(val | 0x80);
+  for (int i = 0; i < 9; i++) if (got[i] != want[i]) return 0;
+  return 1;
+}
 int hod_test_personality(void) { return 0; }
 int64_t asm_helper(int64_t x) { return x * 2 + 1; }
 static int fails;
@@ -58,6 +69,10 @@ int main(void) {
   int64_t arr[8] = {40, 1, 2, 3, 4, 5, 6, 7};
   CHECK(prefetch_sum(arr, 2, -1) == 42); CHECK(prefetch_sum(arr, 7, 3) == 47);
   CHECK(xpaclri_lr(42) == 42);
+  CHECK(align_probe() == 0); CHECK(align_fill(40) == 42);
+  CHECK(zstd_loop(10) == 45); CHECK(zstd_loop(1) == 0);
+  CHECK(upb_ok(0x0123456789abcdefULL, 0)); CHECK(upb_ok(0xfedcba9876543210ULL, 3));
+  CHECK(upb_ok(0x7f, 8)); CHECK(upb_ok(0x1234, 6));
   printf("checked, %d failures\n", fails);
   return fails;
 }

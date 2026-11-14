@@ -4,7 +4,8 @@
 //! hand-written atomic, explicit registers, tied and memory operands,
 //! clobbers of registers hod uses and of callee-saved ones, flag outputs,
 //! immediates, several outputs, a call from the template, `asm goto`,
-//! prefetches and `xpaclri`)
+//! prefetches and `xpaclri`, alignment directives: zstd's loop alignment,
+//! upb's computed branch into an aligned table)
 //! are compiled by hod and by `llc -O0 -global-isel=0 -fast-isel=0` of
 //! each LLVM major present, under the plain, stress and far options;
 //! each object is linked with `tests/data/inline_asm/driver.c` under

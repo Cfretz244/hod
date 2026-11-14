@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use hod_asm::Refusal;
-use hod_asm::a64::{Code, Features, RefKind, assemble};
+use hod_asm::a64::{Code, Features, RefKind, assemble, assemble_at};
 use hod_testutil::{Scratch, run, tool};
 
 const ALL: Features = Features { lse: true, crc: true, fp: true, rand: true };
@@ -419,6 +419,16 @@ const ACCEPTED: &[&str] = &[
     "fcvtns x0, s1",
     "fcvtms w0, d1",
     "fcvtau x0, d1",
+    // Scalar SIMD forms (§17).
+    "fcvtzs d8, d9",
+    "fcvtzu d8, d9",
+    "fcmeq d8, d9, d9",
+    "fcvtzs s0, s31",
+    "FCVTZU s31, s0",
+    "fcmeq s1, s2, s3",
+    "fcmeq d31, d0, d17",
+    "fcmeq d0, d1, #0.0",
+    "fcmeq s5, s6, #0",
     // Expressions and statements.
     "add x0, x1, #(1 << 3) + 2",
     "mov x0, #0x10 * 4",
@@ -490,7 +500,123 @@ const REFUSED: &[(&str, &str)] = &[
     ("lsl x0, x1, #64", "asm:operand/range"),
     ("svc #0x10000", "asm:operand/range"),
     ("\"unterminated", "asm:lexical"),
+    // §17.
+    ("fcmeq d0, d1, #1.0", "asm:operand/fp-immediate"),
+    ("fcmeq d0, d1, #1", "asm:operand/fp-immediate"),
+    ("fcmeq d0, s1, s2", "asm:operand/register"),
+    ("fcmeq h0, h1, h2", "asm:operand/register"),
+    ("fcmeq x0, d1, d2", "asm:operand/register"),
+    ("fcmeq v0.4s, v1.4s, v2.4s", "asm:operand/vector"),
+    ("fcvtzs d0, s1", "asm:operand/register"),
+    ("fcvtzs h0, h1", "asm:operand/register"),
+    ("fcvtzs d0, d1, #3", "asm:operand/form"),
+    ("fcvtzu v0.2d, v1.2d", "asm:operand/vector"),
+    (".balign 3", "asm:operand/range"),
+    (".p2align 17", "asm:operand/range"),
+    (".p2align -1", "asm:operand/range"),
+    (".p2align 4,,0", "asm:operand/range"),
+    (".p2align 4,0x100", "asm:operand/range"),
+    (".p2align 4,1,2,3", "asm:operand/form"),
+    (".p2align 4,", "asm:operand/syntax"),
+    (".p2align x", "asm:operand/symbol"),
+    (".balignw 4", "asm:directive/balignw"),
+    (".balignl 4", "asm:directive/balignl"),
+    (".p2alignw 2", "asm:directive/p2alignw"),
 ];
+
+/// Bodies with alignment directives (§17), each assembled at several
+/// offsets from an origin aligned to 64: hod's words are `llvm-mc` 22's
+/// and 19's for the body at that offset of its section. (A fill of 0 in
+/// code is the one difference: LLVM 19 writes `nop`s, 22 zeros, and hod
+/// follows 22: `fill_zero_is_llvm_22_s`.)
+const ALIGNED: &[&str] = &[
+    ".p2align 5",
+    "nop\n.p2align 5\nnop",
+    ".p2align 6\nnop\n.p2align 5\nnop\n.p2align 4",
+    ".balign 64\nnop\n.balign 16\nnop",
+    ".align 4\nnop\n.ALIGN 3\nnop",
+    ".p2align 0\n.p2align 1\n.balign 1\n.balign 2\n.balign 0\nnop",
+    "nop\n.p2align 4, 0xff\nnop",
+    "nop\n.balign 32, -1\nnop",
+    "nop\n.p2align 4, 0x5a\nnop",
+    "nop\n.p2align 6,,8\nnop",
+    "nop\n.p2align 6,,12\nnop",
+    "nop\n.p2align 4,0xff,8\nnop",
+    "nop\n.p2align 4,,16\nnop",
+    "nop\n.balign 32,,28\nnop",
+    "b 1f\n.p2align 5\n1: nop\ncbz x0, 1b",
+    "adr x0, 2f\n.p2align 4\n2: nop\nadr x1, 2b",
+    "1:\n.p2align 4\nb 1b",
+    "adr x8, 0f\nadd x8, x8, x10, lsl #3\nmov w9, #0x80\nbr x8\n.p2align 3\n0:\n\
+     orr x8, x9, x11, lsr #56\nstrb w8, [x12, #8]\norr w8, w11, #0x80\nstrb w8, [x12]",
+    ".P2ALIGN 3\nnop",
+];
+
+#[test]
+fn aligned_bodies_are_llvm_mc_words_at_each_offset() {
+    let scratch = Scratch::new("hod-asm-mc-align");
+    let mut source = String::new();
+    let mut ours = Vec::new();
+    for (i, body) in ALIGNED.iter().enumerate() {
+        for start in (0..64).step_by(4) {
+            let mut code = Code::default();
+            assemble_at(body, ALL, start, &mut code, &mut String::new())
+                .unwrap_or_else(|e| panic!("{body:?} at {start}: {e}"));
+            assert!(code.align >= 1, "{body:?}: an alignment");
+            ours.push((i, start, code.words));
+            source.push_str(".p2align 6\n");
+            for _ in 0..start / 4 {
+                source.push_str("nop\n");
+            }
+            source.push_str(body);
+            // The next case starts at the next 64-byte boundary: pad it
+            // with something that is not a `nop` the oracle could write.
+            source.push_str("\n.p2align 6, 0xee\n");
+        }
+    }
+    for major in [22, 19] {
+        let Some(theirs) = llvm(major, &source, &scratch) else { continue };
+        let mut at = 0;
+        let mut report = String::new();
+        for (i, start, words) in &ours {
+            at += (*start / 4) as usize;
+            let got = &theirs[at..at + words.len()];
+            if got != words.as_slice() {
+                writeln!(
+                    report,
+                    "  {:?} at {start}: hod {words:08x?}, llvm {got:08x?}",
+                    ALIGNED[*i]
+                )
+                .unwrap();
+            }
+            at += words.len();
+            // Skip the 0xee padding to the next case.
+            while at < theirs.len() && theirs[at] == 0xeeee_eeee {
+                at += 1;
+            }
+        }
+        assert!(report.is_empty(), "LLVM {major} disagrees:\n{report}");
+        assert_eq!(at, theirs.len(), "LLVM {major}: the cases did not line up");
+        println!("llvm_mc: {} aligned bodies at 16 offsets equal llvm-mc-{major}'s", ALIGNED.len());
+    }
+}
+
+/// `.p2align` with a fill of 0 in code: `llvm-mc` 22 writes zeros, 19
+/// `nop`s; hod writes 22's.
+#[test]
+fn fill_zero_is_llvm_22_s() {
+    let body = "nop\n.balign 16, 0\nnop";
+    let mut code = Code::default();
+    assemble_at(body, ALL, 0, &mut code, &mut String::new()).unwrap();
+    assert_eq!(code.words, [0xd503_201f, 0, 0, 0, 0xd503_201f]);
+    let scratch = Scratch::new("hod-asm-mc-fill-zero");
+    if let Some(theirs) = llvm(22, body, &scratch) {
+        assert_eq!(theirs, code.words, "llvm-mc-22");
+    }
+    if let Some(theirs) = llvm(19, body, &scratch) {
+        assert_eq!(theirs, [0xd503_201f; 5], "llvm-mc-19");
+    }
+}
 
 fn hod(body: &str, features: Features) -> Result<Vec<u32>, Refusal> {
     let mut code = Code::default();
