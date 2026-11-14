@@ -49,8 +49,9 @@
 # thread of qemu's), and the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
 # are shared).
 #
-# Environment (source scripts/env.sh first: make draws from the shared
-# jobserver): KILN_OSS_CXX (kiln++; default
+# Environment (source scripts/env.sh first; make draws from the
+# real-project jobserver pool, HOD_OSS_JOBSERVER_FIFO, default
+# /run/hod/lanes.fifo, else the shared one): KILN_OSS_CXX (kiln++; default
 # <build root>/target-kiln/release/kiln++), KILN_OSS_CC (the kiln C driver;
 # default `kiln` beside kiln++), KILN_RESOURCE_DIR (default
 # <workspace>/kiln/resource when it exists), HOD_OSS_HOD (hod; default
@@ -64,6 +65,12 @@ usage() { sed -n '2,3p' "$0" | sed 's/^# //' >&2; exit 2; }
 : "${CARGO_TARGET_DIR:?oss-build: source scripts/env.sh first}"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
+# Project builds (make, cmake --install, ctest) draw from the real-project
+# pool, not the shared one that cargo and the gate use (spec/harness.md
+# "Job slots"): $HOD_OSS_JOBSERVER_FIFO, default /run/hod/lanes.fifo when it
+# exists; otherwise MAKEFLAGS stays as scripts/env.sh left it.
+LANE_FIFO="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
+[ -p "$LANE_FIFO" ] && export MAKEFLAGS="--jobserver-auth=fifo:$LANE_FIFO"
 
 PROJECT="" MODE="" FLAVOUR=O0 TARGET=aarch64 RUN_TEST=1 JOBS=4 INSTALL="" PRUNE="" PRUNE_ONLY=""
 while [ $# -gt 0 ]; do
@@ -221,7 +228,7 @@ else
 fi
 SRCDIR="$SRC${P_SOURCE_SUBDIR:+/$P_SOURCE_SUBDIR}"
 
-# make: inherit the shared jobserver from MAKEFLAGS; -j only without one.
+# make: inherit the jobserver from MAKEFLAGS (above); -j only without one.
 JFLAG=()
 case "${MAKEFLAGS:-}" in
   *--jobserver-auth=fifo:*)

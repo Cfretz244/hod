@@ -3711,6 +3711,15 @@ module, and `oss-report.py census` rewrites `<findings>/CENSUS.md`.
 `<findings>` is `$HOD_OSS_FINDINGS`, else `findings/oss/` in the build
 root.
 
+**Job slots.** Project builds and their tests (make, `cmake --install`,
+ctest) draw from a jobserver pool of their own, the fifo
+`$HOD_OSS_JOBSERVER_FIFO` (default `/run/hod/lanes.fifo` when it exists,
+else the shared pool `scripts/env.sh` names), while cargo builds of hod
+stay on the shared pool. A make client takes a token for every job it can
+start and nothing bounds how many it holds, so two project builds on the
+shared pool hold all its tokens, and its blocked readers (cargo, the
+gate's tests) wait for a slot for as long as the builds run.
+
 **Pages.** `oss-report.py status` prints `docs/status/oss.md`: a row per
 project and flavour (TUs, objects, built by hod, fell back, not offered,
 the hybrid and strict builds, passed/total tests per mode, the tests that
