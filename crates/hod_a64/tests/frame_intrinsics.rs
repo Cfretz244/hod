@@ -178,7 +178,30 @@ define i64 @saving_thrower(i64 %x) #0 {
   ret i64 %s
 }
 
+; The same with a stack protector, probes and a VLA.
+define i64 @guarded_thrower(i64 %x) #1 {
+  %buf = alloca [8192 x i8], align 16
+  call void @sink(ptr %buf)
+  %v = alloca i8, i64 %x, align 16
+  call void @sink(ptr %v)
+  call void @llvm.eh.unwind.init()
+  %e = call ptr @llvm.sponentry.p0()
+  %s0 = ptrtoint ptr %e to i64
+  %r = call i64 @leaf(i64 %x)
+  %e2 = call ptr @llvm.sponentry.p0()
+  %s1 = ptrtoint ptr %e2 to i64
+  %d = sub i64 %s1, %s0
+  %s = add i64 %r, %d
+  ret i64 %s
+}
+
 attributes #0 = { noinline "frame-pointer"="all" }
+attributes #1 = { noinline sspreq "frame-pointer"="all" "probe-stack"="inline-asm" }
+
+; Without it `llc` reaches `__stack_chk_guard` directly, which a PIE
+; cannot link.
+!llvm.module.flags = !{!0}
+!0 = !{i32 8, !"PIC Level", i32 2}
 "#;
 
 const DRIVER: &str = r#"
@@ -194,6 +217,7 @@ int aora_check(void);
 long scan_saved(void);
 long run_scan(void);
 long saving_thrower(long);
+long guarded_thrower(long);
 __attribute__((noinline)) void sink(void *p) { asm volatile("" :: "r"(p) : "memory"); }
 long count_magic(void **lo, void **hi) {
   long n = 0;
@@ -319,6 +343,14 @@ int main() {
     caught = v;
   }
   printf("thrown through: %ld caught %d\n", t, caught);
+  long g = guarded_thrower(5);
+  caught = 0;
+  try {
+    guarded_thrower(42);
+  } catch (int v) {
+    caught = v;
+  }
+  printf("guarded, probed: %ld caught %d\n", g, caught);
   return 0;
 }
 "#;
@@ -328,6 +360,7 @@ sponentry: 0 0 0 0
 aora: 1
 saved by unwind.init: 18
 thrown through: 3 caught 7
+guarded, probed: 6 caught 7
 ";
 
 fn pic(stress: Stress) -> Options {

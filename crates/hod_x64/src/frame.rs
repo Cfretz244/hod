@@ -29,6 +29,11 @@
 //! after restating `def_cfa rbp, 16`. Nothing in an exit depends on
 //! `FRAME`, and dynamic allocation needs nothing more.
 //!
+//! WP-215 (§5.6.38): `llvm.eh.unwind.init` sets `save_all`; a body that
+//! calls `llvm.eh.return.i64` stores `rax` and `rdx` after the prologue
+//! (`unwind::enter`) and has one more exit after the tail exits, the
+//! teardown ending in `mov rsp, rcx; ret` (`unwind`).
+//!
 //! WP-181 (§5.6.23): a `preserve_mostcc` or `preserve_allcc` function
 //! also pushes [`PRESERVED`] (but its result's registers) right after
 //! `mov rbp, rsp`, before the save set, and a `preserve_allcc` one stores

@@ -16,6 +16,11 @@
 //! `ldp x29, x30, [sp]` · `add sp, sp, #FRAME` (one instruction, or
 //! `#hi12, lsl #12` then `#lo12`) · `ret`; a tail exit is the same
 //! teardown ending in `b callee` or `br x16`.
+//!
+//! WP-215 (§5.6.38): `llvm.sponentry` asks for the incoming base; a body
+//! that calls `llvm.eh.unwind.init` stores `x19`..`x28` and `d8`..`d15`
+//! at `[x29 + 16]` right after `mov x29, sp` and every exit reloads them
+//! (`unwind`).
 
 use hod_cg::abi::{PartKind, Place};
 use hod_cg::{CallTarget, CfiOp, CgError, CgResult, FnCx, FrameDesc, FrameRef, LIMIT_FRAME_SIZE};

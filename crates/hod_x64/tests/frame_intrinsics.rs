@@ -272,6 +272,32 @@ lab:
   ret i32 7
 }
 
+; eh.return out of a frame with a stack protector and probes.
+define void @jumper_guarded(i64 %off, ptr %h) #1 {
+  %buf = alloca [8192 x i8], align 16
+  call void @sink(ptr %buf)
+  call void @llvm.eh.unwind.init()
+  call void @llvm.eh.return.i64(i64 %off, ptr %h)
+  unreachable
+}
+
+define i32 @land_guarded() #0 {
+entry:
+  store ptr blockaddress(@land_guarded, %lab), ptr @target_pc
+  %v = load volatile i32, ptr @never
+  %c = icmp ne i32 %v, 0
+  br i1 %c, label %ib, label %go
+go:
+  %pc = load ptr, ptr @target_pc
+  call void @jumper_guarded(i64 0, ptr %pc)
+  ret i32 1
+ib:
+  %pc2 = load ptr, ptr @target_pc
+  indirectbr ptr %pc2, [label %lab]
+lab:
+  ret i32 43
+}
+
 define i64 @scan_saved() #0 {
   call void @llvm.eh.unwind.init()
   %lo = call ptr @llvm.stacksave.p0()
@@ -290,6 +316,7 @@ define i64 @through(i64 %x) #0 {
 }
 
 attributes #0 = { noinline "frame-pointer"="all" }
+attributes #1 = { noinline sspreq "frame-pointer"="all" "probe-stack"="inline-asm" }
 "#;
 
 /// A function with `llvm.eh.return.i64` that returns a value on its
@@ -319,6 +346,7 @@ void cfa_distances(long *);
 int aora_check(void);
 int land_here(void);
 int catcher(void);
+int land_guarded(void);
 long scan_saved(void);
 long through(long);
 long maybe_return(bool, long, void *);
@@ -372,6 +400,7 @@ int main(int argc, char **argv) {
   printf("aora: %d\n", aora_check());
   printf("eh.return to the caller: %d\n", land_here());
   printf("eh.return past a frame: %d\n", catcher());
+  printf("eh.return from a guarded, probed frame: %d\n", land_guarded());
   printf("saved by unwind.init: %ld\n", scan_saved() == 0 ? run_scan() : -1);
   long t = through(1);
   int caught = 0;
@@ -391,6 +420,7 @@ cfa: 0 0 0 0 24 -16 -8
 aora: 1
 eh.return to the caller: 42
 eh.return past a frame: 7
+eh.return from a guarded, probed frame: 43
 saved by unwind.init: 5
 through: 3 caught 7
 ";
@@ -429,12 +459,8 @@ fn frames_walked_and_unwound_as_llc() {
     else {
         return;
     };
-    let returns = hod_object(
-        &dir,
-        "returns",
-        &format!("{}{RETURNS}", ll_header()),
-        Stress::default(),
-    );
+    let returns =
+        hod_object(&dir, "returns", &format!("{}{RETURNS}", ll_header()), Stress::default());
     let stdcxx = Path::new("-lstdc++");
     let mut runs = 0;
     for (who, object) in objects(&dir) {
@@ -591,7 +617,8 @@ fn gdb_walks_through_the_template() {
     let linker = &toolchain.linkers[0];
     let first_port = 20000 + (std::process::id() % 20000) as u16;
     let mut walked = 0;
-    for (n, (who, stress)) in [("hod", Stress::default()), ("stress", Stress::ALL)].iter().enumerate()
+    for (n, (who, stress)) in
+        [("hod", Stress::default()), ("stress", Stress::ALL)].iter().enumerate()
     {
         let object = hod_object(&dir, who, &text, *stress);
         let program = dir.join(format!("gdb-{who}"));

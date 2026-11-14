@@ -68,7 +68,8 @@ pub fn needs_entry_sp(cx: &FnCx<'_, A64>) -> bool {
 /// general ones first.
 fn pairs() -> impl Iterator<Item = (bool, u8, i64)> {
     let general = (0..5u8).map(|k| (true, FIRST_X + 2 * k, i64::from(AREA) + 16 * i64::from(k)));
-    let float = (0..4u8).map(|k| (false, FIRST_D + 2 * k, i64::from(AREA) + 80 + 16 * i64::from(k)));
+    let float =
+        (0..4u8).map(|k| (false, FIRST_D + 2 * k, i64::from(AREA) + 80 + 16 * i64::from(k)));
     general.chain(float)
 }
 
