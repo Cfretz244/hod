@@ -119,14 +119,21 @@ def diff_tests(ctl, r):
     return worse, better
 
 
+def hod_cell(*rs):
+    """The hod binaries of the hod and strict builds (a frozen copy's name
+    carries its commit: `hod-<sha>`)."""
+    names = sorted({os.path.basename(r.get("hod_path") or "") for r in rs if r} - {""})
+    return ", ".join(f"`{n}`" for n in names) or "-"
+
+
 def status_rows(reps, notes=None):
     """The table; a test worse than the control's that passed every
     recorded rerun (and at least two) is not counted worse: the cell says
     `same (rerun)` with a numbered note, appended to `notes`."""
     notes = [] if notes is None else notes
     out = [
-        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for p in order(reps):
         for fl in FLAVOURS:
@@ -164,7 +171,7 @@ def status_rows(reps, notes=None):
             out.append(
                 f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
-                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} |"
+                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} |"
             )
     return out
 
