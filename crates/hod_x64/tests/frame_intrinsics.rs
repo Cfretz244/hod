@@ -503,10 +503,10 @@ fn saved_registers(object: &Path) -> Option<BTreeSet<String>> {
     let mut saved = BTreeSet::new();
     for row in text.lines().filter(|l| l.contains("CFA=")) {
         for rule in row.split(", ").chain(row.split(": ")) {
-            if let Some((reg, rest)) = rule.trim().split_once('=') {
-                if rest.starts_with("[CFA") {
-                    saved.insert(reg.trim().to_owned());
-                }
+            if let Some((reg, rest)) = rule.trim().split_once('=')
+                && rest.starts_with("[CFA")
+            {
+                saved.insert(reg.trim().to_owned());
             }
         }
     }

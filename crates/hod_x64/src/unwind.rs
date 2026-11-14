@@ -184,13 +184,12 @@ fn eh_return(cx: &mut FnCx<'_, X64>, offset: Value, handler: Value) -> CgResult<
     let Some(index) = o.index() else { return cx.bug("rsp holds a value") };
     put(cx, mc::lea(Size::Q, Reg::Rcx, Mem::base_index(RBP, index, Scale::S1, 8)));
     put(cx, mc::mov_mr(Size::Q, Mem::base(Reg::Rcx, 0), h));
-    let exit = match cx.state.frame.unwind.exit {
-        Some(exit) => exit,
-        None => {
-            let exit = cx.new_label();
-            cx.state.frame.unwind.exit = Some(exit);
-            exit
-        }
+    let exit = if let Some(exit) = cx.state.frame.unwind.exit {
+        exit
+    } else {
+        let exit = cx.new_label();
+        cx.state.frame.unwind.exit = Some(exit);
+        exit
     };
     branch(cx, exit)
 }
