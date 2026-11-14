@@ -269,13 +269,18 @@ def cmd_emulate_tests(a):
             elif m:
                 # A script test running the program itself (doctest's
                 # `cmake -DCOMMAND=<prog> <args> -P exec_test.cmake`,
-                # which splits COMMAND at spaces).
+                # glog's `-DLOGCLEANUP=<prog>`): the emulator goes first,
+                # space-separated where the script splits a command line
+                # itself (arguments follow the program, or doctest's
+                # COMMAND), else as list items for
+                # `execute_process(COMMAND ${VAR})`.
                 def under(c):
                     nonlocal n
-                    if not is_x86_64_elf(c.group(2)):
+                    if not is_x86_64_elf(c.group(3)):
                         return c.group(0)
                     n += 1
-                    return f'{c.group(1)}{" ".join(a.emulator)} {c.group(2)}'
+                    sep = " " if c.group(2) == "COMMAND" or line[c.end():c.end() + 1] == " " else ";"
+                    return f'{c.group(1)}{sep.join(a.emulator)}{sep}{c.group(3)}'
                 line = SCRIPT_COMMAND_RE.sub(under, line)
             out.append(line)
         if out != lines:
@@ -300,8 +305,8 @@ def cmd_emulate_tests(a):
     print(f"projects.py: {n} test commands put under {a.emulator[0]}")
 
 
-# `"-DCOMMAND=/path/prog args"`, an argument of a `cmake -P` test.
-SCRIPT_COMMAND_RE = re.compile(r'("-DCOMMAND=)([^" ]+)')
+# `"-D<VAR>=/path/prog[ args]"`, an argument of a `cmake -P` test.
+SCRIPT_COMMAND_RE = re.compile(r'("-D(\w+)=)([^" ;]+)')
 
 # `set(CTEST_CUSTOM_PRE_TEST "/path/prog")` (or POST_TEST) in CTestCustom.cmake.
 CUSTOM_TEST_RE = re.compile(r'(set\(\s*CTEST_CUSTOM_(?:PRE|POST)_TEST\s+)"([^" ]+)"')
