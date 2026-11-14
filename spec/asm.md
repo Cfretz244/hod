@@ -710,6 +710,10 @@ stay `asm:directive/<name>` there.
 
 The x86-64 census: 212 of 220 bodies assemble (197 before).
 
+**`asm goto` with a template** on x86-64 (a `callbr` whose template is
+not empty) stays refused as `x64:inline-asm` (§11, §14's table: 2
+corpus modules); it is WP-212's second part, a follow-up.
+
 **`.symver` on AArch64** (`module.rs`, `hod_cg::emit::module_asm`):
 §14's `.symver`, read and applied the same way on AArch64 (the code was
 already the target's; only the directive was x86-64's). An undefined
