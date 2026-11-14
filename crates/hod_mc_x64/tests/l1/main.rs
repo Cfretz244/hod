@@ -16,6 +16,7 @@ mod text;
 
 mod alu;
 mod atomic;
+mod avx;
 mod bits;
 mod branch;
 mod bt;
@@ -37,6 +38,9 @@ mod tls;
 // x87 (WP-119).
 mod byte_regs;
 mod x87;
+
+// EVEX (WP-208).
+mod evex;
 
 use harness::Batch;
 
@@ -72,6 +76,15 @@ pub const GROUPS: &[Group] = &[
     ("state-and-extensions", state::build),
     // inline assembly (WP-199).
     ("inline-assembly", inline::build),
+    // SSE4 and VEX (WP-202).
+    ("three-byte-maps", avx::legacy),
+    ("vex", avx::vex_forms),
+    // The AVX2 gathers (WP-207).
+    ("vex-gathers", avx::gathers),
+    // EVEX and the opmask instructions (WP-208).
+    ("evex", evex::evex_forms),
+    ("evex-memory-operands", evex::memory),
+    ("opmask", evex::opmask),
 ];
 
 fn check(group: &str) {
@@ -118,4 +131,13 @@ differential! {
     state_and_extensions_match_llvm => "state-and-extensions";
     // WP-199.
     inline_assembly_matches_llvm => "inline-assembly";
+    // WP-202.
+    three_byte_maps_match_llvm => "three-byte-maps";
+    vex_matches_llvm => "vex";
+    // WP-207.
+    vex_gathers_match_llvm => "vex-gathers";
+    // WP-208.
+    evex_matches_llvm => "evex";
+    evex_memory_operands_match_llvm => "evex-memory-operands";
+    opmask_matches_llvm => "opmask";
 }
