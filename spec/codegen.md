@@ -4592,12 +4592,34 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    executes AVX-512 (QEMU's user mode models none), so the variable is
    the one way to run it, on an AVX-512 host:
    `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
+3. **512-bit vectors and vectors of `i1` by value** (`spec/abi-x64.md`
+   §1.3, §3.2, §4.3, §5.1, §8.7, §9.1): under AVX-512 whose conventions
+   hod knows, a vector of 33 to 64 bytes travels in one `zmm` when the
+   function's 512-bit vectors are legal (`llc`'s `useAVX512Regs`, from
+   `avx512vl`, the preferred width and `"min-legal-vector-width"`), else
+   in two `ymm`; a mask of 32 elements in the byte lanes of a `ymm`, of
+   64 in those of a `zmm` (or two `ymm`) with `avx512bw`, any other
+   length up to 64 byte by byte. The pieces move with `vmovdqu64`
+   (`vector::load_wide`, `store_wide`), the lanes through a slot of the
+   register's size (`vcall.rs`). Evidence: hod's convention of every
+   signature of a grid over eighteen AVX-512 machines equals `llc` 19's
+   and 22's, read from their MIR (`abi::zmm_grid`), as does that of
+   every function clang 19 and 22 write for seven `-march` sets
+   (`abi::clang_signatures_agree_with_their_llc`); hod's code for
+   functions receiving and returning `zmm` and `ymm` pairs moves the
+   bytes `llc`'s does (`zmm_flows_agree_with_llc_by_dataflow`);
+   `vzeroupper` as `llc` writes it
+   (`vzeroupper_with_zmm_where_llc_writes_it`). With
+   `HOD_X64_AVX512_RUNNER` the grid also runs, hod against `llc` both
+   ways.
+
    **Evidence by name.**
 
    | Names | Executed | Dataflow against `llc` only |
    |---|---|---|
    | `llvm.masked.load`, `.store`, `.expandload`, `.compressstore` (1) | yes (`qemu-x86_64`) | |
    | the 174 `llvm.x86.avx512.*` names of (2), F, VL, BW, DQ and the VBMI2 compresses | | yes, until an AVX-512 host runs the command above |
+   | `zmm` arguments and results, masks by value (3) | | yes (conventions against `llc`'s MIR; the bytes of `zmm` and `ymm`-pair moves by dataflow), until an AVX-512 host runs `abi::zmm_grid` with `HOD_X64_AVX512_RUNNER` |
 
 ## 6. Control flow
 

@@ -1210,48 +1210,79 @@ pub fn materialize(cx: &mut FnCx<'_, X64>, reg: PReg, value: Value) -> Option<Cg
     Some(Ok(()))
 }
 
-// ---- 256-bit vectors across calls (WP-203, `spec/abi-x64.md` §8.7) ----
+// ---- 256- and 512-bit vectors across calls (WP-203, WP-208, `spec/abi-x64.md` §8.7) ----
 
 /// The bytes a `ymm` holds.
 const YMM_BYTES: u32 = 32;
 
-/// WP-203: loads the `bytes` bytes (17 to 32) at `src` into `ymm<x>`, the
-/// bytes above them unspecified: one `vmovdqu` for 32; otherwise the
-/// bytes are copied through `r11` to 32 bytes below the stack pointer
-/// (`lea rsp, [rsp - 32]` first), which `vmovdqu` then loads, so nothing
-/// beyond the value is read. Writes `r11` and `ymm<x>`; flags kept.
+/// The bytes a `zmm` holds.
+const ZMM_BYTES: u32 = 64;
+
+/// The register a part of `bytes` bytes (17 to 64) travels in: a `ymm`
+/// up to 32, else (WP-208) a `zmm`.
+fn wide_reg_bytes(bytes: u32) -> u32 {
+    if bytes > YMM_BYTES { ZMM_BYTES } else { YMM_BYTES }
+}
+
+/// The whole-register load of `x` from `m`: `vmovdqu` (VEX.256) for a
+/// `ymm`, `vmovdqu64` (EVEX.512) for a `zmm`.
+fn wide_load(x: Xmm, m: Mem, reg_bytes: u32) -> mc::Inst {
+    if reg_bytes == ZMM_BYTES {
+        mc::emov_rm(mc::EMov::Movdqu64, mc::Vl::Z, mc::Masking::NONE, mc::Zmm::of(x), m)
+    } else {
+        mc::v2_rm(mc::V2::Movdqu, mc::Width::Y, x, m)
+    }
+}
+
+/// The whole-register store of `x` to `m`, as [`wide_load`].
+fn wide_store(x: Xmm, m: Mem, reg_bytes: u32) -> mc::Inst {
+    if reg_bytes == ZMM_BYTES {
+        mc::emov_mr(mc::EMov::Movdqu64, mc::Vl::Z, mc::K::K0, m, mc::Zmm::of(x))
+    } else {
+        mc::vmovdqu_mr(mc::Width::Y, m, x)
+    }
+}
+
+/// WP-203, WP-208: loads the `bytes` bytes (17 to 64) at `src` into
+/// `ymm<x>` (up to 32) or `zmm<x>`, the bytes above them unspecified: one
+/// `vmovdqu` (`vmovdqu64`) for a whole register; otherwise the bytes are
+/// copied through `r11` to an area of the register's size below the
+/// stack pointer (`lea rsp, [rsp - size]` first), which the register is
+/// then loaded from, so nothing beyond the value is read. Writes `r11`
+/// and the register; flags kept.
 pub fn load_wide(cx: &mut FnCx<'_, X64>, x: Xmm, src: FrameRef, bytes: u32) {
-    use mc::{V2, Width};
-    if bytes == YMM_BYTES {
-        frame_inst(cx, src, |m| mc::v2_rm(V2::Movdqu, Width::Y, x, m));
+    let reg_bytes = wide_reg_bytes(bytes);
+    if bytes == reg_bytes {
+        frame_inst(cx, src, |m| wide_load(x, m, reg_bytes));
         return;
     }
-    let shift = YMM_BYTES as i32;
+    let shift = reg_bytes as i32;
     put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, -shift)));
-    for (at, size) in crate::common::pieces(bytes.min(YMM_BYTES)) {
+    for (at, size) in crate::common::pieces(bytes.min(reg_bytes)) {
         let store = crate::common::exact_size(size).unwrap_or(Size::Q);
         crate::common::frame_inst_shifted(cx, src.offset_by(at), shift, |m| gpr_load(R11, m, size));
         put(cx, mc::mov_mr(store, Mem::base(Reg::Rsp, at as i32), R11));
     }
-    put(cx, mc::v2_rm(V2::Movdqu, Width::Y, x, Mem::base(Reg::Rsp, 0)));
+    put(cx, wide_load(x, Mem::base(Reg::Rsp, 0), reg_bytes));
     put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, shift)));
 }
 
-/// WP-203: stores the low `bytes` bytes (17 to 32) of `ymm<x>` to `dst`,
-/// and no byte more: one `vmovdqu` for 32; otherwise the low 16 by
-/// `movups`, and the rest from a copy of the register 32 bytes below the
-/// stack pointer, through `r11`. Writes `r11`; flags kept.
+/// WP-203, WP-208: stores the low `bytes` bytes (17 to 64) of `ymm<x>`
+/// (up to 32) or `zmm<x>` to `dst`, and no byte more: one `vmovdqu`
+/// (`vmovdqu64`) for a whole register; otherwise the low 16 by `movups`,
+/// and the rest from a copy of the register below the stack pointer,
+/// through `r11`. Writes `r11`; flags kept.
 pub fn store_wide(cx: &mut FnCx<'_, X64>, x: Xmm, dst: FrameRef, bytes: u32) {
-    use mc::Width;
-    if bytes == YMM_BYTES {
-        frame_inst(cx, dst, |m| mc::vmovdqu_mr(Width::Y, m, x));
+    let reg_bytes = wide_reg_bytes(bytes);
+    if bytes == reg_bytes {
+        frame_inst(cx, dst, |m| wide_store(x, m, reg_bytes));
         return;
     }
     store_fpr(cx, x, dst, 16);
-    let shift = YMM_BYTES as i32;
+    let shift = reg_bytes as i32;
     put(cx, mc::lea(Size::Q, Reg::Rsp, Mem::base(Reg::Rsp, -shift)));
-    put(cx, mc::vmovdqu_mr(Width::Y, Mem::base(Reg::Rsp, 0), x));
-    for (at, size) in crate::common::pieces(bytes.min(YMM_BYTES) - 16) {
+    put(cx, wide_store(x, Mem::base(Reg::Rsp, 0), reg_bytes));
+    for (at, size) in crate::common::pieces(bytes.min(reg_bytes) - 16) {
         let at = at + 16;
         let store = crate::common::exact_size(size).unwrap_or(Size::Q);
         put(cx, gpr_load(R11, Mem::base(Reg::Rsp, at as i32), size));

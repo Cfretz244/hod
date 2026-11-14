@@ -22,6 +22,16 @@
 //! slot of a part on the stack, else in a slot of the function's own,
 //! loaded into or stored from the register (`movups`).
 //!
+//! WP-208, with AVX-512 (`spec/abi-x64.md` §4.3): 32 elements are the
+//! byte lanes of one `ymm` and 64 those of one `zmm` or of two `ymm`
+//! (the second's `first` element 32), built and read in a slot of the
+//! register's size (`vector::load_wide`, `vector::store_wide`); a mask
+//! LLVM passes byte by byte has one part per element, of one byte, its
+//! place a general register or an 8-byte stack slot, which holds 0 or 1.
+//! The pieces of one mask are all at the mask's offset, so a side in
+//! memory is always the mask's image; a part of some of the elements
+//! updates their bits in it.
+//!
 //! WP-174: a lone `<1 x i64>` or `<1 x ptr>` argument or result is one
 //! `Lanes { bits: 64, len: 1 }` part (`abi::LONE_LANE`): its value is an
 //! `xmm`, its place a general register or an 8-byte stack slot; it moves
@@ -35,7 +45,7 @@
 
 use hod_cg::abi::{LaneLoc, Part, PartKind};
 use hod_cg::error::CALL_PART_LANES;
-use hod_cg::{CgError, CgResult, FnCx, FrameRef};
+use hod_cg::{CgError, CgResult, FnCx, FrameRef, PReg};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Reg, Size};
 
@@ -56,6 +66,9 @@ struct Lanes {
     len: u32,
     /// Lanes the part carries.
     count: u32,
+    /// The bytes of the place: 16 (`xmm`), 32 (`ymm`) or 64 (`zmm`); 1
+    /// for one element in a general register or an 8-byte stack slot.
+    size: u32,
 }
 
 impl Lanes {
@@ -68,14 +81,14 @@ impl Lanes {
         let count = part.size / lane.max(1);
         let ok = bits == 1
             && matches!(lane, 1 | 2 | 4 | 8)
-            && part.size == 16
+            && (matches!(part.size, 16 | 32 | 64) || (part.size == 1 && lane == 1))
             && count * lane == part.size
             && first + count <= len
             && len <= 64;
         if !ok {
             return cx.bug("a Lanes part whose shape abi::assign does not make");
         }
-        Ok(Lanes { lane, first, len, count })
+        Ok(Lanes { lane, first, len, count, size: part.size })
     }
 
     /// The bytes of the mask's image: `⌈len/8⌉`.
@@ -83,37 +96,67 @@ impl Lanes {
         self.len.div_ceil(8)
     }
 
-    /// Whether the part carries every element (the only shape §4.3 has).
-    fn whole(self) -> bool {
-        self.first == 0 && self.count == self.len
+    /// WP-208: whether the part is one element in a general register or
+    /// an 8-byte stack slot (a mask LLVM passes byte by byte, §4.3).
+    fn in_gpr(self) -> bool {
+        self.size == 1
     }
 }
 
-/// A 16-byte slot: `to`'s own when it is a frame place, else a new one.
-fn lanes_slot(cx: &mut FnCx<'_, X64>, at: LaneLoc) -> CgResult<FrameRef> {
+/// A slot of the part's place: `to`'s own when it is a frame place, else
+/// a new one.
+fn lanes_slot(cx: &mut FnCx<'_, X64>, l: Lanes, at: LaneLoc) -> CgResult<FrameRef> {
     match at {
         LaneLoc::Frame(slot) => Ok(slot),
-        LaneLoc::Reg(_) => cx.alloc_slot(16, 16),
+        LaneLoc::Reg(_) => cx.alloc_slot(u64::from(l.size), 16),
+    }
+}
+
+/// `xmm<x>`, `ymm<x>` or `zmm<x>` loaded with the part's `size` bytes at
+/// `slot`.
+fn load_lanes(cx: &mut FnCx<'_, X64>, x: PReg, slot: FrameRef, l: Lanes) {
+    if l.size == 16 {
+        load_fpr(cx, xm(x), slot, 16);
+    } else {
+        crate::vector::load_wide(cx, xm(x), slot, l.size);
+    }
+}
+
+/// The part's `size` bytes of `xmm<x>`, `ymm<x>` or `zmm<x>` stored to
+/// `slot`.
+fn store_lanes(cx: &mut FnCx<'_, X64>, x: PReg, slot: FrameRef, l: Lanes) {
+    if l.size == 16 {
+        store_fpr(cx, xm(x), slot, 16);
+    } else {
+        crate::vector::store_wide(cx, xm(x), slot, l.size);
     }
 }
 
 /// WP-167: whether the two sides of a lane move are registers of the
 /// classes this module moves: the value (a mask's bits) a general
-/// register, the place an `xmm`; a frame place on either side. `hod_cg`
-/// hands the value in a scratch register of the value's class, and only
-/// masks (class `Gpr`, `abi.rs` `mask_leaf`) have `Lanes` parts here, so
+/// register, the place an `xmm` (WP-208: a general register for a part
+/// of one element); a frame place on either side. `hod_cg` hands the
+/// value in a scratch register of the value's class, and only masks
+/// (class `Gpr`, `abi.rs` `mask_leaf`) have `Lanes` parts here, so
 /// anything else (an `xmm` or x87 value) is refused, never treated as a
 /// general register.
-fn classes_ok(value: LaneLoc, place: LaneLoc) -> bool {
+fn classes_ok(value: LaneLoc, place: LaneLoc, in_gpr: bool) -> bool {
     let value_ok = match value {
         LaneLoc::Reg(r) => reg::is_gpr(r),
         LaneLoc::Frame(_) => true,
     };
     let place_ok = match place {
+        LaneLoc::Reg(r) if in_gpr => reg::is_gpr(r),
         LaneLoc::Reg(r) => reg::is_fpr(r),
         LaneLoc::Frame(_) => true,
     };
     value_ok && place_ok
+}
+
+/// The class of a lone part's place, before decoding the part: one
+/// element of a byte in a general register.
+fn part_in_gpr(part: &Part) -> bool {
+    matches!(part.kind, PartKind::Lanes { lane: 1, .. }) && part.size == 1
 }
 
 /// `Target::lanes_out`: the producer's side of a `Lanes` part.
@@ -126,37 +169,50 @@ pub fn lanes_out(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc
     if is_lone(part) {
         return lone_out(cx, from, to);
     }
-    if !classes_ok(from, to) {
+    if !classes_ok(from, to, part_in_gpr(part)) {
         return Err(CgError::unsupported(CALL_PART_LANES));
     }
     let l = Lanes::of(cx, part)?;
-    if matches!(to, LaneLoc::Reg(r) if !reg::is_fpr(r)) {
-        return cx.bug("a mask's lanes bound for a general register");
-    }
     // The mask's bits in a general register.
     let g = match from {
-        LaneLoc::Reg(g) if !reg::is_fpr(g) => gp(g),
-        LaneLoc::Reg(_) => return cx.bug("a mask's bits in a vector register"),
+        LaneLoc::Reg(g) => gp(g),
         LaneLoc::Frame(image) => {
             load_gpr(cx, R10, image, l.image_bytes());
             R10
         }
     };
     let t = other_scratch(g);
-    let slot = lanes_slot(cx, to)?;
-    for i in 0..l.count {
-        put(cx, mc::mov_rr(Size::Q, t, g));
-        let bit = l.first + i;
-        if bit != 0 {
-            put(cx, mc::shr_ri(Size::Q, t, bit as u8));
+    if l.in_gpr() {
+        // WP-208: element `first` as the byte 0 or 1, in the register
+        // itself or stored to the stack slot.
+        let dst = match to {
+            LaneLoc::Reg(r) => gp(r),
+            LaneLoc::Frame(_) => t,
+        };
+        bit_of(cx, dst, g, l.first);
+        if let LaneLoc::Frame(slot) = to {
+            store_gpr(cx, t, slot, 1);
         }
-        put(cx, mc::and_ri(Size::D, t, 1));
+        return Ok(());
+    }
+    let slot = lanes_slot(cx, l, to)?;
+    for i in 0..l.count {
+        bit_of(cx, t, g, l.first + i);
         store_gpr(cx, t, slot.offset_by(i * l.lane), l.lane);
     }
     if let LaneLoc::Reg(x) = to {
-        load_fpr(cx, xm(x), slot, 16);
+        load_lanes(cx, x, slot, l);
     }
     Ok(())
+}
+
+/// `d` set to bit `bit` of `g` (0 or 1).
+fn bit_of(cx: &mut FnCx<'_, X64>, d: Reg, g: Reg, bit: u32) {
+    put(cx, mc::mov_rr(Size::Q, d, g));
+    if bit != 0 {
+        put(cx, mc::shr_ri(Size::Q, d, bit as u8));
+    }
+    put(cx, mc::and_ri(Size::D, d, 1));
 }
 
 /// `Target::lanes_in`: the consumer's side of a `Lanes` part.
@@ -167,28 +223,29 @@ pub fn lanes_in(cx: &mut FnCx<'_, X64>, part: &Part, from: LaneLoc, to: LaneLoc)
     if is_lone(part) {
         return lone_in(cx, from, to);
     }
-    if !classes_ok(to, from) {
+    if !classes_ok(to, from, part_in_gpr(part)) {
         return Err(CgError::unsupported(CALL_PART_LANES));
     }
     let l = Lanes::of(cx, part)?;
     let src = match from {
-        LaneLoc::Frame(slot) => slot,
-        LaneLoc::Reg(x) if reg::is_fpr(x) => {
-            let slot = cx.alloc_slot(16, 16)?;
-            store_fpr(cx, xm(x), slot, 16);
-            slot
+        LaneLoc::Frame(slot) => Src::Frame(slot),
+        LaneLoc::Reg(r) if l.in_gpr() => Src::Reg(gp(r)),
+        LaneLoc::Reg(x) => {
+            let slot = cx.alloc_slot(u64::from(l.size), 16)?;
+            store_lanes(cx, x, slot, l);
+            Src::Frame(slot)
         }
-        LaneLoc::Reg(_) => return cx.bug("a mask's lanes in a general register"),
     };
     match to {
-        LaneLoc::Reg(g) if !reg::is_fpr(g) => {
+        LaneLoc::Reg(g) => {
             gather(cx, l, src, gp(g));
             Ok(())
         }
-        LaneLoc::Reg(_) => cx.bug("a mask's bits bound for a vector register"),
         LaneLoc::Frame(image) => {
-            if !l.whole() {
-                return cx.bug("a mask's image from a part of its elements");
+            // WP-208: a part of some of the elements updates their bits
+            // in the image (the parts come in order, the first clears it).
+            if l.first != 0 {
+                load_gpr(cx, R10, image, l.image_bytes());
             }
             gather(cx, l, src, R10);
             store_gpr(cx, R10, image, l.image_bytes());
@@ -256,15 +313,26 @@ fn lone_in(cx: &mut FnCx<'_, X64>, from: LaneLoc, to: LaneLoc) -> CgResult<()> {
     Ok(())
 }
 
+/// Where a lane move reads lanes from: a frame slot of lanes, or (one
+/// element) a general register.
+#[derive(Clone, Copy)]
+enum Src {
+    Frame(FrameRef),
+    Reg(Reg),
+}
+
 /// Bit `first + i` of `g` set to bit 0 of lane `i` at `src`, through the
 /// other scratch register; the part of element 0 clears `g` first.
-fn gather(cx: &mut FnCx<'_, X64>, l: Lanes, src: FrameRef, g: Reg) {
+fn gather(cx: &mut FnCx<'_, X64>, l: Lanes, src: Src, g: Reg) {
     let t = other_scratch(g);
     if l.first == 0 {
         mov_imm(cx, g, 0, 64);
     }
     for i in 0..l.count {
-        load_gpr(cx, t, src.offset_by(i * l.lane), 1);
+        match src {
+            Src::Frame(slot) => load_gpr(cx, t, slot.offset_by(i * l.lane), 1),
+            Src::Reg(r) => put(cx, mc::mov_rr(Size::D, t, r)),
+        }
         put(cx, mc::and_ri(Size::D, t, 1));
         let bit = l.first + i;
         if bit != 0 {
@@ -288,16 +356,22 @@ mod tests {
         let (g, x, st) = (reg::gpr(Reg::Rax), reg::xmm(mc::Xmm::Xmm0), reg::st(0));
         let frame = LaneLoc::Frame(FrameRef::Local(0));
         let r = LaneLoc::Reg;
-        assert!(classes_ok(r(g), r(x)));
-        assert!(classes_ok(frame, r(x)));
-        assert!(classes_ok(r(g), frame));
-        assert!(classes_ok(frame, frame));
+        assert!(classes_ok(r(g), r(x), false));
+        assert!(classes_ok(frame, r(x), false));
+        assert!(classes_ok(r(g), frame, false));
+        assert!(classes_ok(frame, frame, false));
         for (value, place) in [(x, x), (st, x), (g, g), (g, st), (x, g)] {
-            assert!(!classes_ok(r(value), r(place)), "{value:?} {place:?}");
+            assert!(!classes_ok(r(value), r(place), false), "{value:?} {place:?}");
         }
-        assert!(!classes_ok(r(x), frame));
-        assert!(!classes_ok(r(st), frame));
-        assert!(!classes_ok(frame, r(g)));
+        assert!(!classes_ok(r(x), frame, false));
+        assert!(!classes_ok(r(st), frame, false));
+        assert!(!classes_ok(frame, r(g), false));
+        // WP-208: a part of one element (a byte) has a general place.
+        assert!(classes_ok(r(g), r(g), true));
+        assert!(classes_ok(frame, r(g), true));
+        for (value, place) in [(g, x), (x, g), (st, g), (g, st)] {
+            assert!(!classes_ok(r(value), r(place), true), "{value:?} {place:?}");
+        }
     }
 
     /// WP-174: a lone `<1 x i64>` move takes an `xmm` value and a
