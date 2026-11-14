@@ -153,6 +153,9 @@ pub struct UnitPlan<'a> {
     pub(crate) locals: Vec<crate::func::LocalData>,
     /// The blocks' ranges: code offsets of their function.
     pub(crate) ranges: Vec<(u32, u32)>,
+    /// WP-162: the located ranges of the variables described by value
+    /// records, by list (`LocalWhat::List`, §6.23).
+    pub(crate) value_ranges: Vec<crate::loclists::Range>,
     /// The `.debug_addr` entries the functions' DIEs take.
     pub(crate) code_addrs: u32,
     pub(crate) fn_scratch: crate::func::FnScratch,
@@ -300,6 +303,7 @@ impl<'a> UnitPlan<'a> {
             funcs: Vec::new(),
             locals: Vec::new(),
             ranges: Vec::new(),
+            value_ranges: Vec::new(),
             code_addrs: 0,
             fn_scratch: crate::func::FnScratch::default(),
             scope_dies: crate::scope::ScopeDies::new(module),
@@ -581,6 +585,9 @@ pub struct DieSections {
     pub addr: Option<SectionId>,
     /// `.debug_rnglists`, when some unit's code is in several sections.
     pub rnglists: Option<SectionId>,
+    /// `.debug_loclists`, when some variable is described by value
+    /// records (WP-162, §6.23).
+    pub loclists: Option<SectionId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -598,6 +605,8 @@ pub(crate) enum Target {
     Line,
     Addr,
     Rnglists,
+    /// WP-162: a variable's location list.
+    Loclists,
     Symbol(SymbolId),
     /// WP-136: a thread-local variable's offset in its TLS block
     /// (`crate::x86_64::tls_offset_reloc`).
@@ -640,6 +649,15 @@ pub(crate) struct Writer<'a> {
     /// (WP-163).
     pub(crate) block_lists: Vec<u8>,
     pub(crate) block_starts: Vec<usize>,
+    /// WP-162: `.debug_loclists`, and the current unit's contribution's
+    /// start (`loclists::NO_LISTS` before its first list).
+    pub(crate) loclists: Vec<u8>,
+    pub(crate) loclists_unit: usize,
+    /// WP-189: whether this writer writes a split unit, and the indices
+    /// of the unit's `.debug_addr` entries that are thread-local offsets
+    /// (`R_X86_64_DTPOFF64`), ascending (§6.24).
+    pub(crate) split: bool,
+    pub(crate) tls_addrs: Vec<u32>,
 }
 
 #[inline]
@@ -768,6 +786,12 @@ impl<'a> Writer<'a> {
         unit_start
     }
 
+    /// Empties the unit's address pool and its thread-local entries.
+    pub(crate) fn clear_addrs(&mut self) {
+        self.addrs.clear();
+        self.tls_addrs.clear();
+    }
+
     pub(crate) fn unit(&mut self, u: &UnitInput<'_, 'a>, symbols: u32) -> Result<(), Error> {
         let plan = u.plan;
         let n = plan.dies.len();
@@ -795,7 +819,7 @@ impl<'a> Writer<'a> {
             .filter(|g| plan.die_of_expr(g.expr).is_some_and(|d| plan.global_takes_address(d)))
             .count()
             + plan.template_addrs();
-        self.addrs.clear();
+        self.clear_addrs();
         self.offsets.clear();
         self.offsets.resize(n, NONE);
         self.patches.clear();
@@ -884,13 +908,15 @@ impl<'a> Writer<'a> {
     }
 
     /// The unit's contributions to `.debug_str_offsets`, `.debug_addr`
-    /// and `.debug_rnglists`, after its DIEs.
+    /// and `.debug_rnglists`, after its DIEs; its `.debug_loclists`
+    /// contribution is closed (WP-162).
     pub(crate) fn contributions(
         &mut self,
         has_addr: bool,
         ranges: bool,
         span_base: usize,
     ) -> Result<(), Error> {
+        self.finish_loclists()?;
         // `.debug_str_offsets` (DWARF 5 §7.26).
         let offs = self.strings.unit_offsets();
         let length = u32::try_from(4 + 4 * offs.len()).map_err(|_| Error::TooLarge)?;
@@ -918,14 +944,12 @@ impl<'a> Writer<'a> {
             self.addr.extend_from_slice(&length.to_le_bytes());
             self.addr.extend_from_slice(&5u16.to_le_bytes());
             self.addr.extend_from_slice(&[8, 0]);
-            for &(symbol, addend) in &self.addrs {
+            for (i, &(symbol, addend)) in self.addrs.iter().enumerate() {
                 let offset = self.addr.len();
-                self.relocs.push(Reloc {
-                    sec: Sec::Addr,
-                    offset,
-                    target: Target::Symbol(symbol),
-                    addend,
-                });
+                // WP-189: a split unit's thread-local offset (§6.24).
+                let tls = self.tls_addrs.binary_search(&(i as u32)).is_ok();
+                let target = if tls { Target::Tls(symbol) } else { Target::Symbol(symbol) };
+                self.relocs.push(Reloc { sec: Sec::Addr, offset, target, addend });
                 self.addr.extend_from_slice(&[0; 8]);
             }
         }
@@ -1093,6 +1117,10 @@ pub fn write_debug_info(
         fn_addr: Vec::new(),
         block_lists: Vec::new(),
         block_starts: Vec::new(),
+        loclists: Vec::new(),
+        loclists_unit: crate::loclists::NO_LISTS,
+        split: false,
+        tls_addrs: Vec::new(),
     };
     if let Some(u) = units.iter().find(|u| !u.plan.sealed) {
         return Err(unsupported(u.plan.unit, "a unit plan that is not sealed"));
@@ -1101,7 +1129,8 @@ pub fn write_debug_info(
         w.unit(u, symbols)?;
     }
     let abbrev = write_abbrev(&w.used);
-    for len in [w.info.len(), w.str_offsets.len(), w.addr.len(), w.rnglists.len()] {
+    for len in [w.info.len(), w.str_offsets.len(), w.addr.len(), w.rnglists.len(), w.loclists.len()]
+    {
         if u32::try_from(len).is_err() {
             return Err(Error::TooLarge);
         }
@@ -1121,32 +1150,20 @@ pub fn write_debug_info(
         sh_entsize: 1,
     };
     let str_sec = obj.add_section(b".debug_str", str_kind, 1)?;
-    let addr = if w.addr.is_empty() {
-        None
-    } else {
-        Some(obj.add_section(b".debug_addr", SectionKind::Debug, 1)?)
-    };
-    let rnglists = if w.rnglists.is_empty() {
-        None
-    } else {
-        Some(obj.add_section(b".debug_rnglists", SectionKind::Debug, 1)?)
-    };
+    let addr = optional_section(obj, b".debug_addr", w.addr)?;
+    let rnglists = optional_section(obj, b".debug_rnglists", w.rnglists)?;
+    let loclists = optional_section(obj, b".debug_loclists", w.loclists)?; // WP-162
     obj.append_owned(abbrev_sec, abbrev);
     obj.append_owned(info, w.info);
     obj.append_owned(str_offsets, w.str_offsets);
     obj.append_owned(str_sec, w.strings.into_data());
-    if let Some(a) = addr {
-        obj.append_owned(a, w.addr);
-    }
-    if let Some(r) = rnglists {
-        obj.append_owned(r, w.rnglists);
-    }
     let sym_abbrev = obj.section_symbol(abbrev_sec);
     let sym_str = obj.section_symbol(str_sec);
     let sym_str_offsets = obj.section_symbol(str_offsets);
     let sym_line = obj.section_symbol(line);
     let sym_addr = addr.map(|a| obj.section_symbol(a));
     let sym_rnglists = rnglists.map(|r| obj.section_symbol(r));
+    let sym_loclists = loclists.map(|l| obj.section_symbol(l));
     obj.reserve(0, 0, w.relocs.len(), 0);
     for r in &w.relocs {
         let (symbol, wide) = match r.target {
@@ -1156,6 +1173,7 @@ pub fn write_debug_info(
             Target::Line => (sym_line, false),
             Target::Addr => (sym_addr.unwrap_or(sym_abbrev), false),
             Target::Rnglists => (sym_rnglists.unwrap_or(sym_abbrev), false),
+            Target::Loclists => (sym_loclists.unwrap_or(sym_abbrev), false),
             Target::Symbol(s) | Target::Tls(s) => (s, true),
         };
         let section = match r.sec {
@@ -1166,5 +1184,27 @@ pub fn write_debug_info(
         let kind = crate::x86_64::reloc_kind(r.target, wide, target); // WP-136
         obj.add_relocation(section, r.offset as u64, kind, symbol, r.addend);
     }
-    Ok(DieSections { abbrev: abbrev_sec, info, str_offsets, str: str_sec, addr, rnglists })
+    Ok(DieSections {
+        abbrev: abbrev_sec,
+        info,
+        str_offsets,
+        str: str_sec,
+        addr,
+        rnglists,
+        loclists,
+    })
+}
+
+/// A `.debug_*` section holding `data`, unless `data` is empty.
+fn optional_section(
+    obj: &mut Object,
+    name: &[u8],
+    data: Vec<u8>,
+) -> Result<Option<SectionId>, Error> {
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let section = obj.add_section(name, SectionKind::Debug, 1)?;
+    obj.append_owned(section, data);
+    Ok(Some(section))
 }

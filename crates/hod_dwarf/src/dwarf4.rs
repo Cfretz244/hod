@@ -64,6 +64,12 @@ pub const DWARF_4_SHAPE: &str = "debug:dwarf-4-shape";
 /// families after it are refused in a DWARF 4 unit until checked.
 const LAST_CHECKED: usize = fam::SUBPROGRAM_EMPTY;
 
+/// The families after [`LAST_CHECKED`] whose version 4 shape was
+/// compared with `llc`'s all the same (WP-189: §6.24).
+const fn checked_later(family: usize) -> bool {
+    family == fam::METHOD_EXPLICIT_QUALIFIED
+}
+
 // WP-150: the GNU call-site forms of version 4 (`spec/dwarf.md` §6.21).
 const DW_TAG_GNU_CALL_SITE: u16 = 0x4109;
 const DW_AT_GNU_CALL_SITE_TARGET_CLOBBERED: u16 = 0x2114;
@@ -461,7 +467,7 @@ impl Out {
             self.map.push((die as u32, new));
             let code = u32::try_from(code).map_err(|_| bad())?;
             let (family, offset) = family_of(code).ok_or_else(bad)?;
-            if family > LAST_CHECKED {
+            if family > LAST_CHECKED && !checked_later(family) {
                 return Err(bad());
             }
             self.used[code as usize / 64] |= 1 << (code % 64);
@@ -738,6 +744,10 @@ fn scratch_writer<'a>(dies: usize) -> Writer<'a> {
         fn_addr: Vec::new(),
         block_lists: Vec::new(),
         block_starts: Vec::new(),
+        loclists: Vec::new(),
+        loclists_unit: crate::loclists::NO_LISTS,
+        split: false,
+        tls_addrs: Vec::new(),
     }
 }
 
@@ -832,8 +842,11 @@ pub fn write_debug_info4(
     for r in &out.relocs {
         let (symbol, wide) = match r.target {
             // `StrOffsets` and `Addr` are not made by `Out`: DWARF 5's
-            // sections are not written.
-            Target::Abbrev | Target::StrOffsets | Target::Addr => (sym_abbrev, false),
+            // sections are not written. WP-162: nor `Loclists`, a
+            // location list's family being past `LAST_CHECKED`.
+            Target::Abbrev | Target::StrOffsets | Target::Addr | Target::Loclists => {
+                (sym_abbrev, false)
+            }
             Target::Str => (sym_str, false),
             Target::Line => (sym_line, false),
             Target::Rnglists => (sym_ranges.unwrap_or(sym_abbrev), false),

@@ -576,11 +576,13 @@ pub enum FnStr {
     /// `"no-builtin-<function>"`. The value of this key is the function's
     /// name, and a set may hold the key once per function.
     NoBuiltin,
+    /// `"disable-tail-calls"` (`"true"` or `"false"`).
+    DisableTailCalls,
 }
 
 impl FnStr {
     /// Every key, in order.
-    pub const ALL: [FnStr; 21] = [
+    pub const ALL: [FnStr; 22] = [
         FnStr::TargetCpu,
         FnStr::TargetFeatures,
         FnStr::TuneCpu,
@@ -602,6 +604,7 @@ impl FnStr {
         FnStr::NoJumpTables,
         FnStr::NoBuiltins,
         FnStr::NoBuiltin,
+        FnStr::DisableTailCalls,
     ];
 
     /// LLVM's attribute name; for [`FnStr::NoBuiltin`] the prefix
@@ -629,6 +632,7 @@ impl FnStr {
             FnStr::NoJumpTables => "no-jump-tables",
             FnStr::NoBuiltins => "no-builtins",
             FnStr::NoBuiltin => "no-builtin-",
+            FnStr::DisableTailCalls => "disable-tail-calls",
         }
     }
 
@@ -720,9 +724,17 @@ impl FnAttrs {
     /// `convergent`: a constraint on transformations only (§5.7); hod
     /// keeps it so that the module it prints forbids what its input did.
     pub const CONVERGENT: u32 = 1 << 19;
+    /// `noredzone`: no data below the stack pointer; hod never puts any
+    /// there (`spec/codegen.md` §5), so it changes no code.
+    pub const NO_RED_ZONE: u32 = 1 << 20;
+    /// `nocf_check` (WP-184): on a function, no indirect-branch landing
+    /// instruction at its entry; on an indirect call, the call is not
+    /// tracked (x86-64 `notrack`). Only `cf-protection-branch` modules on
+    /// x86-64 change code for it, as in `llc`.
+    pub const NO_CF_CHECK: u32 = 1 << 21;
 
     /// Every flag with LLVM's keyword for it, in bit order.
-    pub const FLAG_NAMES: [(&'static str, u32); 20] = [
+    pub const FLAG_NAMES: [(&'static str, u32); 22] = [
         ("noreturn", Self::NORETURN),
         ("naked", Self::NAKED),
         ("nounwind", Self::NOUNWIND),
@@ -743,9 +755,11 @@ impl FnAttrs {
         ("sanitize_thread", Self::SANITIZE_THREAD),
         ("sanitize_type", Self::SANITIZE_TYPE),
         ("convergent", Self::CONVERGENT),
+        ("noredzone", Self::NO_RED_ZONE),
+        ("nocf_check", Self::NO_CF_CHECK),
     ];
 
-    const ALL_FLAGS: u32 = (1 << 20) - 1;
+    const ALL_FLAGS: u32 = (1 << 22) - 1;
 
     /// No attributes.
     pub fn new() -> FnAttrs {
@@ -1121,12 +1135,72 @@ impl<'a, L: Layering> FnAttrsView<'a, L> {
             .map(move |&(key, value)| (key, table.values.get(value)))
     }
 
+    /// How the function probes its stack (WP-186, `spec/ir.md` §5.7):
+    /// `"probe-stack"` and `"stack-probe-size"` read together.
+    pub fn stack_probe(&self) -> StackProbe {
+        stack_probe(self.string(FnStr::ProbeStack), self.string(FnStr::StackProbeSize))
+    }
+
     /// True if the set has no attribute.
     pub fn is_empty(&self) -> bool {
         self.entry.flags == 0
             && self.entry.uwtable == UwTable::None
             && self.entry.stack_align == 0
             && self.entry.strings_len == 0
+    }
+}
+
+/// How a function probes its stack (WP-186, `spec/ir.md` §5.7,
+/// `spec/codegen.md` §5.6.27).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StackProbe {
+    /// No `"probe-stack"`: nothing is probed (`"stack-probe-size"` alone
+    /// changes nothing, as in `llc`).
+    None,
+    /// `"probe-stack"="inline-asm"`: no page of this many bytes below
+    /// the stack pointer is skipped.
+    Inline(u32),
+    /// A value hod does not build, refused under this stable name.
+    Refused(&'static str),
+}
+
+impl StackProbe {
+    /// A `"probe-stack"` value other than `"inline-asm"`: a probe
+    /// function to call (`__probestack`-style), which hod does not.
+    pub const FUNCTION: &'static str = "attr:probe-stack-function";
+    /// A `"stack-probe-size"` that is not a multiple of 4096 between
+    /// 4096 and 2^24 - 4096 in decimal (`llc` accepts others, some of
+    /// which do not probe at all: 0 on x86-64).
+    pub const SIZE_VALUE: &'static str = "attr:stack-probe-size-value";
+    /// The probe size without `"stack-probe-size"` (`llc`'s, both
+    /// targets).
+    pub const DEFAULT_SIZE: u32 = 4096;
+    /// The refusals of [`FnAttrsView::stack_probe`].
+    pub const REASONS: [&'static str; 2] = [StackProbe::FUNCTION, StackProbe::SIZE_VALUE];
+
+    /// The probe size, if the function probes inline.
+    pub const fn size(self) -> Option<u32> {
+        match self {
+            StackProbe::Inline(size) => Some(size),
+            _ => None,
+        }
+    }
+}
+
+/// [`FnAttrsView::stack_probe`] from the two values.
+pub fn stack_probe(probe: Option<&[u8]>, size: Option<&[u8]>) -> StackProbe {
+    match probe {
+        None => StackProbe::None,
+        Some(b"inline-asm") => match size {
+            None => StackProbe::Inline(StackProbe::DEFAULT_SIZE),
+            Some(text) => std::str::from_utf8(text)
+                .ok()
+                .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|t| t.parse::<u32>().ok())
+                .filter(|&n| n >= 4096 && n.is_multiple_of(4096) && n < (1 << 24))
+                .map_or(StackProbe::Refused(StackProbe::SIZE_VALUE), StackProbe::Inline),
+        },
+        Some(_) => StackProbe::Refused(StackProbe::FUNCTION),
     }
 }
 
@@ -1206,7 +1280,7 @@ use AttrClass::{Dropped, Kept, Rejected};
 /// Keyword rows first, each group ordered by name. A name with no row is
 /// [`AttrClass::Rejected`]; the `Rejected` rows are the names LLVM defines
 /// that were looked at and deliberately left there.
-pub const ATTRIBUTES: [AttrInfo; 140] = [
+pub const ATTRIBUTES: [AttrInfo; 141] = [
     kw("align", Kept),
     kw("alignstack", Kept),
     kw("allocalign", Dropped),
@@ -1246,7 +1320,7 @@ pub const ATTRIBUTES: [AttrInfo; 140] = [
     kw("nobuiltin", Dropped),
     kw("nocallback", Dropped),
     kw("nocapture", Dropped),
-    kw("nocf_check", Rejected),
+    kw("nocf_check", Kept),
     kw("nocreateundeforpoison", Dropped),
     kw("nodivergencesource", Rejected),
     kw("noduplicate", Rejected),
@@ -1260,7 +1334,7 @@ pub const ATTRIBUTES: [AttrInfo; 140] = [
     kw("nonnull", Dropped),
     kw("noprofile", Dropped),
     kw("norecurse", Dropped),
-    kw("noredzone", Rejected),
+    kw("noredzone", Kept),
     kw("noreturn", Kept),
     kw("nosanitize_bounds", Dropped),
     kw("nosanitize_coverage", Dropped),
@@ -1315,6 +1389,7 @@ pub const ATTRIBUTES: [AttrInfo; 140] = [
     st("branch-target-enforcement", Kept),
     st("denormal-fp-math", Rejected),
     st("denormal-fp-math-f32", Rejected),
+    st("disable-tail-calls", Kept),
     st("fmv-features", Dropped),
     st("frame-pointer", Kept),
     st("function-instrument", Kept),
@@ -1608,7 +1683,7 @@ mod tests {
         assert_eq!(a.strings().count(), 0);
 
         let kind = |r: IrResult<()>| r.unwrap_err().kind;
-        assert_eq!(kind(a.set(1 << 20)), IrErrorKind::InvalidOperand);
+        assert_eq!(kind(a.set(1 << 22)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_stack_align(24)), IrErrorKind::InvalidOperand);
         assert_eq!(kind(a.set_string(FnStr::NoBuiltin, b"")), IrErrorKind::InvalidOperand);
         assert!(a.is_empty());

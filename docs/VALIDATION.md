@@ -52,7 +52,7 @@ on a schedule.
 | L7 | **debug info** (`xtask debug`) | scripted gdb and lldb sessions on hod's and `llc`'s programs under every linker; kiln's debugger tests through hod; `--verify` of the corpus's `-g` modules; `(function, line)` comparison with `llc` | gdb, lldb, `llc`, `llvm-dwarfdump` | every change (quick tier, in `cargo test`), merge gate (all) |
 | L8 | **libc++ test suite** with kiln + hod | the long-term acceptance gate | the suite | nightly / release |
 | L9 | **open-source projects** built with kiln + hod, running their own tests ("Real projects (L9)") | kiln with `llc` | release |
-| L10 | **fuzzing** (`xtask fuzz`) | random C programs (csmith; YARPGen once installed) through clang `-O0 -emit-llvm` for each target, built by hod `--strict` and by the reference `llc`, linked and run, exit status and output compared; random IR functions against an interpreter (not yet) | `llc` (`-O2` as the witness of a finding) | the reduced seeds of findings in every change (as L4 seeds); long runs in the sweep, budgeted |
+| L10 | **fuzzing** (`xtask fuzz`) | random C programs (csmith in option sets, and hod's own ABI generator; YARPGen once installed) through clang `-O0 -emit-llvm` for each target, built by hod `--strict` and by the reference `llc`, linked and run, exit status and output compared; the module split so each compiler builds half (`--mix`); with `-g`, DWARF verified and lines compared (`--debug`); random IR functions against an interpreter (not yet) | `llc` (`-O2` as the witness of a finding) | the reduced seeds of findings in every change (as L4 seeds); long runs in the sweep, budgeted |
 
 ### The IR corpus
 
@@ -147,39 +147,65 @@ do not move with the pin.
 
 ### Random programs (L10)
 
-`cargo xtask fuzz --seed N --count M --target T [--llvm 19] [-j J]`
-(`spec/landed/harness/WP-154.md`) makes seed `S` a csmith program
-(`--max-funcs 6 --max-block-depth 4 --max-array-len-per-dim 6`; one seed
-in three with `--float`), compiles it with clang at `-O0` to LLVM text
-for the target (position-independent, as a driver builds by default),
-builds that module with the reference `llc` and with `hod --strict`,
-links both with the target's driver and runs them (x86-64 under
-`qemu-x86_64` with the baseline CPU, as the L4 cross runs do), with the
-same time limit on both targets (5 s; a program of hod's that times out
-gets four times as long before it is called a hang). Every child goes
-through the harness's limits and jobserver. Per seed the verdict is:
+`cargo xtask fuzz --seed N --count M --target T [--llvm 19] [-j J]
+[--profile P] [--mix | --debug | --census]` (contract: `spec/harness.md`
+"Random programs"; WP-154, WP-160) makes seed `S` a random C program,
+compiles it with clang at `-O0` to LLVM text for the target
+(position-independent, as a driver builds by default), builds that
+module with the reference `llc` and with `hod --strict`, links both with
+the target's driver and runs them (x86-64 under `qemu-x86_64` with the
+baseline CPU, as the L4 cross runs do), with the same time limit on both
+targets (5 s; a program of hod's that times out gets four times as long
+before it is called a hang). Every child goes through the harness's
+limits and jobserver.
 
-- **agree**: same exit status, same output (csmith prints a checksum of
-  every global);
+The generator is a profile: csmith with an option set (`default`,
+`aggregates`, `float`, `wide`, `volatile`, `narrow`), or `abi`, hod's
+own generator of calls across the calling conventions (aggregates of
+every shape the conventions classify, by value and returned, `long
+double`, `__int128`, many arguments, variadic calls read with
+`va_arg`), which csmith does not reach. `--census` counts what a
+profile's modules contain (opcodes, types, `byval`/`sret`, variadic
+definitions and calls) without building them.
+
+The modes:
+- **whole** (the default): one program of hod's object, one of
+  `llc`'s;
+- **mix** (`--mix`): `llvm-extract` splits the module in two by a
+  seeded choice per function and global (internal symbols become hidden
+  externals, so the halves link); hod builds one half and `llc` the
+  other, both ways round, against the all-`llc` program. This is what
+  sees a calling convention that agrees with itself but not with
+  another compiler's;
+- **debug** (`--debug`): with `-g`; `llvm-dwarfdump --verify` on hod's
+  object, then the `(function, line)` comparison of `cargo xtask debug`
+  against `llc`'s; an unclassified pair is a finding.
+
+Per seed the verdict is:
+
+- **agree**: same exit status, same output (the programs print a
+  checksum or every global);
 - **refused**: hod declined, counted by its coverage-log reason (that is
   coverage, not a bug);
-- **skipped**: csmith or clang failed, or a program timed out (both, or
-  the oracle's);
-- **error**: the oracle's side failed (`llc`, its link);
-- **finding**: the programs disagree, hod failed (a status other than 0
-  or 2, a signal, no object), hod's object does not link, or hod's
-  program hangs.
+- **skipped**: the generator or clang failed, a program timed out (both,
+  or the oracle's), or there was nothing to split;
+- **error**: the oracle's side failed (`llc`, its link, `llc`'s two
+  halves disagreeing with its whole module);
+- **finding**: the programs disagree, hod failed, hod's object does not
+  link, hod's program hangs, hod's DWARF does not verify, or its lines
+  differ without a permitted class.
 
-A finding is saved under `<build>/fuzz/findings/<arch>-llvm<N>-seed<S>/`
-with the source, the module, every command as a shell line, both
-outputs and the verdict of the witness (`llc -O2` of the same module:
-does it agree with the oracle or with hod?), then reduced by cutting the
-module's text and written as a `tests/ir` seed (`seed.ll`, with an
-`xfail` for the target) that the gate then runs like every other. The
-run prints a table (agree, refused by reason, skipped by why, errors,
-findings) and exits 1 on a finding. The gate does not run csmith: the
-checked-in reduced seeds are its share of L10. The numbers of the long
-runs are in `docs/status/fuzz.md`.
+A finding is saved under `<build>/fuzz/findings/<run>-seed<S>/` with the
+source, the module, every command as a shell line, both outputs and the
+verdict of the witness (`llc -O2` of the same module, and in `--mix` hod
+on the whole module), then reduced by cutting the module's text (in
+`--mix` re-splitting each candidate, so the split is kept) and written
+as a seed test. The run prints a table and the rate and exits 1 on a
+finding. The gate does not run csmith: the checked-in reduced seeds are
+its share of L10, and its tests of the command (`xtask/tests/fuzz_real.rs`)
+skip without the tools; a planted calling-convention bug that only
+`--mix` can see shows the mode works. The numbers of the long runs are
+in `docs/status/fuzz.md`.
 
 ### Real projects (L9)
 
@@ -245,6 +271,46 @@ tier (about 20 s) runs in `cargo test`; the full gate runs everything.
 - A failing test in hybrid or strict mode is handed to `xtask bisect`, which
   finds the smallest set of functions that must go to `llc` for the test to
   pass, and writes the reduced IR into `tests/ir/` as a reproducer.
+
+### Real projects for x86-64 on the AArch64 host (LLVM, cross-built)
+
+`scripts/oss/llvm-x64/` (WP-180) builds LLVM 19.1.7 for
+`x86_64-unknown-linux-gnu` on the AArch64 development host twice from
+one source tree: by kiln with hod (fallback allowed, `HOD_CENSUS=1`;
+`.build/oss/llvm-x64-hod`) and by kiln with its LLVM back end, the
+control (`.build/oss/llvm-x64-llc`). It is WP-178's native recipe
+(`scripts/oss/llvm/`: the wrapper over kiln's logging wrapper,
+`KILN_STATS_LOG`, hod's coverage log, the census and the saved modules)
+with the cross settings:
+
+- the compiler wrappers add `--target=x86_64-unknown-linux-gnu`; kiln
+  then finds the distribution's cross GCC (`/usr/lib/gcc-cross`) and its
+  system root by itself, and mold links x86-64;
+- CMake: `CMAKE_SYSTEM_NAME=Linux`, `CMAKE_SYSTEM_PROCESSOR=x86_64`,
+  `CMAKE_CROSSCOMPILING_EMULATOR="qemu-x86_64;-L;/usr/x86_64-linux-gnu"`,
+  `LLVM_HOST_TRIPLE` and `LLVM_DEFAULT_TARGET_TRIPLE` the target,
+  `-O0`, assertions, no `-g`, static libraries, `X86;AArch64`;
+- host tools: `llvm-tblgen` and `llvm-min-tblgen` copied once from
+  WP-178's native tree (`LLVM_NATIVE_TOOL_DIR`); `llvm-config`,
+  `llvm-nm` and `llvm-readobj` from the distribution's LLVM 19
+  (`LLVM_CONFIG_PATH`, `LLVM_NM`, `LLVM_READOBJ`), so no `NATIVE`
+  sub-build is configured;
+- links get 16 GB of address space (mold maps -O0 archives whole);
+- tests: the container has no `binfmt_misc` entry, so unit-test binaries
+  run as `qemu-x86_64 -L /usr/x86_64-linux-gnu <binary>`
+  (`unittests.sh`), and `qemu-tools.sh` replaces each x86-64 tool of
+  `build/bin` by a launcher before `llvm-lit` runs (`lit.sh`, which also
+  takes a list of tests: `lit-codegen-x86.txt` and `lit-instcombine.txt`
+  are every 15th test of `test/CodeGen/X86` and every 10th of
+  `test/Transforms/InstCombine`, sorted by name).
+
+The census, the saved refused modules with their command lines and
+smallest reproducers, and the test comparisons are in
+`.build/findings/oss/LLVM-X64-CENSUS.md` (`census-file.sh`); the numbers
+are in `spec/landed/harness/WP-180.md`. Under the emulator, tests that
+spawn x86-64 child processes (`ProgramEnvTest.*`) and read the host's
+`/proc/cpuinfo` (`Threading.NumPhysicalCoresSupported`) fail in both
+trees.
 
 ## Performance
 
