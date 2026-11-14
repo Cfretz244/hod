@@ -239,8 +239,13 @@ The same lane runs for x86-64 on the AArch64 host (`--target x86_64`,
 `--target=x86_64-unknown-linux-gnu` and finds the cross GCC and its
 system root itself, CMake is told it cross-compiles and runs every test
 program under `qemu-x86_64 -L /usr/x86_64-linux-gnu`
-(`CMAKE_CROSSCOMPILING_EMULATOR`, which ctest honours), and the trees,
-findings and census are the cross lane's own:
+(`CMAKE_CROSSCOMPILING_EMULATOR`, which ctest honours; `projects.py
+emulate-tests` also puts the emulator before the test commands CMake
+leaves alone: a program named by path, a `cmake -P` test's
+`-D<var>=<program>`, and CTestCustom.cmake's pre- and post-test
+commands). A program a test starts by itself still runs without the
+emulator and fails, in the control too. The trees, findings and census
+are the cross lane's own:
 
 ```
 scripts/oss/oss-run.sh fmt googletest abseil re2 --target x86_64
