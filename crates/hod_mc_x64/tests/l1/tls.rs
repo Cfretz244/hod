@@ -10,4 +10,6 @@ pub fn build(b: &mut Batch) {
     emit!(b, tls_gd_lea(), "data16 lea rdi, [rip]");
     // The target is the end of the 8-byte instruction: a zero field.
     emit!(b, tls_gd_call(), "data16 data16 rex64 call $HERE+8");
+    // WP-213: the descriptor call, `FF 10`.
+    emit!(b, tlsdesc_call(), "call qword ptr [rax]");
 }

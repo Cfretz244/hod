@@ -163,7 +163,9 @@ end with one address. GNU ld, lld and mold all do. The conventional names
 are `.rodata.str<char_size>.<align>` and `.rodata.cst<entry_size>`.
 
 `SectionKind::Elf` is the escape hatch (a mergeable `.debug_str`, a section
-with `SHF_GNU_RETAIN`, `SHT_X86_64_UNWIND`, ...). The constants are public
+with `SHF_GNU_RETAIN`, `SHT_X86_64_UNWIND`, the large code model's
+`SHF_X86_64_LARGE` sections `.ltext`, `.ldata`, `.lbss`, `.lrodata`, ...,
+`spec/codegen.md` §5.6.36). The constants are public
 in `hod_obj::elf` (`SHT_*`, `SHF_*`). It may not claim what the writer
 generates or sets itself: `sh_type` of
 `SHT_NULL`, `SHT_SYMTAB`, `SHT_RELA`, `SHT_REL`, `SHT_HASH`, `SHT_DYNAMIC`,
@@ -420,7 +422,7 @@ is written identically to that variant but does not compare equal to it;
 
 | variants (ELF name after `R_X86_64_`, number) |
 |---|
-| `None` (`NONE`, 0), `Abs64` (`64`, 1), `Pc32` (`PC32`, 2), `Plt32` (`PLT32`, 4), `GotPcrel` (`GOTPCREL`, 9), `Abs32` (`32`, 10), `Abs32S` (`32S`, 11), `Abs16` (`16`, 12), `Pc16` (`PC16`, 13), `Abs8` (`8`, 14), `Pc8` (`PC8`, 15), `DtpOff64` (`DTPOFF64`, 17), `TpOff64` (`TPOFF64`, 18), `TlsGd` (`TLSGD`, 19), `TlsLd` (`TLSLD`, 20), `DtpOff32` (`DTPOFF32`, 21), `GotTpOff` (`GOTTPOFF`, 22), `TpOff32` (`TPOFF32`, 23), `Pc64` (`PC64`, 24), `GotOff64` (`GOTOFF64`, 25), `GotPc32` (`GOTPC32`, 26), `GotPc32Tlsdesc` (`GOTPC32_TLSDESC`, 34), `TlsdescCall` (`TLSDESC_CALL`, 35), `GotPcrelX` (`GOTPCRELX`, 41), `RexGotPcrelX` (`REX_GOTPCRELX`, 42) |
+| `None` (`NONE`, 0), `Abs64` (`64`, 1), `Pc32` (`PC32`, 2), `Plt32` (`PLT32`, 4), `GotPcrel` (`GOTPCREL`, 9), `Abs32` (`32`, 10), `Abs32S` (`32S`, 11), `Abs16` (`16`, 12), `Pc16` (`PC16`, 13), `Abs8` (`8`, 14), `Pc8` (`PC8`, 15), `DtpOff64` (`DTPOFF64`, 17), `TpOff64` (`TPOFF64`, 18), `TlsGd` (`TLSGD`, 19), `TlsLd` (`TLSLD`, 20), `DtpOff32` (`DTPOFF32`, 21), `GotTpOff` (`GOTTPOFF`, 22), `TpOff32` (`TPOFF32`, 23), `Pc64` (`PC64`, 24), `GotOff64` (`GOTOFF64`, 25), `GotPc32` (`GOTPC32`, 26), `Got64` (`GOT64`, 27), `GotPcrel64` (`GOTPCREL64`, 28), `GotPc64` (`GOTPC64`, 29), `GotPlt64` (`GOTPLT64`, 30), `PltOff64` (`PLTOFF64`, 31), `GotPc32Tlsdesc` (`GOTPC32_TLSDESC`, 34), `TlsdescCall` (`TLSDESC_CALL`, 35), `GotPcrelX` (`GOTPCRELX`, 41), `RexGotPcrelX` (`REX_GOTPCRELX`, 42) |
 
 The writer does not interpret kinds: it does not know a relocation's width
 and does not check that the place lies inside the section, beyond

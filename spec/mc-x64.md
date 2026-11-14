@@ -652,11 +652,28 @@ symbol offset):
 | general-dynamic TLS: the `tls_index` and the call | `tls_gd_lea`, `tls_gd_call` | `R_X86_64_TLSGD`, `R_X86_64_PLT32` (against `__tls_get_addr`) |
 | local-dynamic TLS: the module's `tls_index` | `lea(Size::Q, Reg::Rdi, Mem::rip(0))` | `R_X86_64_TLSLD` |
 | TLS descriptor | `lea(Size::Q, Reg::Rax, Mem::rip(0))` | `R_X86_64_GOTPC32_TLSDESC` |
+| TLS descriptor: the call | `tlsdesc_call()` | `R_X86_64_TLSDESC_CALL` at the instruction's first byte, addend 0 (it marks the instruction; there is no field) |
 | offset of a variable in its module's TLS block | an absolute field | `R_X86_64_DTPOFF32` |
 | offset of a variable from the thread pointer | an absolute field | `R_X86_64_TPOFF32` |
 | absolute address in the low or high 2 GiB (non-PIC) | an absolute field: a `with_abs32` displacement, `mov_ri32s`, `mov_mi32s`, `push_i32` | `R_X86_64_32S` |
 | absolute address in the low 4 GiB (non-PIC) | `mov_ri32` | `R_X86_64_32` |
 | absolute 64-bit address (any code model) | `movabs_ri` | `R_X86_64_64` |
+
+The large code model (`spec/codegen.md` §5.6.36, WP-209) adds 64-bit
+fields only, each the `Abs64` immediate of `movabs_ri` at offset 2 with
+addend 0 plus the symbol offset:
+
+| reference | instruction | relocation |
+|---|---|---|
+| any symbol outside PIC, a call's callee included | `movabs_ri` | `R_X86_64_64` |
+| the GOT's distance from a `lea r, [rip - 7]` | `movabs_ri`, addend the immediate's distance from the `lea` (9) | `R_X86_64_GOTPC64` against `_GLOBAL_OFFSET_TABLE_` |
+| a dso-local symbol's offset from the GOT | `movabs_ri` | `R_X86_64_GOTOFF64` |
+| the offset of a symbol's GOT entry | `movabs_ri` | `R_X86_64_GOT64` |
+| `.eh_frame`'s and the LSDA's pointers (data, `hod_eh`) | an 8-byte field | `R_X86_64_PC64` |
+
+`R_X86_64_GOTPCREL64`, `R_X86_64_GOTPLT64` and `R_X86_64_PLTOFF64` are
+named in `hod_obj` and never written, as `llc` writes none at `-O0`.
+Thread-local references keep the table above.
 
 The code generator picks the relocation and gives it to the object writer
 (`spec/object.md` "Relocations"); this crate names only the place and the
@@ -677,11 +694,13 @@ above, at each instruction's site.
 | local dynamic | `lea(Size::Q, Reg::Rdi, Mem::rip(0))` (`TLSLD`), `call(0)` (`PLT32` against `__tls_get_addr`): 12 bytes; then any number of accesses `[rax + x@dtpoff]` through an absolute field (`DTPOFF32`) | `rax` = the module's TLS block |
 | initial exec | `mov_rm(Size::Q, r, Mem::rip(0))` or `add_rm(Size::Q, r, Mem::rip(0))` (`GOTTPOFF`), with the thread pointer `mov_rm(Size::Q, r, Mem::abs(0).with_seg(Seg::Fs))` | `r` = `x`'s offset from the thread pointer, or added to it |
 | local exec | the thread pointer as above, then `lea(Size::Q, r, Mem::base(r, 0).with_abs32())` (`TPOFF32`); or any access to `fs:[x@tpoff]`, `Mem::abs(0).with_seg(Seg::Fs).with_abs32()` (`TPOFF32`) | `&x`, or `x` itself |
+| TLS descriptor (`-enable-tlsdesc`) | `lea(Size::Q, Reg::Rax, Mem::rip(0))` (`GOTPC32_TLSDESC`), `tlsdesc_call()` (`TLSDESC_CALL`): 9 bytes, nothing between them; the linker rewrites the `lea` into `mov rax, imm32` or `mov rax, [rip + x@gottpoff]` and the call into a 2-byte `nop`; local dynamic names `_TLS_MODULE_BASE_` | `rax` = `x`'s offset from the thread pointer (only `rax` and the flags written) |
 
 | constructor | encodes |
 |---|---|
 | `tls_gd_lea()` | `data16 lea rdi, [rip + disp32]`: `66 48 8D 3D cd`, field at offset 4 |
 | `tls_gd_call()` | `data16 data16 rex64 call rel32`: `66 66 48 E8 cd`, field at offset 4 |
+| `tlsdesc_call()` | `call [rax]`: `FF 10`, no field (`site()` is `None`) |
 
 The `66` and `48` prefixes change nothing for these instructions; they
 pad the general-dynamic pair to the 16 bytes of the local-exec sequence
@@ -991,9 +1010,7 @@ with a register destination; `movabs` to and from the accumulator with a
 assembly" (the control and debug registers, `lgdt`, `invlpg`, ...); the
 memory-source `crc32`; a relocatable immediate other than those of "Relocatable
 immediates" (an `imm32` of an ALU instruction, for one); the `-fno-plt` general-dynamic call through
-the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`) and the
-descriptor call `call [rax]`, whose `R_X86_64_TLSDESC_CALL` marks an
-instruction rather than a field; the SSE instructions not listed in
+the GOT (`data16 rex64 call [rip + __tls_get_addr@GOTPCREL]`); the SSE instructions not listed in
 "Scalar floating point", "Packed SSE2" and the two sections above
 (SSSE3's `pshufb` and the other legacy SSSE3 forms, ...); MMX; the
 VEX-encoded instructions not listed under "VEX" (the gathers, `vzeroall`,

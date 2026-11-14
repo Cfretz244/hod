@@ -540,9 +540,12 @@ pub fn lsda_trip(
     if reverse {
         inputs.reverse();
     }
-    let mut lsdas =
-        write_lsdas(&mut obj, &inputs, LsdaOptions { function_sections, stubs: Some(data) })
-            .unwrap_or_else(|e| panic!("{label}: {e}"));
+    let mut lsdas = write_lsdas(
+        &mut obj,
+        &inputs,
+        LsdaOptions { function_sections, stubs: Some(data), large: false },
+    )
+    .unwrap_or_else(|e| panic!("{label}: {e}"));
     if reverse {
         lsdas.reverse();
     }

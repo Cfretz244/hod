@@ -1501,7 +1501,7 @@ everywhere.
   space too); the program's output must equal it byte for byte. Bytes that
   are not valid UTF-8 cannot be written.
 - `llc-args` is a list of words, each one of: `-code-model=<v>`,
-  `-data-sections`, `-debugger-tune=<v>`, `-fp-contract=<v>`,
+  `-data-sections`, `-debugger-tune=<v>`, `-enable-tlsdesc`, `-fp-contract=<v>`,
   `-function-sections`, `-mcpu=<v>`, `-x86-branches-within-32B-boundaries`,
   where `<v>` is letters, digits, `.`, `_`, `+` and `-`. These are what a
   compiler driver gives `llc` that change the code and name no file. The

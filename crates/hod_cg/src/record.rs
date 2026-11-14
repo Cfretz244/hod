@@ -26,6 +26,11 @@ pub struct Reloc {
     pub sym: SymRef,
     /// The addend.
     pub addend: i64,
+    /// Whether the field addresses the target of a call or tail call
+    /// although `kind` is not a branch relocation: the large code model's
+    /// `movabs` of a callee (WP-209). Such a reference goes to a local
+    /// copy as a branch does ([`crate::emit`]'s copies, §9.7.2).
+    pub branch: bool,
 }
 
 /// A DWARF call-frame instruction, as data (§9.3): `hod_eh`'s [`Op`](hod_eh::Op),

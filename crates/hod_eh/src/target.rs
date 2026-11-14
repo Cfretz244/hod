@@ -38,7 +38,8 @@ pub struct CfiTarget {
     pub personality_encoding: u8,
     /// The encoding of the LSDA pointer in an FDE.
     pub lsda_encoding: u8,
-    /// The relocation of an FDE's initial location (4 bytes, PC-relative).
+    /// The relocation of an FDE's initial location (PC-relative, of
+    /// [`CfiTarget::fde_size`] bytes).
     pub pc_reloc: RelocKind,
     /// The relocation of the personality and LSDA pointers.
     pub pointer_reloc: RelocKind,
@@ -73,6 +74,17 @@ pub const AARCH64: CfiTarget = CfiTarget {
     section_align: 8,
 };
 
+/// AArch64 Linux under the large code model (`spec/eh.md` §2.1, WP-209):
+/// as [`AARCH64`], the FDE's initial location and range 8 bytes
+/// (`DW_EH_PE_pcrel|sdata8`, `R_AARCH64_PREL64`), as `llc` 19 and 22
+/// write them outside PIC (`MCObjectFileInfo::initELFMCObjectFileInfo`);
+/// the personality and LSDA pointers are 8 bytes already.
+pub const AARCH64_LARGE: CfiTarget = CfiTarget {
+    fde_encoding: pe::PCREL | pe::SDATA8,
+    pc_reloc: RelocKind::A64(A64Reloc::Prel64),
+    ..AARCH64
+};
+
 /// x86-64 Linux: `rsp` is DWARF 7, the return address column is 16 (`rip`),
 /// and at entry the return address is at `CFA - 8` with `CFA = rsp + 8`.
 pub const X86_64: CfiTarget = CfiTarget {
@@ -92,10 +104,45 @@ pub const X86_64: CfiTarget = CfiTarget {
     section_align: 8,
 };
 
+/// x86-64 Linux under the large code model (`spec/eh.md` §2.1, WP-209):
+/// as [`X86_64`], every pointer 8 bytes (`DW_EH_PE_sdata8`, so that no
+/// field assumes the code within 2 GiB of `.eh_frame` or of
+/// `.gcc_except_table`): FDE locations and ranges, the personality, the
+/// LSDA and the type-info entries, relocated by `R_X86_64_PC64`. These
+/// are `llc`'s encodings for position-independent code under the large
+/// model (`MCObjectFileInfo::initELFMCObjectFileInfo`).
+pub const X86_64_LARGE: CfiTarget = CfiTarget {
+    fde_encoding: pe::PCREL | pe::SDATA8,
+    personality_encoding: pe::INDIRECT | pe::PCREL | pe::SDATA8,
+    lsda_encoding: pe::PCREL | pe::SDATA8,
+    pc_reloc: RelocKind::X64(X64Reloc::Pc64),
+    pointer_reloc: RelocKind::X64(X64Reloc::Pc64),
+    pointer_size: 8,
+    ..X86_64
+};
+
+impl CfiTarget {
+    /// The size of an FDE's initial location and range: 8 for
+    /// `DW_EH_PE_sdata8`, else 4.
+    pub const fn fde_size(&self) -> usize {
+        if self.fde_encoding & 0x0f == pe::SDATA8 { 8 } else { 4 }
+    }
+}
+
 /// The table for `arch`.
 pub const fn for_arch(arch: Arch) -> &'static CfiTarget {
     match arch {
         Arch::AArch64 => &AARCH64,
         Arch::X86_64 => &X86_64,
+    }
+}
+
+/// The table for `arch`, under the large code model when `large`
+/// ([`X86_64_LARGE`], [`AARCH64_LARGE`]).
+pub const fn for_model(arch: Arch, large: bool) -> &'static CfiTarget {
+    match arch {
+        Arch::X86_64 if large => &X86_64_LARGE,
+        Arch::AArch64 if large => &AARCH64_LARGE,
+        _ => for_arch(arch),
     }
 }
