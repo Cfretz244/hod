@@ -3356,7 +3356,7 @@ fn vsib_comparison_catches_mutations() {
             let (open, close) = vsib_brackets(l)?;
             if let Some(star) = l[open..close].find('*') {
                 let at = open + star - 1;
-                let to = match &l[at..at + 1] {
+                let to = match &l[at..=at] {
                     "1" => "2",
                     "2" => "4",
                     "4" => "8",

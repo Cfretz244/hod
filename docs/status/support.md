@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 967 | 361 | 11 | 595 | 727 | 10 | 230 |
-| total | 1293 | 582 | 59 | 652 | 951 | 61 | 281 |
+| `intrinsic` | 1015 | 361 | 11 | 643 | 775 | 10 | 230 |
+| total | 1341 | 582 | 59 | 700 | 999 | 61 | 281 |
 
 ## `module`
 
@@ -1498,6 +1498,54 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.mask.gather.dpd.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.dps.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.qpd.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.qps.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.dpq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.dpi.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.qpq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather.qpi.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div2.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div2.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div4.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div4.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div4.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div4.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div8.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3div8.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv2.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv2.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv4.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv4.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv4.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv4.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv8.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.gather3siv8.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.dpd.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.dps.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.qpd.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.qps.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.dpq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.dpi.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.qpq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatter.qpi.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv2.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv2.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv4.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv4.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv4.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv4.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv8.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scatterdiv8.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv2.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv2.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv4.df` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv4.di` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv4.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv4.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv8.sf` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
+| `intrinsic:llvm.x86.avx512.mask.scattersiv8.si` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-224) |
 
 ## Structural rules
 

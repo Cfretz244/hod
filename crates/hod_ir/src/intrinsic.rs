@@ -1214,57 +1214,21 @@ impl<'a> Intrinsic<'a> {
             | I::X86Avx2GatherQPs
             | I::X86Avx2GatherQPs256
             | I::X86Avx2GatherQPd
-            | I::X86Avx2GatherQPd256
-            | I::X86Avx512MaskGatherDpd512
-            | I::X86Avx512MaskGatherDps512
-            | I::X86Avx512MaskGatherQpd512
-            | I::X86Avx512MaskGatherQps512
-            | I::X86Avx512MaskGatherDpq512
-            | I::X86Avx512MaskGatherDpi512
-            | I::X86Avx512MaskGatherQpq512
-            | I::X86Avx512MaskGatherQpi512
-            | I::X86Avx512MaskGather3div2Df
-            | I::X86Avx512MaskGather3div2Di
-            | I::X86Avx512MaskGather3div4Df
-            | I::X86Avx512MaskGather3div4Di
-            | I::X86Avx512MaskGather3div4Sf
-            | I::X86Avx512MaskGather3div4Si
-            | I::X86Avx512MaskGather3div8Sf
-            | I::X86Avx512MaskGather3div8Si
-            | I::X86Avx512MaskGather3siv2Df
-            | I::X86Avx512MaskGather3siv2Di
-            | I::X86Avx512MaskGather3siv4Df
-            | I::X86Avx512MaskGather3siv4Di
-            | I::X86Avx512MaskGather3siv4Sf
-            | I::X86Avx512MaskGather3siv4Si
-            | I::X86Avx512MaskGather3siv8Sf
-            | I::X86Avx512MaskGather3siv8Si
-            | I::X86Avx512MaskScatterDpd512
-            | I::X86Avx512MaskScatterDps512
-            | I::X86Avx512MaskScatterQpd512
-            | I::X86Avx512MaskScatterQps512
-            | I::X86Avx512MaskScatterDpq512
-            | I::X86Avx512MaskScatterDpi512
-            | I::X86Avx512MaskScatterQpq512
-            | I::X86Avx512MaskScatterQpi512
-            | I::X86Avx512MaskScatterdiv2Df
-            | I::X86Avx512MaskScatterdiv2Di
-            | I::X86Avx512MaskScatterdiv4Df
-            | I::X86Avx512MaskScatterdiv4Di
-            | I::X86Avx512MaskScatterdiv4Sf
-            | I::X86Avx512MaskScatterdiv4Si
-            | I::X86Avx512MaskScatterdiv8Sf
-            | I::X86Avx512MaskScatterdiv8Si
-            | I::X86Avx512MaskScattersiv2Df
-            | I::X86Avx512MaskScattersiv2Di
-            | I::X86Avx512MaskScattersiv4Df
-            | I::X86Avx512MaskScattersiv4Di
-            | I::X86Avx512MaskScattersiv4Sf
-            | I::X86Avx512MaskScattersiv4Si
-            | I::X86Avx512MaskScattersiv8Sf
-            | I::X86Avx512MaskScattersiv8Si => &[4],
+            | I::X86Avx2GatherQPd256 => &[4],
+            // The AVX-512 gathers and scatters (WP-224): the scale.
+            _ if self.is_avx512_gather_or_scatter() => &[4],
             _ => &[],
         }
+    }
+
+    /// Whether this is one of the 48 AVX-512 gathers and scatters
+    /// (`llvm.x86.avx512.mask.gather*`, `.scatter*`; WP-224), a member of
+    /// the list (not `Other`).
+    fn is_avx512_gather_or_scatter(self) -> bool {
+        let name = self.name();
+        !matches!(self, Intrinsic::Other(_))
+            && (name.starts_with("llvm.x86.avx512.mask.gather")
+                || name.starts_with("llvm.x86.avx512.mask.scatter"))
     }
 
     /// Whether LLVM allows `invoke` of this intrinsic (§5.8): the

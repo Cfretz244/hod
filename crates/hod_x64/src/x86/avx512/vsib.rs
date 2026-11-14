@@ -311,17 +311,14 @@ fn lower<'a>(
         ValueKind::Const(id) => crate::mask::const_bits(cx, id, lanes),
         _ => None,
     };
-    match constant {
-        Some(c) => {
-            put(cx, mc::mov_ri(Size::D, R11, c as i64));
-            put(cx, mc::kmov_kr(Size::W, K1, R11));
-        }
-        None => {
-            let r = cx.use_reg(mask)?;
-            put(cx, mc::kmov_kr(Size::W, K1, gp(r)));
-            cx.release(mask);
-            cx.free_temp(r);
-        }
+    if let Some(c) = constant {
+        put(cx, mc::mov_ri(Size::D, R11, c as i64));
+        put(cx, mc::kmov_kr(Size::W, K1, R11));
+    } else {
+        let r = cx.use_reg(mask)?;
+        put(cx, mc::kmov_kr(Size::W, K1, gp(r)));
+        cx.release(mask);
+        cx.free_temp(r);
     }
     let zmm17 = zmm(17);
     let zmm18 = zmm(18);

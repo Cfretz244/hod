@@ -951,6 +951,7 @@ pub fn opmask(b: &mut Batch) {
 /// `r13`) and around the compressed displacement's `N` (the element's
 /// bytes). Refused: `k0` (also by `llvm-mc`), and a gather whose
 /// destination is its index (the processor faults; `llvm-mc` only warns).
+#[allow(clippy::too_many_lines, reason = "one sweep per family")]
 pub fn vsib(b: &mut Batch) {
     // No size keyword: LLVM 19 sizes the operand as the vector, LLVM 22
     // as an element; both take it without one.

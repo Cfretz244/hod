@@ -987,6 +987,7 @@ one, a rounding the member does not take, and masking on `VPSADBW`.
 | `estore_rr(op: EStore, vl, masking, dst, src)`, `estore_mr(op, vl, mask, m, src)` | `dst`/`m` in `ModRM.rm`: `VPMOVSQB`/`SQW`/`SQD`, `VPMOVUSDB`/`USQB`/`USQW`/`USQD`, `VPCOMPRESSD`/`Q`/`B`/`W`, `VCOMPRESSPS`/`PD` |
 | `emov_rr(op: EMov, vl, masking, dst, src)`, `emov_rm`, `emov_mr(op, vl, mask, m, src)` | `VMOVDQU8`/`16`/`32`/`64`, `VMOVUPS`/`PD` |
 | `evcvtps2ph_rri(vl, masking, dst, src, imm8)`, `evcvtps2ph_mri` | `VCVTPS2PH` `66 0F3A 1D` |
+| `egather(op: EGather, vl, k, dst, m: EVsib)`, `escatter(op: EScatter, vl, k, m, src)` (WP-224) | `op dst {k}, [base + index*scale + disp]`, `op [base + index*scale + disp] {k}, src`, map `0F38` `66`: `VPGATHERDD`/`DQ` `90` (W0/W1), `VPGATHERQD`/`QQ` `91`, `VGATHERDPS`/`DPD` `92`, `VGATHERQPS`/`QPD` `93`, `VPSCATTERDD`/`DQ` `A0`, `VPSCATTERQD`/`QQ` `A1`, `VSCATTERDPS`/`DPD` `A2`, `VSCATTERQPS`/`QPD` `A3`. A VSIB operand: always a `SIB` byte, the index a vector register (bit 3 in `X`, bit 4 in `V'`), `vvvv` 1111, `disp8*N` with `N` the element's bytes. `L'L` the wider operand (a `d` index with 64-bit elements is half the length; a `q` index with 32-bit elements moves half a register). Refused: `k0` (the mask is mandatory, `aaa` never 0), a gather whose `dst` is its index register (the processor's `#UD`; `llvm-mc` only warns); no `{z}` |
 | `kmov_kk(size, dst, src)`, `kmov_km`, `kmov_mk`, `kmov_kr`, `kmov_rk` | `KMOVB`/`W`/`D`/`Q` (`90`, `91`, `92`, `93`), VEX-encoded |
 | `k3_kkk(op: K3, size, dst, a, b)` | `KAND`, `KANDN`, `KOR`, `KXNOR`, `KXOR`, `KADD` `B`/`W`/`D`/`Q`; `KUNPCKBW`/`WD`/`DQ` (sizes `W`, `D`, `Q`; `mnemonic(size)` is `None` for `B`, which the checked form refuses) |
 | `k2_kk(op: K2, size, a, b)` | `KNOT`, `KORTEST`, `KTEST` |
@@ -996,7 +997,14 @@ LLVM's assembler chooses VEX for a vector instruction that has a VEX form
 and no EVEX-only operand; the sweeps write `{evex}` before every vector
 line (never before an opmask line, where it would ask for the APX form).
 The tests are `tests/l1/evex.rs`, groups `evex`, `evex-memory-operands`
-(the `disp8*N` boundaries of every tuple) and `opmask`.
+(the `disp8*N` boundaries of every tuple), `opmask` and `evex-vsib`
+(WP-224: every gather and scatter at each length, data and index
+registers over `0`, `7`, `8`, `15`, `16`, `23`, `24`, `31` at every scale,
+`k1`..`k7`, bases `rax`, `rsp`, `rbp`, `rdi`, `r8`, `r12`, `r13`, `r15`
+with the `disp8*N` boundaries and `disp32`; `k0` and a gather's
+destination equal to its index refused, the first confirmed by
+`llvm-mc`). As for `vex-gathers`, the VSIB text has no size keyword
+(LLVM 22 prints an element's, 19 the register's).
 
 ## Not provided
 
