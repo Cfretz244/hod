@@ -14,14 +14,18 @@ Host: aarch64.
 | abseil | O0g | 413 | 413 | 413 | 0 | 0 | ok | ok | 230/232 | 231/232 | 231/232 | hod: 1 better; strict: 1 better | `hod-7b127f48` |
 | re2 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `hod-77f1f69` |
 | re2 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same | `hod-77f1f69` |
-| protobuf | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 4/4 | 4/4 | same | `hod` |
+| benchmark | O0 | 73 | 73 | 73 | 0 | 0 | ok | ok | 83/84 | 83/84 | 83/84 | same | `hod-7b127f48` |
+| benchmark | O0g | 73 | 73 | 73 | 0 | 0 | ok | ok | 83/84 | 83/84 | 83/84 | same | `hod-7b127f48` |
+| protobuf | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 4/4 | 4/4 | same | `hod-7b127f48` |
 | protobuf | O0g | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 3/4 | 4/4 | same (rerun, note 3) | `hod-77f1f69` |
 | spdlog | O0 | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | spdlog | O0g | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
+| catch2 | O0 | 167 | 167 | 167 | 0 | 0 | ok | ok | 81/81 | 81/81 | 81/81 | same | `hod-7b127f48` |
+| catch2 | O0g | 167 | 167 | 167 | 0 | 0 | ok | ok | 81/81 | 81/81 | 81/81 | same | `hod-7b127f48` |
 | yaml_cpp | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | yaml_cpp | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | glog | O0 | 23 | 47 | 45 | 0 | 0 | ok | ok | 22/24 | 22/24 | 22/24 | same | `hod-77f1f69` |
-| glog | O0g | 23 | 47 | 45 | 0 | 0 | ok | ok | 23/24 | 22/24 | 22/24 | hod: 1 worse (logging (note 4)); strict: 1 worse (logging (note 5)) | `hod-7b127f48` |
+| glog | O0g | 23 | 47 | 45 | 0 | 0 | ok | ok | 23/24 | 23/24 | 23/24 | same | `hod-7b127f48` |
 | leveldb | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `hod-77f1f69` |
 | leveldb | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same | `hod-77f1f69` |
 | cli11 | O0 | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same | `hod-77f1f69` |
@@ -34,8 +38,6 @@ Notes:
 1. abseil O0 hod: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
 2. abseil O0 strict: `absl_strerror_test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
 3. protobuf O0g hod: `full-test` failed in the build's test run and passed 3 of 3 reruns under the same memory cap (`MALLOC_ARENA_MAX` 4).
-4. glog O0g hod: `logging` passed 0 of 6 reruns.
-5. glog O0g strict: `logging` passed 0 of 3 reruns.
 
 ## Refusal census (hybrid builds)
 
