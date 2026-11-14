@@ -1383,6 +1383,7 @@ mod dataflow {
 /// The AVX-512 families of a name: the feature of clang's header
 /// function (with `avx512vl` too for a 128- or 256-bit form).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[allow(clippy::upper_case_acronyms)] // The features' own spellings.
 enum Fam {
     F,
     BW,
@@ -2013,10 +2014,12 @@ fn cases_of(row: usize) -> Vec<Case> {
             }
             'e' => (8..=11).for_each(|v| other(Arg::Const(v))),
             's' => [8, 12].into_iter().for_each(|v| other(Arg::Const(v))),
-            // An `i8` immediate (`vgf2p8affineqb`, `vpclmulqdq`) each
-            // selection of `vpclmulqdq`'s halves.
+            // An `i8` immediate (`vgf2p8affineqb`, `vpclmulqdq`): each
+            // selection of `vpclmulqdq`'s halves, and all bits set.
             'i' if params[j] == "i8" => {
-                [0, 0x01, 0x10, 0x11, -1].into_iter().for_each(|v| other(Arg::Const(v)));
+                for v in [0, 0x01, 0x10, 0x11, -1] {
+                    other(Arg::Const(v));
+                }
             }
             'i' => [0, 0xff, 0x1a5].into_iter().for_each(|v| other(Arg::Const(v))),
             'c' => {
@@ -2660,12 +2663,9 @@ fn avx512_driver(cases: &[Case]) -> String {
             DQ => 8,
             VBMI2 => 4 | 16,
             VBMI => 4 | 32,
-            GFNI => 64,
-            VAES => 128,
-            VPCLMUL => 256,
-            Vex("gfni") => 64,
-            Vex("vaes") => 128,
-            Vex(_) => 256,
+            GFNI | Vex("gfni") => 64,
+            VAES | Vex("vaes") => 128,
+            VPCLMUL | Vex(_) => 256,
             BF16 => 4 | 512,
             FP16 => 2 | 4 | 8 | 1024,
         };
