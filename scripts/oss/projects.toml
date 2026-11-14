@@ -418,3 +418,18 @@ test_timeout = 10800
 # each): under 3 GB c_test cannot start its threads, in the control too.
 test_vmem_kb = 16000000
 notes = "WP-211. The static library (all of RocksDB: LSM tree, memtables, block-based tables, caches, filters, compaction) and 40 of its ~220 test programs (unit tests of the util/, memory/, table/, cache/ and options/ layers, and the DB-level db_basic_test, db_iterator_test, db_properties_test, comparator_db_test, merge_test), each program run once as one test; c_test is C through kiln-cc. No compression libraries (not on the machine), no tools; PORTABLE=1 (no -march=native; AArch64 still gets +crc+crypto)."
+
+[cmake]
+url = "https://github.com/Kitware/CMake"
+tag = "v4.5.0"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+configure = ["-DBUILD_TESTING=ON", "-DCMAKE_USE_OPENSSL=OFF", "-DBUILD_CursesDialog=OFF", "-DBUILD_QtDialog=OFF", "-DCMAKE_USE_SYSTEM_LIBRARIES=OFF"]
+# The unit tests (CMakeLib.*: one program, CMakeLibTests; kwsys.*), and the
+# RunCMake script tests of the language's commands, which run the built
+# cmake and ctest (try_compile and ctest_test also compile and run small
+# projects with the configured compilers, through the lane's wrappers).
+test = "ctest --output-on-failure -j4 -R '^(CMakeLib\\.|kwsys\\.|RunCMake\\.(string|list|math|if|while|foreach|function|block|set|configure_file|cmake_language|cmake_parse_arguments|get_property|set_property|separate_arguments|message|return|try_compile|CommandLine|CTestCommandLine|ctest_test|cmake_path)$)'"
+test_timeout = 7200
+notes = "WP-211. CMake itself (cmake, ctest, cpack and the CMakeLib unit tests) with its bundled C libraries (curl without TLS, libarchive, zlib, zstd, liblzma, bzip2, nghttp2, expat, libuv: C through kiln-cc) and C++ ones (jsoncpp, cppdap); configured by the system cmake (no bootstrap). Tests: CMakeLib.*, kwsys.* and 24 RunCMake command suites (string, list, math, if, ... try_compile, ctest_test, cmake_path)."
