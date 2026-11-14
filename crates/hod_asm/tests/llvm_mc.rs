@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 
 use hod_asm::Refusal;
-use hod_asm::a64::{Code, Features, assemble};
+use hod_asm::a64::{Code, Features, RefKind, assemble};
 use hod_testutil::{Scratch, run, tool};
 
 const ALL: Features = Features { lse: true, crc: true, fp: true, rand: true };
@@ -282,6 +282,73 @@ const ACCEPTED: &[&str] = &[
     "svc 0x80",
     "brk #0x3e8",
     "udf #1",
+    "hlt #0",
+    "hlt #0xffff",
+    "HLT #0x3e8",
+    "xpaclri",
+    // Prefetch (§16): every named operation, `#imm5`, every addressing form.
+    "prfm pldl1keep, [x0]",
+    "prfm pldl1strm, [x1]",
+    "prfm pldl2keep, [x2]",
+    "prfm pldl2strm, [x3]",
+    "prfm pldl3keep, [x4]",
+    "prfm pldl3strm, [x5]",
+    "prfm pldslckeep, [x6]",
+    "prfm pldslcstrm, [x7]",
+    "prfm plil1keep, [x8]",
+    "prfm plil1strm, [x9]",
+    "prfm plil2keep, [x10]",
+    "prfm plil2strm, [x11]",
+    "prfm plil3keep, [x12]",
+    "prfm plil3strm, [x13]",
+    "prfm plislckeep, [x14]",
+    "prfm plislcstrm, [x15]",
+    "prfm pstl1keep, [x16]",
+    "prfm pstl1strm, [x17]",
+    "prfm pstl2keep, [x18]",
+    "prfm pstl2strm, [x19]",
+    "prfm pstl3keep, [x20]",
+    "prfm pstl3strm, [x21]",
+    "prfm pstslckeep, [x22]",
+    "prfm pstslcstrm, [x23]",
+    "prfm #0, [x0]",
+    "prfm #6, [x0]",
+    "prfm #24, [x0]",
+    "prfm #31, [x30]",
+    "prfm 5, [x0]",
+    "prfm #0x1f, [x0]",
+    "prfm #(2 + 3), [x0]",
+    "PRFM PLDL1KEEP, [x8,1024]",
+    "Prfm PldL1Keep, [X0]",
+    "prfm pldl1keep, [x0, #0]",
+    "prfm pldl1keep, [x0, #8]",
+    "prfm pldl1keep, [x0, 8]",
+    "prfm pldl1keep,[x0,#16]",
+    "prfm pstl2strm, [sp, #8]",
+    "prfm pldl1keep, [x0, #32760]",
+    "prfm pldl1keep, [x0, x1]",
+    "prfm pldl1keep, [x0, x1, lsl #3]",
+    "prfm pldl1keep, [x0, x1, lsl #0]",
+    "prfm pldl1keep, [x0, xzr]",
+    "prfm pldl1keep, [sp, x30, lsl #3]",
+    "prfm pldl1keep, [x0, w1, uxtw]",
+    "prfm pldl1keep, [x0, w1, uxtw #0]",
+    "prfm pldl1keep, [x0, w1, uxtw #3]",
+    "prfm pldl1keep, [x0, w1, sxtw]",
+    "prfm pldl1keep, [x0, w1, sxtw #0]",
+    "prfm pldl1keep, [x0, w1, sxtw #3]",
+    "prfm pldl1keep, [x0, x1, sxtx]",
+    "prfm pldl1keep, [x0, x1, sxtx #0]",
+    "prfm pldl1keep, [x0, x1, sxtx #3]",
+    "prfm pldl1keep, [x0, wzr, uxtw #3]",
+    "1: prfm pldl1keep, 1b",
+    "prfm pstl3strm, 1f\nnop\n1:",
+    "prfum pldl1keep, [x0]",
+    "prfum pldl1keep, [x0, #-256]",
+    "prfum pldl1keep, [x0, #255]",
+    "prfum pldl1keep, [x0, #8]",
+    "prfum #7, [sp, #-1]",
+    "PRFUM PSTL1STRM, [x3, #-8]",
     "mrs x0, tpidr_el0",
     "mrs x1, cntvct_el0",
     "mrs x0, nzcv",
@@ -359,8 +426,30 @@ const ACCEPTED: &[&str] = &[
 /// Bodies refused, with the refusal.
 const REFUSED: &[(&str, &str)] = &[
     ("frob x0", "asm:mnemonic/frob"),
-    ("prfm pldl1keep, [x0]", "asm:mnemonic/prfm"),
-    ("hlt #0", "asm:mnemonic/hlt"),
+    ("prfm pldl4keep, [x0]", "asm:operand/option"),
+    ("prfm x0, [x1]", "asm:operand/option"),
+    ("prfm #32, [x0]", "asm:operand/range"),
+    ("prfm #-1, [x0]", "asm:operand/range"),
+    ("prfm pldl1keep, [x0, #32768]", "asm:operand/range"),
+    ("prfm pldl1keep, [x0, #-257]", "asm:operand/range"),
+    ("prfm pldl1keep, [x0, #257]", "asm:operand/range"),
+    ("prfm pldl1keep, [x0, x1, lsl #2]", "asm:operand/range"),
+    ("prfm pldl1keep, [x0, w1]", "asm:operand/register"),
+    ("prfm pldl1keep, [x0, x1, uxtw]", "asm:operand/register"),
+    ("prfm pldl1keep, [x0, sp]", "asm:operand/register"),
+    ("prfm pldl1keep, [w0]", "asm:operand/register"),
+    ("prfm pldl1keep, [x0, #8]!", "asm:operand/form"),
+    ("prfm pldl1keep, [x0], #8", "asm:operand/form"),
+    ("prfm pldl1keep", "asm:operand/form"),
+    ("prfm pldl1keep, #8", "asm:operand/symbol"),
+    ("prfm pldl1keep, =0x10", "asm:operand/literal-pool"),
+    ("prfm pldl1keep, [x0, #:lo12:sym]", "asm:operand/specifier"),
+    ("prfum pldl1keep, [x0, #256]", "asm:operand/range"),
+    ("prfum pldl1keep, [x0, x1]", "asm:operand/form"),
+    ("prfum pldl1keep, [x0, #-8]!", "asm:operand/form"),
+    ("prfum pldl1keep, 1f\n1:", "asm:operand/form"),
+    ("hlt #0x10000", "asm:operand/range"),
+    ("xpaclri x0", "asm:operand/form"),
     ("add v0.4s, v1.4s, v2.4s", "asm:operand/register"),
     ("fadd v0.4s, v1.4s, v2.4s", "asm:operand/vector"),
     ("ld1 {v0.16b}, [x0]", "asm:mnemonic/ld1"),
@@ -399,6 +488,12 @@ fn hod(body: &str, features: Features) -> Result<Vec<u32>, Refusal> {
 
 /// The words of `.text` of `source` as `llvm-mc-<major>` assembles it.
 fn llvm(major: u32, source: &str, scratch: &Scratch) -> Option<Vec<u32>> {
+    let words = llvm_try(major, source, scratch)?;
+    Some(words.unwrap_or_else(|e| panic!("llvm-mc-{major} refused the accepted bodies:\n{e}")))
+}
+
+/// As [`llvm`], with `llvm-mc`'s error text when it refuses `source`.
+fn llvm_try(major: u32, source: &str, scratch: &Scratch) -> Option<Result<Vec<u32>, String>> {
     let mc = tool(&format!("llvm-mc-{major}"))?;
     let objcopy = tool(&format!("llvm-objcopy-{major}"))?;
     let src = scratch.write(&format!("all-{major}.s"), source);
@@ -415,7 +510,9 @@ fn llvm(major: u32, source: &str, scratch: &Scratch) -> Option<Vec<u32>> {
             src.as_os_str(),
         ],
     );
-    assert!(out.success(), "llvm-mc-{major} refused the accepted bodies:\n{}", out.stderr_text());
+    if !out.success() {
+        return Some(Err(out.stderr_text()));
+    }
     let out = run(
         &objcopy,
         [
@@ -428,7 +525,45 @@ fn llvm(major: u32, source: &str, scratch: &Scratch) -> Option<Vec<u32>> {
     );
     assert!(out.success(), "llvm-objcopy failed: {}", out.stderr_text());
     let bytes = std::fs::read(&bin).expect("objcopy output");
-    Some(bytes.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
+    Some(Ok(bytes.chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()))
+}
+
+/// `prfm` with an offset only the unscaled form takes (§16): LLVM 22's
+/// assembler writes `prfum`, LLVM 19's rejects the text. hod writes
+/// LLVM 22's word (kiln's LLVM).
+const ACCEPTED_22: &[&str] = &[
+    "prfm pldl1keep, [x0, #-8]",
+    "prfm pldl1keep, [x0, #4]",
+    "prfm pldl1keep, [x0, #255]",
+    "prfm pldl1keep, [x0, #-256]",
+    "prfm pstl1strm, [sp, #1]",
+    "PRFM PLIL2KEEP, [x9,-128]",
+];
+
+#[test]
+fn unscaled_prfm_is_llvm_22_s_prfum() {
+    let scratch = Scratch::new("hod-asm-mc-prfum");
+    for body in ACCEPTED_22 {
+        let ours = hod(body, ALL).unwrap_or_else(|e| panic!("{body:?} refused: {e}"));
+        let unscaled = body.to_ascii_lowercase().replacen("prfm", "prfum", 1);
+        assert_eq!(hod(&unscaled, ALL), Ok(ours.clone()), "{body:?} is its prfum");
+        if let Some(theirs) = llvm_try(22, body, &scratch) {
+            assert_eq!(theirs.as_ref(), Ok(&ours), "{body:?}: llvm-mc-22");
+        }
+        if let Some(theirs) = llvm_try(19, body, &scratch) {
+            assert!(theirs.is_err(), "{body:?}: llvm-mc-19 now accepts it: {theirs:08x?}");
+        }
+    }
+}
+
+/// `prfm <op>, <symbol>`: the literal form, a reference for the caller.
+#[test]
+fn prfm_of_a_symbol_is_a_literal_reference() {
+    let mut code = Code::default();
+    assemble("prfm pldl2keep, sym + 8", ALL, &mut code, &mut String::new()).expect("assembled");
+    assert_eq!(code.words, [0xd800_0002]);
+    let [r] = &code.refs[..] else { panic!("one reference: {:?}", code.refs) };
+    assert_eq!((r.offset, r.kind, &*r.name, r.addend), (0, RefKind::Literal19, "sym", 8));
 }
 
 #[test]

@@ -12,6 +12,7 @@
 
 pub mod encode;
 pub mod operand;
+pub mod prefetch;
 pub mod sysreg;
 
 use hod_mc_a64::Fixup;
