@@ -433,3 +433,16 @@ configure = ["-DBUILD_TESTING=ON", "-DCMAKE_USE_OPENSSL=OFF", "-DBUILD_CursesDia
 test = "ctest --output-on-failure -j4 -R '^(CMakeLib\\.|kwsys\\.|RunCMake\\.(string|list|math|if|while|foreach|function|block|set|configure_file|cmake_language|cmake_parse_arguments|get_property|set_property|separate_arguments|message|return|try_compile|CommandLine|CTestCommandLine|ctest_test|cmake_path)$)'"
 test_timeout = 7200
 notes = "WP-211. CMake itself (cmake, ctest, cpack and the CMakeLib unit tests) with its bundled C libraries (curl without TLS, libarchive, zlib, zstd, liblzma, bzip2, nghttp2, expat, libuv: C through kiln-cc) and C++ ones (jsoncpp, cppdap); configured by the system cmake (no bootstrap). Tests: CMakeLib.*, kwsys.* and 24 RunCMake command suites (string, list, math, if, ... try_compile, ctest_test, cmake_path)."
+
+[opencv]
+url = "https://github.com/opencv/opencv"
+tag = "4.14.0"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+configure = ["-DBUILD_LIST=core,imgproc,ts", "-DBUILD_TESTS=ON", "-DBUILD_PERF_TESTS=OFF", "-DBUILD_EXAMPLES=OFF", "-DBUILD_opencv_apps=OFF", "-DBUILD_DOCS=OFF", "-DBUILD_JAVA=OFF", "-DBUILD_opencv_python3=OFF", "-DBUILD_ZLIB=ON", "-DWITH_IPP=OFF", "-DWITH_ITT=OFF", "-DWITH_OPENCL=OFF", "-DWITH_LAPACK=OFF", "-DWITH_EIGEN=OFF", "-DWITH_PROTOBUF=OFF", "-DWITH_KLEIDICV=OFF", "-DWITH_OPENMP=OFF", "-DWITH_TBB=OFF", "-DWITH_VA=OFF", "-DWITH_GTK=OFF", "-DWITH_QT=OFF", "-DWITH_FFMPEG=OFF", "-DWITH_GSTREAMER=OFF", "-DWITH_V4L=OFF", "-DWITH_ADE=OFF", "-DOPENCV_GENERATE_PKGCONFIG=OFF"]
+# OPENCV_TEST_DATA_PATH is not set (opencv_extra is not fetched): the tests
+# that need its data are skipped by the suite itself.
+test = "ctest --output-on-failure --timeout 9000"
+test_timeout = 10800
+notes = "WP-211. opencv_core and opencv_imgproc (with opencv_ts and the bundled zlib, C through kiln-cc), their accuracy tests opencv_test_core and opencv_test_imgproc. Natively NEON (and NEON_DOTPROD/FP16 dispatch where the CPU dispatch list has them); on x86-64 the dispatched files are compiled once per target (SSE2 .. AVX2, AVX-512) and dispatched at run time. No IPP, OpenCL, KleidiCV, Eigen, LAPACK (no downloads)."
