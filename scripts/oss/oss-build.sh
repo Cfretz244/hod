@@ -55,7 +55,8 @@
 # default `kiln` beside kiln++), KILN_RESOURCE_DIR (default
 # <workspace>/kiln/resource when it exists), HOD_OSS_HOD (hod; default
 # $CARGO_TARGET_DIR/release/hod), HOD_OSS_ROOT (default <build root>/oss),
-# KILN_OSS_VMEM_KB (the cap, default the row's vmem_kb).
+# KILN_OSS_VMEM_KB (the cap, default the row's vmem_kb; the tests' is the
+# row's test_vmem_kb unless KILN_OSS_VMEM_KB is set).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -192,7 +193,10 @@ mkdir -p "$OSS/src" "$BUILD"
 P_TEST="${P_TEST//@SRC@/$SRC}"
 export KILN_OSS_LOG="$BUILD/compile.jsonl"
 export KILN_OSS_VMEM_KB="${KILN_OSS_VMEM_KB:-$P_VMEM_KB}"
-TEST_VMEM_KB="$KILN_OSS_VMEM_KB"
+# The tests: the row's test_vmem_kb (default its vmem_kb), or
+# KILN_OSS_VMEM_KB when that is set to override the row.
+TEST_VMEM_KB="$P_TEST_VMEM_KB"
+[ "$KILN_OSS_VMEM_KB" = "$P_VMEM_KB" ] || TEST_VMEM_KB="$KILN_OSS_VMEM_KB"
 if [ "$TARGET" != aarch64 ]; then
   P_TEST_TIMEOUT=$((P_TEST_TIMEOUT * ${HOD_OSS_X64_TEST_SLOWDOWN:-4}))
   # Under qemu every guest thread is a host thread whose stack counts

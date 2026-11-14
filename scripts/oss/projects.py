@@ -35,6 +35,10 @@ FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
 # cross-built and its tests run under qemu (WP-191).
 TARGETS = ("aarch64", "x86_64")
 VMEM_MAX_KB = 6000000
+# The test step's cap may go higher (a test that reserves address space
+# it never touches: mold reserves 8 GiB for its output), as the x86-64
+# lane's does.
+TEST_VMEM_MAX_KB = 16000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
@@ -69,6 +73,9 @@ def load(path=TOML):
         p.setdefault("vmem_kb", 3000000)
         if not (isinstance(p["vmem_kb"], int) and 0 < p["vmem_kb"] <= VMEM_MAX_KB):
             raise SystemExit(f"{path}: [{name}] vmem_kb must be an integer in 1..{VMEM_MAX_KB}")
+        p.setdefault("test_vmem_kb", p["vmem_kb"])
+        if not (isinstance(p["test_vmem_kb"], int) and 0 < p["test_vmem_kb"] <= TEST_VMEM_MAX_KB):
+            raise SystemExit(f"{path}: [{name}] test_vmem_kb must be an integer in 1..{TEST_VMEM_MAX_KB}")
         if not (isinstance(p["test_timeout"], int) and p["test_timeout"] > 0):
             raise SystemExit(f"{path}: [{name}] test_timeout must be a positive integer")
     for name, p in data.items():
@@ -349,7 +356,7 @@ def main():
             sys.exit(f"projects.py: unknown project '{a.project}' (see {TOML})")
         p = data[a.project]
         q = shlex.quote
-        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb"):
+        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb", "test_vmem_kb"):
             print(f"P_{k.upper()}={q(str(p[k]))}")
         print(f"P_SUBMODULES={'1' if p['submodules'] else ''}")
         print("P_CONFIGURE=(" + " ".join(q(x) for x in p["configure"]) + ")")
