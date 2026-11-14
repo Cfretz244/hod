@@ -16,6 +16,7 @@ mod linking;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -120,9 +121,9 @@ fn module_text(body: &str, mode: Mode, debug: bool) -> String {
         hod_ir::X86_64_LINUX_DATA_LAYOUT
     );
     let ids: Vec<String> = (0..flags.len()).map(|i| format!("!{}", 900 + i)).collect();
-    text.push_str(&format!("!llvm.module.flags = !{{{}}}\n", ids.join(", ")));
+    let _ = writeln!(text, "!llvm.module.flags = !{{{}}}", ids.join(", "));
     for (id, flag) in ids.iter().zip(&flags) {
-        text.push_str(&format!("{id} = {flag}\n"));
+        let _ = writeln!(text, "{id} = {flag}");
     }
     text
 }
@@ -233,7 +234,7 @@ fn relocation_types(object: &Path) -> Option<BTreeMap<String, BTreeSet<String>>>
     let mut section = String::new();
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("Relocation section '.rela") {
-            section = rest.split('\'').next().unwrap_or_default().to_owned();
+            rest.split('\'').next().unwrap_or_default().clone_into(&mut section);
             continue;
         }
         if let Some(kind) = line.split_whitespace().nth(2).filter(|k| k.starts_with("R_X86_64_")) {
@@ -383,9 +384,8 @@ fn apart(a: u64, b: u64) -> u64 {
 /// data each more than 4 GiB from the others.
 fn check_far_layout(program: &Path, label: &str, mode: Mode) {
     let Some(found) = sections(program) else { return };
-    let at = |name: &str| {
-        found.get(name).map(|s| s.address).unwrap_or_else(|| panic!("{label}: no {name}"))
-    };
+    let at =
+        |name: &str| found.get(name).map_or_else(|| panic!("{label}: no {name}"), |s| s.address);
     let code = at(".ltext");
     let mut far = vec![(".ldata", at(".ldata")), (".lbss", at(".lbss"))];
     if label != "mold" {
@@ -506,21 +506,20 @@ fn runs_with_code_got_and_data_far_apart() {
                     check_far_layout(&output, &link.label, mode);
                     let size = std::fs::metadata(&output).unwrap().len();
                     assert!(size < 1 << 20, "{}: {size} bytes: gaps became content", link.label);
-                    if debug && who == Who::Hod {
-                        if let Some(dwarfdump) = &dwarfdump {
-                            let verify =
-                                output_of(dwarfdump, &["--verify".as_ref(), output.as_os_str()]);
-                            assert!(verify.contains("No errors."), "{}: {verify}", link.label);
-                            let lines = output_of(
-                                dwarfdump,
-                                &["--debug-line".as_ref(), output.as_os_str()],
-                            );
-                            let code = sections(&output).unwrap()[".ltext"].address;
-                            let rows = line_addresses(&lines);
-                            assert!(!rows.is_empty(), "{}: no line rows", link.label);
-                            for row in rows {
-                                assert!(row >= code, "{}: a line row at {row:#x}", link.label);
-                            }
+                    if debug
+                        && who == Who::Hod
+                        && let Some(dwarfdump) = &dwarfdump
+                    {
+                        let verify =
+                            output_of(dwarfdump, &["--verify".as_ref(), output.as_os_str()]);
+                        assert!(verify.contains("No errors."), "{}: {verify}", link.label);
+                        let lines =
+                            output_of(dwarfdump, &["--debug-line".as_ref(), output.as_os_str()]);
+                        let code = sections(&output).unwrap()[".ltext"].address;
+                        let rows = line_addresses(&lines);
+                        assert!(!rows.is_empty(), "{}: no line rows", link.label);
+                        for row in rows {
+                            assert!(row >= code, "{}: a line row at {row:#x}", link.label);
                         }
                     }
                     std::fs::remove_file(&output).unwrap();

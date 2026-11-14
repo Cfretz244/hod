@@ -663,13 +663,13 @@ fn far_access(cx: &FnCx<'_, X64>, target: SymRef) -> Far {
 /// (as [`add_addend`]).
 ///
 /// - Outside PIC: `movabs rd, target + addend` (`R_X86_64_64`).
-/// - PIC: the GOT's address first, as `llc` computes it, `lea rd, [rip -
-///   7]` (the `lea`'s own address) then `movabs t, _GLOBAL_OFFSET_TABLE_
-///   - lea` (`R_X86_64_GOTPC64`, addend the immediate's distance from the
-///   `lea`) and `lea rd, [rd + t]`; then `movabs t, target@GOTOFF +
-///   addend` (`R_X86_64_GOTOFF64`) and `lea rd, [rd + t]`, or `movabs t,
-///   target@GOT` (`R_X86_64_GOT64`), `mov rd, [rd + t]` and the addend
-///   added. `t` is the general scratch register other than `rd`, saved
+/// - PIC: the GOT's address first, as `llc` computes it:
+///   `lea rd, [rip - 7]` (the `lea`'s own address), then
+///   `movabs t, _GLOBAL_OFFSET_TABLE_ - lea` (`R_X86_64_GOTPC64`, addend
+///   the immediate's distance from the `lea`) and `lea rd, [rd + t]`;
+///   then `movabs t, target@GOTOFF + addend` (`R_X86_64_GOTOFF64`) and
+///   `lea rd, [rd + t]`, or `movabs t, target@GOT` (`R_X86_64_GOT64`),
+///   `mov rd, [rd + t]` and the addend added. `t` is the general scratch register other than `rd`, saved
 ///   around the sequence by `push`/`pop` (nothing lives below `rsp`).
 ///
 /// # Errors
