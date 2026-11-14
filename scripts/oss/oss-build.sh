@@ -153,8 +153,10 @@ rm -f "$BUILD/report.json" "$BUILD/configure.log" "$BUILD/build.log" "$BUILD/tes
 [ ! -d "$BUILD/declined" ] || find "$BUILD/declined" -mindepth 1 -delete
 
 if [ -d "$SRC/.git" ]; then
+  # Compare commits: a commit can carry several tags (protobuf's v33.1 is
+  # also v4.33.1-objectivec), and describe names any one of them.
   have="$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || echo '?')"
-  [ "$have" = "$P_TAG" ] || echo "oss-build: warning: $SRC is at '$have', the toml pins '$P_TAG' (delete the checkout to refetch)" >&2
+  [ "$(git -C "$SRC" rev-parse -q --verify HEAD 2>/dev/null)" = "$(git -C "$SRC" rev-parse -q --verify "$P_TAG^{commit}" 2>/dev/null)" ] || echo "oss-build: warning: $SRC is at '$have', the toml pins '$P_TAG' (delete the checkout to refetch)" >&2
 else
   sub=()
   [ -n "$P_SUBMODULES" ] && sub=(--recurse-submodules --shallow-submodules)
