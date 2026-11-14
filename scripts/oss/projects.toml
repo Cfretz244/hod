@@ -424,7 +424,10 @@ url = "https://github.com/Kitware/CMake"
 tag = "v4.5.0"
 build = "cmake"
 cxx_std = 17
-c = "kiln"
+# C through clang-19: kiln's C driver rejects a typedef name that is also a
+# struct tag (bundled curl's lib/cf-h1-proxy.c, h1_tunnel_state), and CMake
+# forces curl's proxy support on; every other bundled C TU took kiln.
+c = "clang"
 configure = ["-DBUILD_TESTING=ON", "-DCMAKE_USE_OPENSSL=OFF", "-DBUILD_CursesDialog=OFF", "-DBUILD_QtDialog=OFF", "-DCMAKE_USE_SYSTEM_LIBRARIES=OFF"]
 # The unit tests (CMakeLib.*: one program, CMakeLibTests; kwsys.*), and the
 # RunCMake script tests of the language's commands, which run the built
@@ -432,7 +435,7 @@ configure = ["-DBUILD_TESTING=ON", "-DCMAKE_USE_OPENSSL=OFF", "-DBUILD_CursesDia
 # projects with the configured compilers, through the lane's wrappers).
 test = "ctest --output-on-failure -j4 -R '^(CMakeLib\\.|kwsys\\.|RunCMake\\.(string|list|math|if|while|foreach|function|block|set|configure_file|cmake_language|cmake_parse_arguments|get_property|set_property|separate_arguments|message|return|try_compile|CommandLine|CTestCommandLine|ctest_test|cmake_path)$)'"
 test_timeout = 7200
-notes = "WP-211. CMake itself (cmake, ctest, cpack and the CMakeLib unit tests) with its bundled C libraries (curl without TLS, libarchive, zlib, zstd, liblzma, bzip2, nghttp2, expat, libuv: C through kiln-cc) and C++ ones (jsoncpp, cppdap); configured by the system cmake (no bootstrap). Tests: CMakeLib.*, kwsys.* and 24 RunCMake command suites (string, list, math, if, ... try_compile, ctest_test, cmake_path)."
+notes = "WP-211. CMake itself (cmake, ctest, cpack and the CMakeLib unit tests) with its bundled C libraries (curl without TLS, libarchive, zlib, zstd, liblzma, bzip2, nghttp2, expat, libuv: C through clang-19, as kiln's C driver rejects curl's lib/cf-h1-proxy.c) and C++ ones (jsoncpp, cppdap); configured by the system cmake (no bootstrap). Tests: CMakeLib.*, kwsys.* and 24 RunCMake command suites (string, list, math, if, ... try_compile, ctest_test, cmake_path)."
 
 [opencv]
 url = "https://github.com/opencv/opencv"
