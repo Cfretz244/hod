@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use hod_asm::x64::assemble_with_cfi;
+use hod_asm::x64::{Placement, assemble_aligned};
 use hod_testutil::{Scratch, run, tool};
 
 /// What hod does with a census body.
@@ -199,12 +199,34 @@ const CENSUS: &[Row] = &[
         15,
         Ok(0),
     ),
+    // Alignment directives (WP-218, `spec/asm.md` §18): zstd aligns the
+    // heads of its hot loops (`#if defined(__GNUC__) &&
+    // defined(__x86_64__)`); two copies, CMake's and mold's.
+    row(".p2align 3", "zstd_decompress_block.c ZSTD_decompressSequences* (6+6)", 12, Ok(0)),
+    row(".p2align 5", "zstd_lazy.c (2+2), zstd_decompress_block.c (3+3)", 10, Ok(0)),
+    row(".p2align 6", "zstd_decompress_block.c (3+3)", 6, Ok(0)),
+    row(".p2align 4", "zstd_decompress_block.c (3+3)", 6, Ok(0)),
 ];
 
-fn hod(body: &str) -> Result<(Vec<u8>, usize), hod_asm::Refusal> {
+/// hod's bytes for `body` at offset `at` (padding counted from there,
+/// with 15-byte `nop`s: `llvm-mc`'s default tuning) and its fields.
+fn hod_at(body: &str, at: u64) -> Result<(Vec<u8>, usize), hod_asm::Refusal> {
     let (mut code, mut refs) = (Vec::new(), Vec::new());
-    assemble_with_cfi(body, &mut code, &mut refs, &mut Vec::new(), &mut String::new())?;
+    assemble_aligned(
+        body,
+        Placement::At(at),
+        15,
+        &mut code,
+        &mut refs,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut String::new(),
+    )?;
     Result::Ok((code, refs.len()))
+}
+
+fn hod(body: &str) -> Result<(Vec<u8>, usize), hod_asm::Refusal> {
+    hod_at(body, 0)
 }
 
 /// Every census body is accepted or refused as the table says.
@@ -268,7 +290,7 @@ fn llvm(major: u32, source: &str, scratch: &Scratch) -> Option<Vec<u8>> {
 fn accepted_census_bodies_are_llvm_mc_bytes() {
     let (mut ours, mut spans, mut source) = (Vec::new(), Vec::new(), String::new());
     for r in CENSUS.iter().filter(|r| r.want == Ok(0)) {
-        let Result::Ok((bytes, _)) = hod(r.body) else { continue };
+        let Result::Ok((bytes, _)) = hod_at(r.body, ours.len() as u64) else { continue };
         spans.push((r.body, ours.len(), bytes.len()));
         ours.extend(bytes);
         source.push_str(r.body);

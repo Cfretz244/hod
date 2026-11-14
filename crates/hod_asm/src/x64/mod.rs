@@ -20,6 +20,7 @@ pub mod operand;
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size};
 
+use crate::align::Align;
 use crate::expr::{Cursor, Name, Value};
 use crate::reason::{self, Refusal, operand as op_reason, other};
 use crate::text::{is_space, statements, trim};
@@ -353,6 +354,45 @@ enum Item {
     Branch { jump: Jump, n: u32, forward: bool, near: bool },
     /// A numeric label definition.
     Label(u32),
+    /// An alignment directive (§18).
+    Align(Align),
+}
+
+/// Where the alignment directives of a body count their boundaries
+/// from (`spec/asm.md` §18).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Placement {
+    /// The body starts at this offset of its section: each directive
+    /// writes the padding to its boundary, as `llvm-mc` does.
+    At(u64),
+    /// The body's place is settled later: each directive writes the most
+    /// padding it can ([`Align::most`]) and is returned as an
+    /// [`AlignRow`], for the caller to cut to the padding its final
+    /// offset needs. A branch to a label on the other side of a directive
+    /// is refused ([`reason::other::ALIGN_CROSSED`]): its distance would
+    /// change with the padding.
+    Reserve,
+}
+
+/// An alignment directive of a body (`spec/asm.md` §18): where its
+/// padding starts in the code, how many bytes were written, and the
+/// directive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct AlignRow {
+    /// The code offset of the padding.
+    pub offset: u32,
+    /// The bytes of padding written.
+    pub len: u32,
+    /// The directive's operands.
+    pub align: Align,
+}
+
+/// How a body's alignment directives are written, when they are read.
+#[derive(Clone, Copy, Debug)]
+struct Aligning {
+    placement: Placement,
+    /// The longest `nop` of the padding ([`crate::align::fill_x64`]).
+    longest: u8,
 }
 
 /// Splits a leading label definition `name:` off a statement.
@@ -506,7 +546,7 @@ pub fn assemble(
     refs: &mut Vec<Ref>,
     scratch: &mut String,
 ) -> Result<(), Refusal> {
-    assemble_body(body, code, refs, None, scratch)
+    assemble_body(body, code, refs, None, None, scratch)
 }
 
 /// [`assemble`], with the call-frame directives of §15 read into `cfi`
@@ -523,7 +563,34 @@ pub fn assemble_with_cfi(
     scratch: &mut String,
 ) -> Result<(), Refusal> {
     cfi.clear();
-    assemble_body(body, code, refs, Some(cfi), scratch)
+    assemble_body(body, code, refs, Some(cfi), None, scratch)
+}
+
+/// [`assemble_with_cfi`], with the alignment directives `.p2align`,
+/// `.balign` and `.align` (x86 ELF: a byte count) of `spec/asm.md` §18
+/// read: their padding is written for `placement` (`nop`s of at most
+/// `longest` bytes, or the fill byte), and each is returned in `aligns`
+/// (cleared first), in order.
+///
+/// # Errors
+/// As [`assemble_with_cfi`]; [`crate::align::parse`]'s refusals of a
+/// directive's operands; with [`Placement::Reserve`],
+/// [`reason::other::ALIGN_CROSSED`] for a branch across a directive.
+#[allow(clippy::too_many_arguments, reason = "the body's parts, each a buffer of its own")]
+pub fn assemble_aligned(
+    body: &str,
+    placement: Placement,
+    longest: u8,
+    code: &mut Vec<u8>,
+    refs: &mut Vec<Ref>,
+    cfi: &mut Vec<CfiRow>,
+    aligns: &mut Vec<AlignRow>,
+    scratch: &mut String,
+) -> Result<(), Refusal> {
+    cfi.clear();
+    aligns.clear();
+    let aligning = Aligning { placement, longest };
+    assemble_body(body, code, refs, Some(cfi), Some((aligning, aligns)), scratch)
 }
 
 fn assemble_body(
@@ -531,10 +598,12 @@ fn assemble_body(
     code: &mut Vec<u8>,
     refs: &mut Vec<Ref>,
     cfi: Option<&mut Vec<CfiRow>>,
+    aligns: Option<(Aligning, &mut Vec<AlignRow>)>,
     scratch: &mut String,
 ) -> Result<(), Refusal> {
     code.clear();
     refs.clear();
+    let aligning = aligns.as_ref().map(|(a, _)| *a);
     // Each directive's item and what it says.
     let mut pending_cfi: Vec<(usize, Cfi)> = Vec::new();
     let mut pending_refs: Vec<Pending> = Vec::new();
@@ -572,6 +641,16 @@ fn assemble_body(
                 items.push(Item::Bytes { at: bytes.len(), len: 0 });
                 continue;
             }
+            // §18: x86 ELF reads `.align` as a byte count, as `.balign`.
+            let log2 = match name.as_str() {
+                ".p2align" => Some(true),
+                ".balign" | ".align" => Some(false),
+                _ => None,
+            };
+            if let (Some(log2), Some(_)) = (log2, aligning) {
+                items.push(Item::Align(crate::align::parse(rest, log2)?));
+                continue;
+            }
             let Some(size) = data_size(&name) else { return Err(reason::directive(&name)) };
             let at = bytes.len();
             data(size, rest, &mut bytes)?;
@@ -607,7 +686,16 @@ fn assemble_body(
     if pending.is_some() {
         return Err(Refusal(op_reason::FORM));
     }
-    let offsets = lay_out(&mut items, &bytes, code)?;
+    let offsets = lay_out(&mut items, &bytes, code, aligning)?;
+    if let Some((_, aligns)) = aligns {
+        for (i, item) in items.iter().enumerate() {
+            if let Item::Align(align) = *item {
+                let offset = u32::try_from(offsets[i]).map_err(|_| Refusal(op_reason::RANGE))?;
+                let len = (offsets[i + 1] - offsets[i]) as u32;
+                aligns.push(AlignRow { offset, len, align });
+            }
+        }
+    }
     if let Some(cfi) = cfi {
         for (item, op) in pending_cfi {
             let offset = u32::try_from(offsets[item]).map_err(|_| Refusal(op_reason::RANGE))?;
@@ -917,19 +1005,44 @@ fn symbol_operand<'a>(ops: &operand::Ops<'a>) -> Option<(&'a str, operand::MemOp
 
 /// The target offset of each branch, given the offsets of the items.
 fn target(items: &[Item], offsets: &[usize], at: usize) -> Result<usize, Refusal> {
+    target_item(items, at).map(|i| offsets[i])
+}
+
+/// The item of the label the branch at item `at` goes to.
+fn target_item(items: &[Item], at: usize) -> Result<usize, Refusal> {
     let Item::Branch { n, forward, .. } = items[at] else { unreachable!("a branch") };
     let found = if forward {
         (at + 1..items.len()).find(|&i| matches!(items[i], Item::Label(m) if m == n))
     } else {
         (0..at).rev().find(|&i| matches!(items[i], Item::Label(m) if m == n))
     };
-    found.map(|i| offsets[i]).ok_or(Refusal(op_reason::LABEL))
+    found.ok_or(Refusal(op_reason::LABEL))
 }
 
 /// Chooses each branch's form as LLVM's relaxation does (short unless
-/// the target is out of `rel8` reach, until nothing changes) and writes
-/// the code. Returns each item's offset in the code.
-fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<Vec<usize>, Refusal> {
+/// the target is out of `rel8` reach, until nothing changes, each
+/// alignment directive's padding counted again from the layout of the
+/// pass: §18) and writes the code. Returns each item's offset in the
+/// code, and its end after the last.
+fn lay_out(
+    items: &mut [Item],
+    bytes: &[u8],
+    code: &mut Vec<u8>,
+    aligning: Option<Aligning>,
+) -> Result<Vec<usize>, Refusal> {
+    if aligning.is_some_and(|a| a.placement == Placement::Reserve) {
+        // §18: a branch whose distance the padding would change.
+        for i in 0..items.len() {
+            if !matches!(items[i], Item::Branch { .. }) {
+                continue;
+            }
+            let t = target_item(items, i)?;
+            let (from, to) = (i.min(t), i.max(t));
+            if items[from..to].iter().any(|item| matches!(item, Item::Align(a) if a.most() != 0)) {
+                return Err(Refusal(other::ALIGN_CROSSED));
+            }
+        }
+    }
     let mut offsets = vec![0usize; items.len() + 1];
     loop {
         let mut at = 0;
@@ -939,6 +1052,10 @@ fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<Vec<u
                 Item::Bytes { len, .. } => len,
                 Item::Branch { jump, near, .. } => jump.len(near),
                 Item::Label(_) => 0,
+                Item::Align(a) => match aligning.map(|a| a.placement) {
+                    Some(Placement::At(start)) => a.pad(start.wrapping_add(at as u64)) as usize,
+                    _ => a.most() as usize,
+                },
             };
         }
         offsets[items.len()] = at;
@@ -963,6 +1080,12 @@ fn lay_out(items: &mut [Item], bytes: &[u8], code: &mut Vec<u8>) -> Result<Vec<u
         match items[i] {
             Item::Bytes { at, len } => code.extend_from_slice(&bytes[at..at + len]),
             Item::Label(_) => {}
+            Item::Align(a) => {
+                let from = code.len();
+                code.resize(from + offsets[i + 1] - offsets[i], 0);
+                let longest = aligning.map_or(15, |a| a.longest);
+                crate::align::fill_x64(&mut code[from..], a.fill, longest);
+            }
             Item::Branch { jump, near, .. } => {
                 let end = offsets[i] + jump.len(near);
                 let disp = target(items, &offsets, i)? as i64 - end as i64;

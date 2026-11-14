@@ -9,6 +9,8 @@
 //! before the data islands, so an island is aligned in the final layout.
 //! A function that asked for neither costs nothing.
 
+use hod_asm::align::Align;
+
 use crate::cx::FnCx;
 use crate::error::{CgResult, internal};
 use crate::label::{FixupKind, RefId};
@@ -30,12 +32,40 @@ pub(crate) struct Relax {
     pub(crate) kind: FixupKind,
 }
 
+/// A code alignment point (§5.6.15, `spec/asm.md` §18): padding written
+/// at its largest, cut once the code is complete to what its final
+/// offset needs, and filled again.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CodeAlign {
+    /// The offset of the padding's first byte.
+    pub(crate) at: u32,
+    /// The bytes written: the directive's [`Align::most`].
+    pub(crate) reserved: u32,
+    /// The directive: its boundary is counted from the function's start.
+    pub(crate) align: Align,
+    /// The longest `nop` of the padding (x86-64, `hod_asm::align::fill_x64`).
+    pub(crate) longest: u8,
+}
+
+impl CodeAlign {
+    /// The padding kept when the padding starts at `at` of the final code.
+    fn kept(&self, at: u32) -> u32 {
+        (self.align.pad(u64::from(at)) as u32).min(self.reserved)
+    }
+}
+
 /// The length of a relaxed branch: an opcode and a `rel8`.
 const SHORT: u32 = 2;
 
 /// At most this many passes look for branches that reach (§5.6.15): each
 /// pass only adds, and any set found is valid.
 const MAX_PASSES: u32 = 8;
+
+/// With code alignment points, at most this many passes: a pass may also
+/// put a chosen branch back to its long form for good (padding can grow
+/// when bytes before it go), so a pass changes some branch's state at most
+/// twice; past the limit every branch is long, which always reaches.
+const MAX_PASSES_ALIGNED: u32 = 32;
 
 /// How many ranges [`Edits::index_near`] steps over before it searches.
 const STEPS: usize = 8;
@@ -52,7 +82,16 @@ pub(crate) struct Edits {
 }
 
 impl Edits {
-    fn build(&mut self, cuts: &[(u32, u32)], relax: &[Relax], chosen: &[bool]) {
+    /// The ranges of `cuts`, of the `chosen` branches of `relax`, and of
+    /// the padding each alignment point does not keep once the bytes
+    /// before it are gone (in offset order, as each input is).
+    fn build(
+        &mut self,
+        cuts: &[(u32, u32)],
+        relax: &[Relax],
+        chosen: &[bool],
+        aligns: &[CodeAlign],
+    ) {
         self.ranges.clear();
         self.before.clear();
         let mut relaxed = relax
@@ -62,22 +101,40 @@ impl Edits {
             .map(|(r, _)| (r.start + SHORT, u32::from(r.long) - SHORT))
             .peekable();
         let mut cut = cuts.iter().copied().peekable();
+        let mut pads = aligns.iter().peekable();
+        let mut total = 0;
         loop {
-            let next = match (cut.peek(), relaxed.peek()) {
-                (Some(&a), Some(&b)) if a.0 <= b.0 => cut.next(),
-                (Some(_), None) => cut.next(),
-                (_, Some(_)) => relaxed.next(),
-                (None, None) => break,
+            let (c, r) = (cut.peek().map(|c| c.0), relaxed.peek().map(|r| r.0));
+            let Some(first) = [c, r].into_iter().flatten().min() else {
+                // The alignment points after every other range.
+                for a in pads.by_ref() {
+                    total += self.pad_range(a, total);
+                }
+                break;
             };
-            if let Some(range) = next {
+            if let Some(a) = pads.next_if(|a| a.at < first) {
+                total += self.pad_range(a, total);
+                continue;
+            }
+            let range = if c == Some(first) { cut.next() } else { relaxed.next() };
+            if let Some(range) = range {
                 self.ranges.push(range);
+                self.before.push(total);
+                total += range.1;
             }
         }
-        let mut total = 0;
-        for &(_, len) in &self.ranges {
+    }
+
+    /// Adds the range of the padding `a` does not keep when `total` bytes
+    /// before it are removed; the bytes it removes.
+    fn pad_range(&mut self, a: &CodeAlign, total: u32) -> u32 {
+        let kept = a.kept(a.at - total);
+        let len = a.reserved - kept;
+        if len != 0 {
+            self.ranges.push((a.at + kept, len));
             self.before.push(total);
-            total += len;
         }
+        len
     }
 
     /// Where offset `x` of the code before the edits is after them; an
@@ -165,28 +222,68 @@ impl<T: Target> FnCx<'_, T> {
         self.s.relax.push(Relax { reference, start, long, short, kind });
     }
 
+    /// A code alignment point (`spec/asm.md` §18): the `reserved` bytes
+    /// at offset `at` are padding to `align`'s boundary counted from the
+    /// function's start, written at their largest ([`Align::most`]).
+    /// Once the code is complete (§5.6.15) the padding is cut to what its
+    /// final offset needs, the branches relaxed around it as the padding
+    /// allows, and the bytes kept are filled again (`fill` or `nop`s of
+    /// at most `longest` bytes: `hod_asm::align::fill_x64`). The
+    /// function's alignment is raised to `align`'s, so its boundaries are
+    /// its section's. Points are added in offset order.
+    ///
+    /// # Errors
+    /// An internal error for a point whose bytes are not the directive's
+    /// largest padding, or before the last one.
+    pub fn align_code(
+        &mut self,
+        at: u32,
+        reserved: u32,
+        align: Align,
+        longest: u8,
+    ) -> CgResult<()> {
+        let after_last = self.s.aligns.last().is_none_or(|a| a.at + a.reserved <= at);
+        if u64::from(reserved) != align.most() || !after_last || at + reserved > self.offset() {
+            return internal("a code alignment point that is not its directive's padding");
+        }
+        self.island_align = self.island_align.max(align.align as u32);
+        self.s.aligns.push(CodeAlign { at, reserved, align, longest });
+        Ok(())
+    }
+
     /// §5.6.15: the branches that reach, the cuts, every offset moved.
     pub(crate) fn shrink(&mut self) -> CgResult<()> {
-        if self.s.cuts.is_empty() && self.s.relax.is_empty() {
-            return Ok(());
-        }
-        let mut edits = std::mem::take(&mut self.s.edits);
-        let mut chosen = std::mem::take(&mut self.s.chosen);
-        chosen.clear();
-        chosen.resize(self.s.relax.len(), false);
-        let mut cuts = std::mem::take(&mut self.s.cuts);
-        cuts.sort_unstable();
-        let relax = std::mem::take(&mut self.s.relax);
-        // Whether `edits` was built from the final choice.
-        let mut current = false;
-        for _ in 0..MAX_PASSES {
-            edits.build(&cuts, &relax, &chosen);
+        let aligns = std::mem::take(&mut self.s.aligns);
+        let result = self.shrink_with(&aligns);
+        self.s.aligns = aligns;
+        result
+    }
+
+    /// The branches of `relax` to relax (`chosen`), and `edits` built
+    /// from that choice: the fixpoint of §5.6.15.
+    ///
+    /// With alignment points, padding grows when bytes before it go: a
+    /// chosen branch is checked again, and put back long for good
+    /// (`banned`) if it no longer reaches (`spec/asm.md` §18).
+    fn choose(
+        &self,
+        edits: &mut Edits,
+        cuts: &[(u32, u32)],
+        relax: &[Relax],
+        (chosen, banned): (&mut [bool], &mut [bool]),
+        aligns: &[CodeAlign],
+    ) {
+        let aligned = !aligns.is_empty();
+        let passes = if aligned { MAX_PASSES_ALIGNED } else { MAX_PASSES };
+        for _ in 0..passes {
+            edits.build(cuts, relax, chosen, aligns);
             let mut changed = false;
             // The branches are in offset order: each start is found from
             // the last, each target from its branch.
             let mut near = 0;
-            for (r, chosen) in relax.iter().zip(chosen.iter_mut()) {
-                if *chosen {
+            for ((r, chosen), banned) in relax.iter().zip(chosen.iter_mut()).zip(banned.iter_mut())
+            {
+                if (*chosen && !aligned) || *banned {
                     continue;
                 }
                 let labels = &self.s.labels;
@@ -199,23 +296,53 @@ impl<T: Target> FnCx<'_, T> {
                 let s = i64::from(edits.map_near(&mut near, r.start));
                 let mut from = near;
                 let t = i64::from(edits.map_near(&mut from, target));
-                // Forward: the target moves by what the branch itself
-                // loses, so the distance from the end of either form is
-                // the same. Backward: counted from the short form's end.
-                let disp = if target > r.start { t - s - i64::from(r.long) } else { t - s - 2 };
-                if i8::try_from(disp).is_ok() {
+                // Forward and long: the target moves by what the branch
+                // itself loses, so the distance from the end of either
+                // form is the same (with alignment points, a guess the
+                // next pass checks). Backward, or chosen: counted from the
+                // short form's end.
+                let disp = if target > r.start && !*chosen {
+                    t - s - i64::from(r.long)
+                } else {
+                    t - s - 2
+                };
+                let reaches = i8::try_from(disp).is_ok();
+                if *chosen && !reaches {
+                    (*chosen, *banned) = (false, true);
+                    changed = true;
+                } else if !*chosen && reaches {
                     *chosen = true;
                     changed = true;
                 }
             }
             if !changed {
-                current = true;
-                break;
+                // `edits` is the final choice's.
+                return;
             }
         }
-        if !current {
-            edits.build(&cuts, &relax, &chosen);
+        if aligned {
+            // No settled choice: every branch long reaches, as the code
+            // was emitted (the padding only shrinks from there).
+            chosen.fill(false);
         }
+        edits.build(cuts, relax, chosen, aligns);
+    }
+
+    fn shrink_with(&mut self, aligns: &[CodeAlign]) -> CgResult<()> {
+        if self.s.cuts.is_empty() && self.s.relax.is_empty() && aligns.is_empty() {
+            return Ok(());
+        }
+        let mut edits = std::mem::take(&mut self.s.edits);
+        let mut chosen = std::mem::take(&mut self.s.chosen);
+        chosen.clear();
+        chosen.resize(self.s.relax.len(), false);
+        let mut banned = std::mem::take(&mut self.s.banned);
+        banned.clear();
+        banned.resize(self.s.relax.len(), false);
+        let mut cuts = std::mem::take(&mut self.s.cuts);
+        cuts.sort_unstable();
+        let relax = std::mem::take(&mut self.s.relax);
+        self.choose(&mut edits, &cuts, &relax, (&mut chosen, &mut banned), aligns);
         // Code that pads from the function's start (`raise_align`,
         // `spec/asm.md` §17) stays where its padding was counted.
         if edits.ranges.first().is_some_and(|&(at, _)| at < self.aligned_code_end) {
@@ -243,6 +370,19 @@ impl<T: Target> FnCx<'_, T> {
         let end = self.out.code.len();
         self.out.code.copy_within(from..end, to);
         self.out.code.truncate(to + (end - from));
+        // The padding each alignment point keeps, filled again for its
+        // length (`spec/asm.md` §18).
+        let mut near = 0;
+        for a in aligns {
+            let at = edits.map_near(&mut near, a.at);
+            let kept = a.kept(at) as usize;
+            let start = base + at as usize;
+            hod_asm::align::fill_x64(
+                &mut self.out.code[start..start + kept],
+                a.align.fill,
+                a.longest,
+            );
+        }
 
         self.move_rows(&edits);
 
@@ -257,6 +397,7 @@ impl<T: Target> FnCx<'_, T> {
         cuts.clear();
         self.s.cuts = cuts;
         self.s.chosen = chosen;
+        self.s.banned = banned;
         let mut relax = relax;
         relax.clear();
         self.s.relax = relax;
@@ -325,7 +466,7 @@ mod tests {
         let mut edits = Edits::default();
         let relax =
             [Relax { reference: RefId(0), start: 20, long: 6, short: 0x74, kind: FixupKind(1) }];
-        edits.build(&[(4, 3), (30, 2)], &relax, &[true]);
+        edits.build(&[(4, 3), (30, 2)], &relax, &[true], &[]);
         assert_eq!(edits.ranges, [(4, 3), (22, 4), (30, 2)]);
         let cases = [
             (0, 0),
@@ -342,9 +483,38 @@ mod tests {
         for (x, y) in cases {
             assert_eq!(edits.map(x), y, "{x}");
         }
-        edits.build(&[(4, 3)], &relax, &[false]);
+        edits.build(&[(4, 3)], &relax, &[false], &[]);
         assert_eq!(edits.ranges, [(4, 3)]);
         assert_eq!(edits.map(26), 23);
+    }
+
+    /// `spec/asm.md` §18: an alignment point keeps the padding its offset
+    /// after the ranges before it needs, the most when bytes before it
+    /// go, none past its maximum; the rest of it is a range.
+    #[test]
+    fn alignment_points_keep_what_their_offset_needs() {
+        let point = |at, align, max| {
+            let align = Align { align, fill: None, max };
+            CodeAlign { at, reserved: align.most() as u32, align, longest: 15 }
+        };
+        let relax =
+            [Relax { reference: RefId(0), start: 20, long: 6, short: 0x74, kind: FixupKind(1) }];
+        let mut edits = Edits::default();
+        // At 40 (31 reserved): at 37 (3 gone) it needs 27 bytes to 64; at
+        // 33 (7 gone) all 31.
+        edits.build(&[(4, 3)], &relax, &[false], &[point(40, 32, None)]);
+        assert_eq!(edits.ranges, [(4, 3), (40 + 27, 4)]);
+        edits.build(&[(4, 3)], &relax, &[true], &[point(40, 32, None)]);
+        assert_eq!(edits.ranges, [(4, 3), (22, 4)]);
+        // Points before every other range: the first keeps 1 byte of 63,
+        // the second (at 130 - 62 = 68) 12 of 15.
+        edits.build(&[(200, 2)], &[], &[], &[point(63, 64, None), point(130, 16, None)]);
+        assert_eq!(edits.ranges, [(64, 62), (142, 3), (200, 2)]);
+        assert_eq!(edits.map(145), 80);
+        // Past its maximum: nothing kept.
+        edits.build(&[], &[], &[], &[point(1, 64, Some(8))]);
+        assert_eq!(edits.ranges, [(1, 8)]);
+        assert_eq!(edits.map(9), 1);
     }
 
     /// WP-153: an offset found from any hint moves as one found by a
@@ -366,7 +536,7 @@ mod tests {
             }
             keep
         });
-        edits.build(&cuts, &[], &[]);
+        edits.build(&cuts, &[], &[], &[]);
         let mut seed = 12345u32;
         let mut hint = 0;
         for _ in 0..5000 {

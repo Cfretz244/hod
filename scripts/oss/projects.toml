@@ -28,6 +28,10 @@
 #   source_subdir  optional: the CMake source dir inside the checkout
 #   test_timeout   seconds, default 1800
 #   vmem_kb        the address-space cap of one compile or test, default 3000000
+#   test_vmem_kb   optional: the test step's cap instead (at most 100000000)
+#   drop_flags     optional: compiler arguments the wrappers leave out of every
+#                  kiln command (a flag kiln does not accept that the project
+#                  hard-codes, e.g. highway's -fmerge-all-constants), in every mode
 #   notes          free text
 
 [fmt]
@@ -255,7 +259,10 @@ build = "cmake"
 cxx_std = 17
 c = "kiln"
 configure = ["-DZLIB_BUILD_TESTING=ON"]
-test = "ctest --output-on-failure -E 'install|find_package|add_subdirectory' && for lvl in -1 -6 -9 -h -r -f; do test/minigzip $lvl -c < libz.a > \"$TMPDIR/z.gz\" && test/minigzip -d -c < \"$TMPDIR/z.gz\" | cmp - libz.a || exit 1; done && echo 'minigzip round trips ok'"
+# One test at a time: example and example64 (shared and static) write and
+# read the same file, foo.gz, in the same directory; run at once they fail
+# with "gzread err" under either back end.
+test = "ctest -j1 --output-on-failure -E 'install|find_package|add_subdirectory' && for lvl in -1 -6 -9 -h -r -f; do test/minigzip $lvl -c < libz.a > \"$TMPDIR/z.gz\" && test/minigzip -d -c < \"$TMPDIR/z.gz\" | cmp - libz.a || exit 1; done && echo 'minigzip round trips ok'"
 wave = 5
 verified = true
 notes = "WP-1277. The shared and static example/example64 programs and infcover through ctest (the install, find_package and add_subdirectory tests reconfigure CMake sub-builds with the default compilers: excluded), then a minigzip compress/decompress round trip of libz.a at levels 1, 6, 9 and the Huffman-only, RLE and filtered strategies."
@@ -274,3 +281,220 @@ test = "ctest --output-on-failure -E playTests"
 wave = 5
 verified = true
 notes = "WP-1277. Heavy macro and inline-function C (bit streams, Huffman and FSE tables, SIMD-free paths on aarch64; the x86_64 decoder's .S goes through kiln-cc as assembly). ctest runs fullbench, fuzzer and zstreamtest (60 s each); playTests.sh then runs the built zstd CLI from a /tmp directory (it checks file modes under umask 0000, which the workspace file system does not honour, so under ctest's tests/ cwd it fails for any compiler)."
+
+# ------------------------------------------------ the second set (WP-200)
+# Chosen for what the rows above do not reach: vector intrinsics and
+# function multiversioning (simdjson above, highway, Eigen), template-heavy
+# libraries (range-v3, Boost), x86-64 first. Their findings live apart
+# (HOD_OSS_ROOT=<build root>/oss2, HOD_OSS_FINDINGS=<build root>/findings/oss2).
+
+[highway]
+url = "https://github.com/google/highway"
+tag = "1.4.0"
+build = "cmake"
+cxx_std = 17
+vmem_kb = 6000000  # kiln -O0 -g on convert_test and memory_test needs more than 3 GB
+configure = ["-DHWY_ENABLE_TESTS=ON", "-DHWY_ENABLE_CONTRIB=OFF", "-DHWY_ENABLE_EXAMPLES=OFF", "-DHWY_ENABLE_INSTALL=OFF", "-DHWY_WARNINGS_ARE_ERRORS=OFF", "-DHWY_SYSTEM_GTEST=OFF", "-DBUILD_TESTING=ON", "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"]
+build_targets = ["base_test", "highway_test", "targets_test", "aligned_allocator_test", "arithmetic_test", "blockwise_test", "cast_test", "combine_test", "compare_test", "compress_test", "convert_test", "crypto_test", "demote_test", "div_test", "float_test", "fma_test", "interleaved_test", "logical_test", "mask_test", "memory_test", "minmax_test", "mul_test", "reduction_test", "saturated_test", "shift_test", "shuffle4_test", "swizzle_test", "table_test"]
+# One ctest test per test program (gtest_discover_tests would make one
+# per case and target, thousands of qemu starts): whole/CTestTestfile.cmake
+# runs each built program once, under the cross build's emulator if any.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in tests/*_test; do if [ -x \"$t\" ]; then echo \"add_test($(basename $t) $emu $PWD/$t)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure --timeout 3600"
+test_timeout = 7200
+c_compiler = "clang-19"
+# kiln does not accept it; highway adds it to every compile (an optimization only).
+drop_flags = ["-fmerge-all-constants"]
+notes = "WP-200. Portable SIMD with per-target code: each test is compiled once per attainable target (x86-64: SSE2, SSSE3, SSE4, AVX2, the AVX-512 variants; each in a `#pragma clang attribute push(__attribute__((target(...))))` region, HWY_BEFORE_NAMESPACE) and run for every target the CPU has (qemu-x86_64: up to AVX2). 28 of the core op tests (hwy/tests), each program run once as one test. Needs kiln 21caaf874 or later (the pragma); googletest is downloaded at configure time."
+
+[highway_avx2]
+url = "https://github.com/google/highway"
+tag = "1.4.0"
+checkout = "highway"
+build = "cmake"
+cxx_std = 17
+vmem_kb = 6000000  # kiln -O0 -g on convert_test and memory_test needs more than 3 GB
+configure = ["-DHWY_ENABLE_TESTS=ON", "-DHWY_ENABLE_CONTRIB=OFF", "-DHWY_ENABLE_EXAMPLES=OFF", "-DHWY_ENABLE_INSTALL=OFF", "-DHWY_WARNINGS_ARE_ERRORS=OFF", "-DHWY_SYSTEM_GTEST=OFF", "-DBUILD_TESTING=ON", "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST", "-DCMAKE_CXX_FLAGS=-DHWY_DISABLED_TARGETS=472"]
+build_targets = ["base_test", "highway_test", "targets_test", "aligned_allocator_test", "arithmetic_test", "blockwise_test", "cast_test", "combine_test", "compare_test", "compress_test", "convert_test", "crypto_test", "demote_test", "div_test", "float_test", "fma_test", "interleaved_test", "logical_test", "mask_test", "memory_test", "minmax_test", "mul_test", "reduction_test", "saturated_test", "shift_test", "shuffle4_test", "swizzle_test", "table_test"]
+# One ctest test per test program (gtest_discover_tests would make one
+# per case and target, thousands of qemu starts): whole/CTestTestfile.cmake
+# runs each built program once, under the cross build's emulator if any.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in tests/*_test; do if [ -x \"$t\" ]; then echo \"add_test($(basename $t) $emu $PWD/$t)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure --timeout 3600"
+test_timeout = 7200
+c_compiler = "clang-19"
+# kiln does not accept it; highway adds it to every compile (an optimization only).
+drop_flags = ["-fmerge-all-constants"]
+notes = "WP-200. The highway row with the AVX-512 targets disabled: HWY_DISABLED_TARGETS=472 is HWY_AVX10_2|HWY_AVX3_SPR|HWY_AVX3_ZEN4|HWY_AVX3_DL|HWY_AVX3 (bits 3, 4, 6, 7, 8 of hwy/detect_targets.h), so each test is compiled for SSE2, SSSE3, SSE4, AVX2 and EMU128 only, still with run-time dispatch. x86-64 only."
+
+[range_v3]
+url = "https://github.com/ericniebler/range-v3"
+tag = "0.12.0"
+build = "cmake"
+cxx_std = 20
+configure = ["-DRANGE_V3_TESTS=ON", "-DRANGE_V3_EXAMPLES=ON", "-DRANGE_V3_PERF=OFF", "-DRANGE_V3_DOCS=OFF", "-DRANGE_V3_HEADER_CHECKS=OFF", "-DRANGES_ENABLE_WERROR=OFF", "-DCMAKE_CXX_FLAGS=-Wno-deprecated-ofast"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+notes = "WP-200, kiln's row (kiln WP-669). Header-only; the test suite is the build (hundreds of TUs, heavy concept checking)."
+
+[eigen]
+url = "https://gitlab.com/libeigen/eigen.git"
+tag = "3.4.1"
+build = "cmake"
+cxx_std = 17
+configure = ["-DBUILD_TESTING=ON", "-DEIGEN_BUILD_DOC=OFF", "-DEIGEN_BUILD_BLAS=OFF", "-DEIGEN_BUILD_LAPACK=OFF"]
+build_targets = ["basicstuff", "packetmath", "vectorization_logic", "redux", "block", "product_small", "product_large", "determinant", "inverse", "cholesky", "lu", "qr", "qr_colpivoting", "jacobisvd", "eigensolver_generic", "schur_real", "householder", "geo_quaternion", "geo_transformations", "sparse_basic", "sparse_product", "simplicial_cholesky", "conjugate_gradient", "sparselu", "array_cwise", "half_float", "bfloat16_float", "stl_iterators", "indexed_view", "reshape", "dense_storage", "special_numbers", "fastmath", "autodiff", "matrix_function", "splines", "special_functions", "cxx11_tensor_contraction", "cxx11_tensor_broadcasting", "cxx11_tensor_reduction", "cxx11_tensor_morphing", "cxx11_non_blocking_thread_pool"]
+test = "EIGEN_SEED=12345 EIGEN_REPEAT=1 ctest --output-on-failure -R '^(basicstuff|packetmath|vectorization_logic|redux|block|product_small|product_large|determinant|inverse|cholesky|lu|qr|qr_colpivoting|jacobisvd|eigensolver_generic|schur_real|householder|geo_quaternion|geo_transformations|sparse_basic|sparse_product|simplicial_cholesky|conjugate_gradient|sparselu|array_cwise|half_float|bfloat16_float|stl_iterators|indexed_view|reshape|dense_storage|special_numbers|fastmath|autodiff|matrix_function|splines|special_functions|cxx11_tensor_contraction|cxx11_tensor_broadcasting|cxx11_tensor_reduction|cxx11_tensor_morphing|cxx11_non_blocking_thread_pool)(_[0-9]+)?$'"
+c_compiler = "clang-19"
+notes = "WP-200. GitLab, not GitHub. 42 of the suite's tests across modules (core, packet math, decompositions, geometry, sparse, unsupported tensor and autodiff), from kiln's 132-test subset (kiln's eigen row); each test is split into parts (<name>_<n>), one executable each. The test runs use a fixed seed and one repeat (EIGEN_SEED, EIGEN_REPEAT): the default seed is the time, so control and hod would draw different matrices, and ten repeats of product_large under the x86-64 emulator take over 20 minutes per part."
+
+[simdjson_haswell]
+url = "https://github.com/simdjson/simdjson"
+tag = "v4.2.4"
+checkout = "simdjson"
+build = "cmake"
+cxx_std = 20
+configure = ["-DSIMDJSON_DEVELOPER_MODE=ON", "-DSIMDJSON_ENABLE_THREADS=ON", "-DSIMDJSON_EXCEPTIONS=ON", "-DCMAKE_CXX_FLAGS=-march=haswell -DSIMDJSON_IMPLEMENTATION_ICELAKE=0"]
+test = "ctest --output-on-failure -E 'checkperf|fuzz'"
+c_compiler = "clang-19"
+notes = "WP-200, x86-64 only. The simdjson row's runtime dispatch puts each x86-64 kernel (westmere, haswell, icelake) in a `#pragma clang attribute push(__attribute__((target(...))))` region, which kiln rejects ('#pragma clang attribute' is not supported yet); built for Haswell (-march=haswell: AVX2, BMI1/2, PCLMUL, LZCNT, POPCNT in every function) with the icelake kernel off, the haswell kernel is the built-in one and needs no region. qemu-x86_64 runs AVX2."
+
+[boost_tmpl]
+url = "https://github.com/boostorg/boost"
+tag = "boost-1.90.0"
+checkout = "boost"
+submodules = true
+build = "cmake"
+cxx_std = 20
+configure = [
+  "-DBUILD_TESTING=ON", "-DBUILD_SHARED_LIBS=OFF",
+  "-DBOOST_INCLUDE_LIBRARIES=mp11;variant2;describe;container;unordered;json;multi_index;spirit",
+  "-DCMAKE_PROJECT_Boost_INCLUDE=@KILN_OSS@/shims/boost-jamfile-tests.cmake",
+  "-DKILN_BOOST_JAMFILE_LIBRARIES=multi_index;spirit",
+  "-DKILN_BOOST_JAMFILE_SKIP_spirit=^(karma|lex|qi|support|test_headers)_",
+]
+build_targets = ["tests"]
+test = "ctest --output-on-failure --timeout 1200"
+test_timeout = 7200
+c_compiler = "clang-19"
+notes = "WP-200. Eight template-heavy Boost libraries with their own tests: mp11, variant2, describe, container, unordered, json (CMake tests), multi_index and Spirit X3 (b2-only tests, registered by kiln's shim boost-jamfile-tests.cmake, read from kiln's scripts/oss; Spirit's Qi, Karma and Lex tests left out)."
+
+# ------------------------------------------------ the third set (WP-211)
+# Larger programs with their own test suites. Their findings live apart
+# (HOD_OSS_ROOT=<build root>/oss3, HOD_OSS_FINDINGS=<build root>/findings/oss3).
+
+[flatbuffers]
+url = "https://github.com/google/flatbuffers"
+tag = "v25.12.19"
+build = "cmake"
+cxx_std = 17
+configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_CPP17=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF"]
+# flattests and flattests_cpp17 as the project registers them (build dir),
+# and the three sample programs, which read schemas and data relative to
+# the source dir; one ctest run, under the cross build's emulator if any.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && { for t in flattests flattests_cpp17; do echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY $PWD)\"; done; for t in flatsamplebinary flatsampletext flatsamplebfbs; do echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY @SRC@)\"; done; } > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure"
+c_compiler = "clang-19"
+notes = "WP-211. The flatc schema compiler and the flatbuffers library, built by kiln; flatc generates the tests' C++ during the build; the test step runs flattests, flattests_cpp17 and the three sample programs (flatsamplebinary, flatsampletext, flatsamplebfbs) as one ctest run."
+
+[mold]
+url = "https://github.com/rui314/mold"
+tag = "v2.42.1"
+build = "cmake"
+cxx_std = 20
+c = "kiln"
+configure = ["-DBUILD_TESTING=ON", "-DMOLD_ENABLE_QEMU_TESTS=ON", "-DMOLD_USE_SYSTEM_TBB=OFF", "-DMOLD_USE_MIMALLOC=OFF", "-DMOLD_TARGETS=X86_64;ARM64LE;ARM64BE;S390X"]
+test = "ctest --output-on-failure"
+test_timeout = 7200
+# Every mold run reserves 8 GiB of address space (PROT_NONE) per arena, up to
+# ten arenas (lib/arena.cc): under 3 GB, or 12 GB, its links fail in the
+# control. The container's memory cap still bounds what is touched.
+test_vmem_kb = 96000000
+# kiln does not accept it; mold adds it to every compile of its own sources
+# (it only adds a .debug_gnu_pubnames index under -g).
+drop_flags = ["-ggnu-pubnames"]
+notes = "WP-211. The linker (v2.42.1, the last C++ release: v3 is Rust) with its vendored TBB, zlib, zstd and BLAKE3, all through kiln (C through kiln-cc), and the C library's malloc (MOLD_USE_MIMALLOC=OFF: kiln's C rejects the vendored mimalloc, its unknown -mno-outline and -ftls-model=initial-exec and an _Atomic pointer initialized with NULL), for the four targets with SFrame (MOLD_TARGETS: X86_64, ARM64LE, ARM64BE, S390X; kiln instantiates the SFrame members of the other targets' explicitly instantiated classes although their requires-clause is unsatisfied); the test suite is ~550 shell scripts linking small gcc-compiled programs with the built mold, natively (aarch64-*) and, with qemu-x86_64 and x86_64-linux-gnu-gcc present, for x86-64 (x86_64-*, run under qemu)."
+
+[capnproto]
+url = "https://github.com/capnproto/capnproto"
+tag = "v1.5.0"
+build = "cmake"
+source_subdir = "c++"
+cxx_std = 20
+configure = ["-DBUILD_TESTING=ON", "-DWITH_OPENSSL=OFF", "-DWITH_ZLIB=OFF"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+notes = "WP-211. KJ (async I/O, fibers when the C library has them) and Cap'n Proto (the capnp compiler, which generates the tests' C++ during the build, serialization, RPC). ctest runs kj-tests, kj-heavy-tests, capnp-tests, capnp-heavy-tests and capnp-evolution-tests, each a program of many KJ_TEST cases. No OpenSSL or zlib (not on the machine): the TLS and gzip parts are left out."
+
+[rocksdb]
+url = "https://github.com/facebook/rocksdb"
+tag = "v11.13.2"
+build = "cmake"
+cxx_std = 20
+c = "kiln"
+configure = ["-DWITH_TESTS=ON", "-DWITH_ALL_TESTS=ON", "-DROCKSDB_BUILD_SHARED=OFF", "-DWITH_GFLAGS=OFF", "-DWITH_LIBURING=OFF", "-DWITH_SNAPPY=OFF", "-DWITH_LZ4=OFF", "-DWITH_ZLIB=OFF", "-DWITH_ZSTD=OFF", "-DWITH_BZ2=OFF", "-DWITH_BENCHMARK_TOOLS=OFF", "-DWITH_TOOLS=OFF", "-DWITH_CORE_TOOLS=OFF", "-DWITH_TRACE_TOOLS=OFF", "-DFAIL_ON_WARNINGS=OFF", "-DPORTABLE=1", "-DCMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE=PRE_TEST"]
+build_targets = ["rocksdb", "c_test", "arena_test", "autovector_test", "block_based_table_reader_test", "block_test", "bloom_test", "cache_test", "coding_test", "comparator_db_test", "compaction_iterator_test", "crc32c_test", "data_block_hash_index_test", "db_basic_test", "db_iterator_test", "db_properties_test", "dbformat_test", "defer_test", "env_basic_test", "filename_test", "full_filter_block_test", "hash_table_test", "hash_test", "heap_test", "inlineskiplist_test", "log_test", "lru_cache_test", "memtable_list_test", "merge_test", "options_test", "rate_limiter_test", "ribbon_test", "skiplist_test", "slice_test", "table_test", "thread_local_test", "timer_test", "version_edit_test", "work_queue_test", "write_batch_test", "write_controller_test"]
+# One ctest test per test program (gtest_discover_tests would make one per
+# case): whole/CTestTestfile.cmake runs each built program once, under the
+# cross build's emulator if any, each with a TEST_TMPDIR of its own (programs
+# running at once in one TEST_TMPDIR remove each other's databases), in a
+# fresh directory under /tmp removed afterwards: on the workspace's bind
+# mount comparator_db_test and db_iterator_test fail opening their DB
+# directory ("While open directory: ... No such file or directory"), with
+# either back end, and pass on the container's file system.
+test = "tt=$(mktemp -d /tmp/hod-oss-rocksdb-XXXXXX) && mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in c_test arena_test autovector_test block_based_table_reader_test block_test bloom_test cache_test coding_test comparator_db_test compaction_iterator_test crc32c_test data_block_hash_index_test db_basic_test db_iterator_test db_properties_test dbformat_test defer_test env_basic_test filename_test full_filter_block_test hash_table_test hash_test heap_test inlineskiplist_test log_test lru_cache_test memtable_list_test merge_test options_test rate_limiter_test ribbon_test skiplist_test slice_test table_test thread_local_test timer_test version_edit_test work_queue_test write_batch_test write_controller_test; do if [ -x \"$t\" ]; then mkdir -p \"$tt/$t\" && echo \"add_test($t $emu $PWD/$t)\" && echo \"set_tests_properties($t PROPERTIES ENVIRONMENT TEST_TMPDIR=$tt/$t)\"; fi; done > whole/CTestTestfile.cmake && (cd whole && ctest --output-on-failure --timeout 2400); rc=$?; rm -rf \"$tt\"; exit $rc"
+test_timeout = 10800
+# Each test thread gets a glibc malloc arena (up to 128 MB of address space
+# each): under 3 GB c_test cannot start its threads, in the control too.
+test_vmem_kb = 16000000
+notes = "WP-211. The static library (all of RocksDB: LSM tree, memtables, block-based tables, caches, filters, compaction) and 40 of its ~220 test programs (unit tests of the util/, memory/, table/, cache/ and options/ layers, and the DB-level db_basic_test, db_iterator_test, db_properties_test, comparator_db_test, merge_test), each program run once as one test; c_test is C through kiln-cc. No compression libraries (not on the machine), no tools; PORTABLE=1 (no -march=native; AArch64 still gets +crc+crypto)."
+
+[cmake]
+url = "https://github.com/Kitware/CMake"
+tag = "v4.5.0"
+build = "cmake"
+cxx_std = 17
+# C through clang-19: kiln's C driver rejects a typedef name that is also a
+# struct tag (bundled curl's lib/cf-h1-proxy.c, h1_tunnel_state), and CMake
+# forces curl's proxy support on; every other bundled C TU took kiln.
+c = "clang"
+configure = ["-DBUILD_TESTING=ON", "-DCMAKE_USE_OPENSSL=OFF", "-DBUILD_CursesDialog=OFF", "-DBUILD_QtDialog=OFF", "-DCMAKE_USE_SYSTEM_LIBRARIES=OFF"]
+# The unit tests (CMakeLib.*: one program, CMakeLibTests; kwsys.*), and the
+# RunCMake script tests of the language's commands, which run the built
+# cmake and ctest (try_compile and ctest_test also compile and run small
+# projects with the configured compilers, through the lane's wrappers).
+test = "ctest --output-on-failure -j4 -R '^(CMakeLib\\.|kwsys\\.|RunCMake\\.(string|list|math|if|while|foreach|function|block|set|configure_file|cmake_language|cmake_parse_arguments|get_property|set_property|separate_arguments|message|return|try_compile|CommandLine|CTestCommandLine|ctest_test|cmake_path)$)'"
+test_timeout = 7200
+notes = "WP-211. CMake itself (cmake, ctest, cpack and the CMakeLib unit tests) with its bundled C libraries (curl without TLS, libarchive, zlib, zstd, liblzma, bzip2, nghttp2, expat, libuv: C through clang-19, as kiln's C driver rejects curl's lib/cf-h1-proxy.c) and C++ ones (jsoncpp, cppdap); configured by the system cmake (no bootstrap). Tests: CMakeLib.*, kwsys.* and 24 RunCMake command suites (string, list, math, if, ... try_compile, ctest_test, cmake_path)."
+
+[opencv]
+url = "https://github.com/opencv/opencv"
+tag = "4.14.0"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+configure = ["-DBUILD_LIST=core,imgproc,ts", "-DBUILD_TESTS=ON", "-DBUILD_PERF_TESTS=OFF", "-DBUILD_EXAMPLES=OFF", "-DBUILD_opencv_apps=OFF", "-DBUILD_DOCS=OFF", "-DBUILD_JAVA=OFF", "-DBUILD_opencv_python3=OFF", "-DBUILD_ZLIB=ON", "-DWITH_IPP=OFF", "-DWITH_ITT=OFF", "-DWITH_OPENCL=OFF", "-DWITH_LAPACK=OFF", "-DWITH_EIGEN=OFF", "-DWITH_PROTOBUF=OFF", "-DWITH_KLEIDICV=OFF", "-DWITH_OPENMP=OFF", "-DWITH_TBB=OFF", "-DWITH_VA=OFF", "-DWITH_GTK=OFF", "-DWITH_QT=OFF", "-DWITH_FFMPEG=OFF", "-DWITH_GSTREAMER=OFF", "-DWITH_V4L=OFF", "-DWITH_ADE=OFF", "-DOPENCV_GENERATE_PKGCONFIG=OFF", "-DWITH_JPEG=OFF", "-DWITH_PNG=OFF", "-DWITH_SPNG=OFF", "-DWITH_WEBP=OFF", "-DWITH_TIFF=OFF", "-DWITH_OPENJPEG=OFF", "-DWITH_JASPER=OFF", "-DWITH_OPENEXR=OFF", "-DWITH_AVIF=OFF", "-DWITH_JPEGXL=OFF", "-DWITH_GDAL=OFF", "-DWITH_GDCM=OFF"]
+# The image codec libraries (libjpeg-turbo, libpng, libwebp, ...) serve
+# imgcodecs only, which BUILD_LIST leaves out: off (kiln rejects their NEON
+# kernels and one libwebp C conversion, findings KILN-LIMITS-3.md 8-9).
+# OPENCV_TEST_DATA_PATH is not set (opencv_extra is not fetched): the tests
+# that need its data are skipped by the suite itself.
+test = "ctest --output-on-failure --timeout 9000"
+test_timeout = 10800
+notes = "WP-211. opencv_core and opencv_imgproc (with opencv_ts and the bundled zlib, C through kiln-cc), their accuracy tests opencv_test_core and opencv_test_imgproc. Natively NEON (and NEON_DOTPROD/FP16 dispatch where the CPU dispatch list has them); on x86-64 the dispatched files are compiled once per target (SSE2 .. AVX2, AVX-512) and dispatched at run time. No IPP, OpenCL, KleidiCV, Eigen, LAPACK (no downloads)."
+
+[grpc]
+url = "https://github.com/grpc/grpc"
+tag = "v1.85.2"
+build = "cmake"
+cxx_std = 17
+c = "kiln"
+submodules = true
+# Every dependency from its bundled submodule (abseil, protobuf, re2, zlib,
+# c-ares, BoringSSL, upb, googletest, benchmark). BoringSSL without its
+# assembly (OPENSSL_NO_ASM): .S files would not be kiln TUs.
+configure = ["-DgRPC_BUILD_TESTS=ON", "-DgRPC_DOWNLOAD_ARCHIVES=OFF", "-DgRPC_ABSL_PROVIDER=module", "-DgRPC_PROTOBUF_PROVIDER=module", "-DgRPC_RE2_PROVIDER=module", "-DgRPC_ZLIB_PROVIDER=module", "-DgRPC_CARES_PROVIDER=module", "-DgRPC_SSL_PROVIDER=module", "-DOPENSSL_NO_ASM=ON", "-DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PHP_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_PYTHON_PLUGIN=OFF", "-DgRPC_BUILD_GRPC_RUBY_PLUGIN=OFF", "-Dprotobuf_BUILD_TESTS=OFF", "-DABSL_PROPAGATE_CXX_STD=ON"]
+build_targets = ["grpc", "grpc++", "grpc_cpp_plugin", "status_util_test", "time_util_test", "byte_buffer_test", "sockaddr_utils_test", "useful_test", "bitset_test", "status_helper_test", "json_test", "thread_quota_test", "grpc_byte_buffer_reader_test", "orphanable_test", "ref_counted_test", "env_test", "host_port_test", "string_ref_test", "channel_arguments_test", "proto_utils_test", "codegen_test_minimal", "server_builder_test", "alarm_test", "end2end_test", "async_end2end_test", "generic_end2end_test", "client_callback_end2end_test"]
+# The tests run from the source tree (end2end tests read
+# src/core/tsi/test_creds); a program that did not link is a missing test.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && for t in status_util_test time_util_test byte_buffer_test sockaddr_utils_test useful_test bitset_test status_helper_test json_test thread_quota_test grpc_byte_buffer_reader_test orphanable_test ref_counted_test env_test host_port_test string_ref_test channel_arguments_test proto_utils_test codegen_test_minimal server_builder_test alarm_test end2end_test async_end2end_test generic_end2end_test client_callback_end2end_test; do if [ -x \"$t\" ]; then echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY @SRC@)\"; fi; done > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure -j4 --timeout 2400"
+test_timeout = 10800
+test_vmem_kb = 16000000
+notes = "WP-211. gRPC with every dependency bundled (submodules): libgrpc, libgrpc++ and grpc_cpp_plugin (protoc built from the bundled protobuf), plus 24 test programs (core unit tests and the C++ end2end suites end2end_test, async_end2end_test, generic_end2end_test, client_callback_end2end_test); C (BoringSSL without asm, c-ares, zlib, upb, address_sorting) through kiln-cc."

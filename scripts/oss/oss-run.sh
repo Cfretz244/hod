@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oss-run.sh <project>... [--flavours "O0 O0g"] [--modes "llc hod strict"] [--keep]
+# oss-run.sh <project>... [--flavours "O0 O0g"] [--modes "llc hod strict"] [--target aarch64|x86_64] [--strict] [--keep]
 #
 # The lane's whole procedure for each project (spec/harness.md "Real
 # projects"), one build at a time: for each flavour, the hybrid build
@@ -7,9 +7,15 @@
 # build (`--mode strict`) when the hybrid build fell back nowhere; then the
 # refused modules are kept as findings (oss-report.py collect), the build
 # trees pruned to their logs and reports (unless --keep), and the census
-# page rewritten (<findings>/CENSUS.md). `--modes` runs only the modes
-# named (strict still only after an existing hybrid report with no
-# fallback). Source scripts/env.sh first.
+# page rewritten (<findings>/CENSUS.md). Source scripts/env.sh first.
+# `--target x86_64` (WP-191) runs the cross lane (oss-build.sh --target):
+# its trees under <root>/x64-build/, its findings under <findings>/x64/,
+# its census page <findings>/X64-CENSUS.md. `--strict` runs the strict
+# build even when the hybrid build fell back (its compiles of the refused
+# modules fail, `make -k` builds the rest and the tests that link run).
+# Each kept refusal is then reduced to its smallest module (oss-reduce.py).
+# `--modes` runs only the modes named (a rerun with a new hod keeps the
+# control's reports: `--modes "hod strict"`, or `--modes strict --strict`).
 #
 # It runs from a copy of scripts/oss taken when it starts
 # (<root>/lane-<pid>/, removed at exit), and bash parses this file whole
@@ -26,10 +32,12 @@ FINDINGS="${HOD_OSS_FINDINGS:-$BROOT/findings/oss}"
 # oss-build.sh; spec/harness.md "Job slots").
 LANE_FIFO="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
 [ -p "$LANE_FIFO" ] && export MAKEFLAGS="--jobserver-auth=fifo:$LANE_FIFO"
-FLAVOURS="O0 O0g" MODES="llc hod strict" KEEP="" PROJECTS=()
+FLAVOURS="O0 O0g" TARGET=aarch64 MODES="llc hod strict" STRICT="" KEEP="" PROJECTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --flavours) FLAVOURS="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
+    --strict) STRICT=1; shift ;;
     --modes) MODES="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     -*) echo "oss-run: unknown option $1" >&2; exit 2 ;;
@@ -37,10 +45,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ ${#PROJECTS[@]} -gt 0 ] || { sed -n '2p' "$0" | sed 's/^# //' >&2; exit 2; }
-mkdir -p "$FINDINGS" "$OSS"
+case "$TARGET" in
+  aarch64) TP="" CENSUS="$FINDINGS/CENSUS.md" REGS="$FINDINGS/TEST-REGRESSIONS.txt" ;;
+  x86_64) TP="x64-" CENSUS="$FINDINGS/X64-CENSUS.md" REGS="$FINDINGS/x64/TEST-REGRESSIONS.txt" ;;
+  *) echo "oss-run: --target must be aarch64 or x86_64" >&2; exit 2 ;;
+esac
+mkdir -p "$FINDINGS" "$(dirname "$REGS")" "$OSS"
 SNAP="$OSS/lane-$$"
 mkdir "$SNAP" && cp -p "$HERE"/oss-build.sh "$HERE"/oss-report.py "$HERE"/projects.py "$HERE"/projects.toml \
-  "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$SNAP"/ || exit 2
+  "$HERE"/kiln-cxx "$HERE"/kiln-cc "$HERE"/hod-shim "$HERE"/oss-reduce.py "$SNAP"/ || exit 2
 trap 'find "$SNAP" -mindepth 1 -delete; rmdir "$SNAP"' EXIT
 HERE="$SNAP"
 
@@ -49,18 +62,10 @@ fell_back() {  # the hybrid report's fallbacks: declined + failed (not offered i
 }
 
 worse() {  # tests passing in the control ($1) and not in $2
-  # Per-test results are read again from each tree's test.log (a report
-  # written by an older parser may hold a wrong one).
   python3 -c "
-import json,os,sys
-sys.dont_write_bytecode=True; sys.path.insert(0,sys.argv[3])
-import projects
-def st(r):
-    log=os.path.join(os.path.dirname(r),'test.log')
-    if os.path.exists(log): return projects.test_results(log)[2]
-    return json.load(open(r)).get('test_status') or {}
-a=st(sys.argv[1]); b=st(sys.argv[2])
-print(' '.join(sorted(t for t,s in a.items() if s=='Passed' and b.get(t)!='Passed')))" "$1" "$2" "$HERE" 2>/dev/null
+import json,sys
+a=json.load(open(sys.argv[1])).get('test_status') or {}; b=json.load(open(sys.argv[2])).get('test_status') or {}
+print(' '.join(sorted(t for t,s in a.items() if s=='Passed' and b.get(t)!='Passed')))" "$1" "$2" 2>/dev/null
 }
 
 # Build one mode; a hod or strict tree whose tests do worse than the
@@ -70,16 +75,16 @@ one() {
   echo "oss-run: $p $fl $m ($(date -u +%H:%M:%S))"
   if [ "$m" = llc ]; then
     local prune=(--prune); [ -z "$KEEP" ] || prune=()
-    "$HERE/oss-build.sh" "$p" --mode llc --flavour "$fl" "${prune[@]}"
+    "$HERE/oss-build.sh" "$p" --mode llc --flavour "$fl" --target "$TARGET" "${prune[@]}"
     return
   fi
-  "$HERE/oss-build.sh" "$p" --mode "$m" --flavour "$fl"
-  local w; w="$(worse "$OSS/build/$p/$fl-llc/report.json" "$OSS/build/$p/$fl-$m/report.json")"
+  "$HERE/oss-build.sh" "$p" --mode "$m" --flavour "$fl" --target "$TARGET"
+  local w; w="$(worse "$OSS/${TP}build/$p/$fl-llc/report.json" "$OSS/${TP}build/$p/$fl-$m/report.json")"
   if [ -n "$w" ]; then
     echo "oss-run: $p $fl $m: tests passing under llc and not here: $w (tree kept)"
-    echo "$p $fl $m: $w" >> "$FINDINGS/TEST-REGRESSIONS.txt"
+    echo "$p $fl $m: $w" >> "$REGS"
   elif [ -z "$KEEP" ]; then
-    "$HERE/oss-build.sh" "$p" --mode "$m" --flavour "$fl" --prune-only
+    "$HERE/oss-build.sh" "$p" --mode "$m" --flavour "$fl" --target "$TARGET" --prune-only
   fi
 }
 
@@ -87,14 +92,18 @@ for p in "${PROJECTS[@]}"; do
   for fl in $FLAVOURS; do
     case " $MODES " in *" llc "*) one "$p" "$fl" llc ;; esac
     case " $MODES " in *" hod "*) one "$p" "$fl" hod ;; esac
-    n="$(fell_back "$OSS/build/$p/$fl-hod/report.json")"
-    if [ "$n" != 0 ]; then
-      echo "oss-run: $p $fl: $n objects hod declined or failed in the hybrid build: no strict build"
-    elif [ "${MODES#*strict}" != "$MODES" ]; then
-      one "$p" "$fl" strict
-    fi
-    python3 "$HERE/oss-report.py" collect "$p"
-    python3 "$HERE/oss-report.py" census --out "$FINDINGS/CENSUS.md" > /dev/null
+    case " $MODES " in
+      *" strict "*)
+        n="$(fell_back "$OSS/${TP}build/$p/$fl-hod/report.json")"
+        if [ "$n" = 0 ] || [ -n "$STRICT" ]; then
+          one "$p" "$fl" strict
+        else
+          echo "oss-run: $p $fl: $n objects hod declined or failed in the hybrid build: no strict build"
+        fi ;;
+    esac
+    python3 "$HERE/oss-report.py" --target "$TARGET" collect "$p"
+    python3 "$HERE/oss-reduce.py" "$(dirname "$REGS")" --project "$p" --hod "${HOD_OSS_HOD:-$CARGO_TARGET_DIR/release/hod}"
+    python3 "$HERE/oss-report.py" --target "$TARGET" census --out "$CENSUS" > /dev/null
   done
 done
 exit 0

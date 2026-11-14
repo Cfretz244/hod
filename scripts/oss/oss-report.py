@@ -2,7 +2,7 @@
 """oss-report.py: the reports of hod's real-project lane (spec/harness.md
 "Real projects").
 
-  oss-report.py collect <project>   copy the modules hod refused in the
+  oss-report.py [--target T] collect <project>   copy the modules hod refused in the
                                     project's hod and strict trees into
                                     <findings>/<project>/<reason>/ (at most
                                     $HOD_OSS_KEEP, default one, per reason
@@ -21,7 +21,9 @@
 Reads <root>/build/<project>/<flavour>-<mode>/report.json (written by
 oss-build.sh through projects.py). The root is $HOD_OSS_ROOT, else
 <build root>/oss beside $CARGO_TARGET_DIR; the findings are
-$HOD_OSS_FINDINGS, else <build root>/findings/oss.
+$HOD_OSS_FINDINGS, else <build root>/findings/oss. `--target x86_64`
+(WP-191, before the command) reads the cross trees instead,
+<root>/x64-build/, and keeps their findings under <findings>/x64/.
 """
 
 import argparse
@@ -55,9 +57,22 @@ def roots():
     return oss or os.path.join(broot, "oss"), findings or os.path.join(broot, "findings", "oss")
 
 
+# A target's trees and findings (oss-build.sh's TP prefix).
+PREFIX = {"aarch64": "", "x86_64": "x64-"}
+TARGET = "aarch64"
+
+
+def trees(oss):
+    return os.path.join(oss, PREFIX[TARGET] + "build")
+
+
+def target_findings(findings):
+    return findings if TARGET == "aarch64" else os.path.join(findings, "x64")
+
+
 def load_reports(oss):
     reps = {}
-    for path in sorted(glob.glob(os.path.join(oss, "build", "*", "*", "report.json"))):
+    for path in sorted(glob.glob(os.path.join(trees(oss), "*", "*", "report.json"))):
         tree = os.path.basename(os.path.dirname(path))
         if tree.endswith("-dep"):
             continue
@@ -128,14 +143,20 @@ def hod_cell(*rs):
     return ", ".join(f"`{n}`" for n in names) or "-"
 
 
+def kiln_cell(*rs):
+    """The kiln commits of the row's builds (the control's included)."""
+    names = sorted({r.get("kiln") or "" for r in rs if r} - {""})
+    return ", ".join(f"`{n}`" for n in names) or "-"
+
+
 def status_rows(reps, notes=None):
     """The table; a test worse than the control's that passed every
     recorded rerun (and at least two) is not counted worse: the cell says
     `same (rerun)` with a numbered note, appended to `notes`."""
     notes = [] if notes is None else notes
     out = [
-        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for p in order(reps):
         for fl in FLAVOURS:
@@ -174,7 +195,7 @@ def status_rows(reps, notes=None):
             out.append(
                 f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
-                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} |"
+                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} | {kiln_cell(l, h, s)} |"
             )
     return out
 
@@ -210,6 +231,27 @@ def census_rows(reps, findings=None):
             row += f" {', '.join(os.path.relpath(x, findings) for x in d) or '-'} |"
         out.append(row)
     return out
+
+
+def strict_rows(reps):
+    """The strict builds by what kiln's statistics log says of each
+    object (`backend`), not by the build's exit status (WP-191): under
+    KILN_HOD_STRICT=1 an object hod declined is still built by llc."""
+    rows = []
+    for p in order(reps):
+        for fl in FLAVOURS:
+            r = reps.get((p, fl, "strict"))
+            if not r or not r.get("hod"):
+                continue
+            be = r["hod"].get("backends", {})
+            refused = ", ".join(f"`{k}` {v['modules']}" for k, v in r["hod"].get("refusals", {}).items()) or "-"
+            rows.append(f"| {p} | {fl} | {r['hod'].get('objects', 0)} | {be.get('hod', 0)} | {be.get('hod-declined', 0)} | "
+                        f"{be.get('hod-failed', 0)} | {be.get('llvm', 0)} | {build_cell(r)} | {test_cell(r)} | {refused} |")
+    if not rows:
+        return []
+    return ["", "## Strict builds (kiln's statistics log)", "",
+            "| project | flavour | objects | hod | declined | failed | llvm | build | tests | refusals (modules) |",
+            "|---|---|---|---|---|---|---|---|---|---|", *rows]
 
 
 def not_offered_rows(reps):
@@ -268,39 +310,70 @@ def functions_with(ll, reason):
     return out
 
 
+def census_of(tree):
+    """{(output, bytes): census reasons} from a tree's coverage log: every
+    reason hod found in each refused module (HOD_CENSUS=1)."""
+    out = {}
+    for c in projects.read_coverage(os.path.join(tree, "coverage.log")):
+        if c["outcome"] != "hod":
+            out.setdefault((c["output"], c["bytes"]), set()).update(x for x in c["census"] + [c["reason"]] if x and x != "-")
+    return out
+
+
 def cmd_collect(a):
     oss, findings = roots()
+    findings = target_findings(findings)
     kept = 0
     for fl in FLAVOURS:
         for m in ("hod", "strict"):
-            tree = os.path.join(oss, "build", a.project, f"{fl}-{m}")
+            tree = os.path.join(trees(oss), a.project, f"{fl}-{m}")
+            cen = census_of(tree)
             for meta in sorted(glob.glob(os.path.join(tree, "declined", "*", "*.json"))):
                 with open(meta, encoding="utf-8") as f:
                     rec = json.load(f)
                 ll = meta[: -len(".json")] + ".ll"
                 if not os.path.exists(ll):
                     continue
-                d = os.path.join(findings, a.project, safe(rec.get("reason")))
-                os.makedirs(d, exist_ok=True)
-                have = sorted(glob.glob(os.path.join(d, "*.ll")))
+                first = rec.get("reason")
+                # The module is kept under its first reason and under every
+                # other reason of its census (WP-191: a reason that is never
+                # a module's first still gets its modules).
+                others = sorted(cen.get((rec.get("output"), rec.get("bytes")), set()) - {first})
                 src = next((x for x in rec.get("kiln_argv", []) if x.endswith((".cc", ".cpp", ".cxx", ".c", ".C"))), "?")
-                if len(have) >= KEEP or kept_source(d, src):
-                    continue
-                n = len(have) + 1
-                shutil.copyfile(ll, os.path.join(d, f"{n}.ll"))
-                if not rec.get("function"):
-                    fns = functions_with(ll, rec.get("reason") or "")
-                    if fns:
-                        rec["function"] = ", ".join(fns[:3]) + (" ..." if len(fns) > 3 else "")
-                with open(os.path.join(d, f"{n}.cmd"), "w", encoding="utf-8") as f:
-                    f.write(f"# flavour {fl}, mode {m}; cwd {rec.get('kiln_cwd')}\n")
-                    f.write(" ".join(rec.get("kiln_argv", [])) + " \n")
-                    f.write("# hod " + " ".join(rec.get("hod_args", [])) + "\n")
-                    f.write("# " + (rec.get("diag") or "") + "\n")
-                desc = f"{n}: `{rec.get('reason')}`" + (f" in `{rec['function']}`" if rec.get("function") else "") + f" ({os.path.basename(src)}, {fl}, {m})"
-                with open(os.path.join(d, "README.md"), "a", encoding="utf-8") as f:
-                    f.write(desc + "\n")
-                kept += 1
+                for reason in [first] + others:
+                    d = os.path.join(findings, a.project, safe(reason))
+                    os.makedirs(d, exist_ok=True)
+                    have = sorted(glob.glob(os.path.join(d, "*.ll")))
+                    have = [h for h in have if os.path.basename(h) != "min.ll"]
+                    # A reduced reason (min.ll, its 1.ll dropped) is kept already.
+                    if len(have) >= KEEP or os.path.exists(os.path.join(d, "min.ll")) or kept_source(d, src):
+                        continue
+                    n = len(have) + 1
+                    # A hard link, not a copy: one module is kept under each of
+                    # its census reasons, and a vector-heavy project's modules
+                    # (100 MB, hundreds of reasons) would fill the disk (WP-200).
+                    try:
+                        os.link(ll, os.path.join(d, f"{n}.ll"))
+                    except OSError:
+                        shutil.copyfile(ll, os.path.join(d, f"{n}.ll"))
+                    fn = rec.get("function") if reason == first else None
+                    if not fn:
+                        fns = functions_with(ll, reason or "")
+                        if fns:
+                            fn = ", ".join(fns[:3]) + (" ..." if len(fns) > 3 else "")
+                    with open(os.path.join(d, f"{n}.cmd"), "w", encoding="utf-8") as f:
+                        f.write(f"# flavour {fl}, mode {m}; cwd {rec.get('kiln_cwd')}\n")
+                        f.write(" ".join(rec.get("kiln_argv", [])) + " \n")
+                        f.write("# hod " + " ".join(rec.get("hod_args", [])) + "\n")
+                        if reason == first:
+                            f.write("# " + (rec.get("diag") or "") + "\n")
+                        else:
+                            f.write(f"# census: {reason} (the module's first refusal: {first})\n")
+                    how = "" if reason == first else f", census; first `{first}`"
+                    desc = f"{n}: `{reason}`" + (f" in `{fn}`" if fn else "") + f" ({os.path.basename(src)}, {fl}, {m}{how})"
+                    with open(os.path.join(d, "README.md"), "a", encoding="utf-8") as f:
+                        f.write(desc + "\n")
+                    kept += 1
     print(f"oss-report: {kept} modules kept under {os.path.join(findings, a.project)}")
 
 
@@ -313,6 +386,7 @@ def page(reps, title, intro, findings=None):
     lines += ["", "## Refusal census (hybrid builds)", ""]
     lines += census_rows(reps, findings)
     lines += not_offered_rows(reps)
+    lines += strict_rows(reps)
     return "\n".join(lines) + "\n"
 
 
@@ -332,7 +406,7 @@ def cmd_rerun(a):
     import time
 
     oss, _ = roots()
-    tree = os.path.join(oss, "build", a.project, f"{a.flavour}-{a.mode}")
+    tree = os.path.join(trees(oss), a.project, f"{a.flavour}-{a.mode}")
     if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")):
         sys.exit(f"oss-report: {tree} is not a kept build tree")
     row = projects.load()[a.project]
@@ -365,6 +439,7 @@ def cmd_rerun(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--target", choices=sorted(PREFIX), default="aarch64")
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect")
     c.add_argument("project")
@@ -376,11 +451,14 @@ def main():
         s = sub.add_parser(n)
         s.add_argument("--out")
     a = ap.parse_args()
+    global TARGET
+    TARGET = a.target
     if a.cmd == "collect":
         return cmd_collect(a)
     if a.cmd == "rerun":
         return cmd_rerun(a)
     oss, findings = roots()
+    nfind = target_findings(findings)
     reps = load_reports(oss)
     kiln = next((r.get("compiler_path") for r in reps.values()), "?")
     intro = [
@@ -394,12 +472,14 @@ def main():
     ]
     hosts = sorted({r.get("host", "") for r in reps.values()} - {""})
     if hosts:
-        intro += ["", f"Host: {', '.join(hosts)}."]
+        intro += ["", f"Host: {', '.join(hosts)}; target: {TARGET}" + (
+            " (cross-built, tests under qemu-x86_64)." if TARGET != "aarch64" else ".")]
     if a.cmd == "status":
         write(page(reps, "Real projects through kiln and hod", intro), a.out)
     else:
-        text = page(reps, "Real-project census (live)", intro + ["", f"kiln: {kiln}"], findings)
-        notes = os.path.join(findings, "NOTES.md")  # the lane's own remarks, by hand
+        title = "Real-project census (live)" if TARGET == "aarch64" else f"Real-project census, {TARGET} (live)"
+        text = page(reps, title, intro + ["", f"kiln: {kiln}"], nfind)
+        notes = os.path.join(nfind, "NOTES.md")  # the lane's own remarks, by hand
         if os.path.exists(notes):
             with open(notes, encoding="utf-8") as f:
                 text += "\n" + f.read()

@@ -266,17 +266,21 @@ range, register, sysreg, option, vector, fp-immediate, specifier,
 expression, symbol, label, reach, literal-pool}`, `asm:label`,
 `asm:lexical`, `asm:feature`, `asm:template`, `asm:dialect`,
 `asm:section`, `asm:symbol`, `asm:unaligned` (an instruction of module
-text at an offset that is not a multiple of 4, §9). From code
-generation: `limit:aligned-code-moved` (§17: an aligned template after
-bytes the code's shrinking removes).
+text at an offset that is not a multiple of 4, §9). `asm:align-crossed`
+(§18: an x86-64 template branch across an alignment directive that may
+pad). From code generation: `limit:aligned-code-moved` (§17: an aligned
+AArch64 template after bytes the code's shrinking removes) and
+`x64:align-tune-cpu` (§18: padding `nop`s for a tuning hod has not
+measured).
 
 The AArch64 mnemonics real templates still need, and their refusals, are
 §16's table as §17 leaves it: the NEON and SVE instructions
 (`asm:mnemonic/fmla`, `/umlal`, `/pmull`, `/cntb`, ...;
 `asm:operand/vector` for a vector arrangement of a known mnemonic,
 `fcmeq v0.4s` among them), the directives other than §17's
-(`asm:directive/inst`, `/arch_extension`, `/balignw`, ...; on x86-64
-`asm:directive/p2align` stays, §17), `asm:mnemonic/adrp` (with
+(`asm:directive/inst`, `/arch_extension`, `/balignw`, ...; x86-64 takes
+the same three alignment directives since WP-218, §18),
+`asm:mnemonic/adrp` (with
 `asm:operand/specifier` for `:lo12:`), `asm:mnemonic/ld1`. A prefetch
 operation that is no name of §16 is `asm:operand/option`; `prfm` and
 `prfum` take no write-back.
@@ -437,8 +441,10 @@ constructor makes the same choice. Another mnemonic is
   field, signed or unsigned (`asm:operand/range`).
 - **Labels**: numeric local labels, branches to them chosen short or near
   as LLVM's relaxation does (short until the distance needs `rel32`,
-  repeated to a fixed point). A named label is `asm:label`, any other
-  directive `asm:directive/<name>`. A body defines no symbol; it
+  repeated to a fixed point). A named label is `asm:label`; `.p2align`,
+  `.balign` and `.align` in code are §18's (`x64::assemble_aligned`;
+  `x64::assemble` still refuses them); any other directive
+  `asm:directive/<name>`. A body defines no symbol; it
   references one only through a memory operand (§10.2 "Symbols").
 - **Operands printed** (`print_operand`, as `X86AsmPrinter`): a general
   register in the view of its value's size (an `i32` in `eax`); `b`,
@@ -539,6 +545,7 @@ function's `target-features` (it assembles `prefetchw`, `crc32b`,
 |---|---|---|
 | `.cfi_*` in a body (valgrind's `CALL_FN_*`): taken since WP-212, §15 | — | 15 |
 | a call or branch to a symbol (`call __bolt_fini_trampoline`): taken since WP-204, §14 | — | 3 |
+| `.p2align 3`..`6` (zstd's loop heads, two copies): in the census and taken since WP-218, §18 | — | 34 |
 | the control registers (`mov %cr3, %rax`) | `asm:operand/register` | 2 |
 | AVX (`vdivpd`) | `asm:mnemonic/v*` | 2 |
 | an indirect branch or call (`jmpq *%rdx`, `call *%rax`) | `asm:operand/form` | 2 |
@@ -552,6 +559,10 @@ found in 4 templates) were refused before the body is read, as
 `asm:constraint/t`, `asm:constraint/st` (§11); since WP-204 `{st}` and
 `{st(1)}` are taken (§14). With both, the census's count is 201 of 220
 templates (197 bodies of `census_x64.rs`, and the 4 x87 templates).
+After WP-212 (§15) `census_x64.rs` counted 212 of 220. WP-218 (§18)
+adds zstd's 34 alignment templates, which were counted in the AArch64
+census until WP-217 found that they are x86-64 code. All of them
+assemble: **246 of 254**.
 
 **Symbol operands (`Ws`).** protobuf's `port.h` (x86-64 Linux, clang 19
 and up) keeps a type's default instance alive with
@@ -898,21 +909,143 @@ table with `.p2align 3` under `#ifndef __SEH__` inside the string; its
 row now holds the directive and assembles. The three scalar SIMD rows
 assemble. **143 of 177** templates assemble (140 of 211 before).
 
-**x86-64.** The x86-64 census (§13) has no template refused for an
-alignment directive. zstd's 34 (`.p2align 5`, `.p2align 4`, in
+**x86-64.** zstd's 34 templates (`.p2align 3` to `6`, in
 `ZSTD_compressBlock_*` and `ZSTD_decompressSequences*`) are x86-64
-templates and stay `asm:directive/p2align`:
+templates; since WP-218 they assemble there (§18), with padding counted
+after the function shrinks.
 
-- x86-64 code shrinks: every `-O0` branch is relaxable and the prologue
-  is cut (§5.6.15), so nearly every function with such a template would
-  be `limit:aligned-code-moved`. Taking them needs padding counted after
-  the shrinking, or a shrinking that keeps it.
-- The padding's `nop`s follow the function's tuning: `llc` 19 and 22
-  write 15-byte `nop`s for `tune-cpu` (else `target-cpu`) `generic`,
-  `x86-64`, `x86-64-v2`..`-v4` (and `skylake`), 10-byte ones with no
-  CPU (`llc`'s default `i586` tuning) or `tune-cpu` `i586` (measured
-  with 31 bytes of padding: 15, 15, 1 against 10, 10, 10, 1). kiln writes
-  `"target-cpu"="x86-64" "tune-cpu"="generic"`: the 15-byte table of
-  `hod_mc_x64::nop`.
-- Fill `0x90` differs as fill 0 does on AArch64: `nop`s to 19, `0x90`
-  bytes to 22.
+## 18. Alignment directives in x86-64 templates (WP-218)
+
+**The directives** (`align.rs`, `x64::assemble_aligned`) are §17's:
+`.p2align n`, `.balign n` and `.align n`, in any case, each with
+`{, fill}{, max}`, read as `llvm-mc` 19 and 22 read them. On x86-64 ELF
+`.align` counts bytes, as `.balign` does, and it must be a power of two
+(`.align 3` is an error to `llvm-mc`). The refusals:
+
+- `.p2align 17`, `.balign 3` and `.align 131072` are
+  `asm:operand/range`. So are a fill outside -128..255 and a `max` below
+  1.
+- `.p2align 4,` is `asm:operand/syntax`. A fourth operand is
+  `asm:operand/form`, and so is a `lock` before a directive.
+- `.p2alignw`, `.p2alignl`, `.balignw` and `.balignl` stay
+  `asm:directive/<name>`.
+- When the padding needed is more than `max`, none is written.
+
+**The padding.** Without a fill, the padding is `nop`s of at most the
+function's longest length, longest first: `hod_mc_x64::nop`'s forms,
+with the 11- to 15-byte ones using extra `66` prefixes
+(`align::fill_x64`). With a fill byte, every byte is that byte.
+
+- **Fill 0x90, written positive**: `llvm-mc` 19 writes `nop`s, 22
+  writes `0x90` bytes. hod writes 22's (kiln's LLVM), as with AArch64's
+  fill 0 (§17).
+- Fill 0 is zeros in both majors. Fill -112 is `0x90` bytes in both.
+
+**The longest `nop` follows the tuning** (`hod_x64::tuning`, measured
+with `llc` 19 and 22 for each of the 131 CPUs that 22 lists; see that
+module for the tables):
+
+- **The tuning CPU** is the `tune-cpu` attribute when there is one,
+  even an empty one. Otherwise it is `target-cpu`, or `-mcpu` when the
+  function has no `target-cpu`, with `x86-64` read as `generic`.
+  Otherwise there is none.
+- **No CPU, or an empty one**, is LLVM's default `i586` tuning: 10
+  bytes.
+- **The tuning features.** Each CPU has at most one of
+  `fast-7bytenop`, `fast-11bytenop` and `fast-15bytenop`. A `+name` or
+  `-name` in `target-features`, then in `-mattr`, turns it on or off.
+- **The longest `nop`** is 7 bytes with `fast-7bytenop`, else 15 with
+  `fast-15bytenop`, else 11 with `fast-11bytenop`, else 10.
+- kiln writes `"target-cpu"="x86-64" "tune-cpu"="generic"`, which gives
+  15.
+- `diamondrapids`, `novalake` and `wildcatlake` are 15 to LLVM 22. LLVM
+  19 does not know them and tunes as for no CPU. hod follows 22.
+- **Another CPU name** is one hod has not measured. A template that pads
+  with `nop`s in such a function is refused as `x64:align-tune-cpu`. One
+  with a fill byte, or with no padding, is not.
+- `-mcpu` and `-mattr` change nothing else in hod's code
+  (`spec/abi-x64.md` §1.3).
+
+One quirk of `llc` is not hod's. `llc` caches a subtarget under its
+`target-cpu`, `tune-cpu` and features joined with no separator. So a
+function with `target-cpu` `skylake` and an empty `tune-cpu` is given
+the subtarget of an earlier function whose `tune-cpu` is `skylake`, and
+gets that function's 15 instead of 10. hod applies the rule to each
+function on its own. The two agree whenever the joined strings are
+distinct, which is always the case with kiln's attributes.
+
+**Where the boundary is counted.** It is counted as on AArch64 (§17):
+from the start of the function. The function is aligned to the largest
+alignment of its templates (`FnCx::align_code` raises it), so a boundary
+counted from the function's start is also a boundary of the section.
+
+- **With `-function-sections`** the bytes are `llc`'s. Each template's
+  bytes equal `llvm-mc`'s at the same section offset with the
+  function's tuning. This holds in hod's objects (plain, stressed, far)
+  and in `llc` 19's and 22's, and each section has `llc`'s alignment.
+- **In one `.text`**, `llc` pads inside the function from the section
+  offset, while hod puts the function itself on the boundary. hod's
+  placement was kept, for three reasons:
+  - hod compiles each function at offset 0, in parallel, before its
+    place in the section is known.
+  - The aligned instruction's address modulo the alignment is the same
+    either way.
+  - The section's alignment is the same.
+
+  The tests show the bytes are still `llvm-mc`'s at the template's
+  section offset in both objects. The bytes hod adds before a function
+  are the section's padding between functions, which is never executed.
+
+**Shrinking** (`spec/codegen.md` §5.6.15, "Alignment points"). x86-64
+code shrinks after it is complete: the prologue is cut and branches are
+relaxed. A template is therefore emitted with each directive's largest
+padding, `min(align - 1, max)` bytes. Shrinking then keeps what the
+directive's final offset needs, cuts the rest and fills the kept bytes
+again. The relaxed branches are a fixed point that takes the padding
+into account. Every table of code offsets moves with the cut, as for
+any cut: labels, fixups, relocations, line, CFI, call-site and
+debug-call rows, and islands. x86-64 writes no jump tables.
+
+- **No row is written inside the padding.** A template's `.cfi_*` row
+  after a directive (§15) moves with the code after it.
+- **A branch across a directive.** A branch of the template to a label
+  on the other side of a directive that may pad is refused as
+  `asm:align-crossed`. Its distance would depend on the final padding,
+  which the template's own relaxation cannot see. A branch over a
+  directive that never pads, such as `.p2align 0`, is taken, and so is
+  one beside a directive. No template of the census branches across a
+  directive.
+- **The far mode** (§6.3) relaxes nothing. Padding is still cut to what
+  each offset needs.
+- **AArch64** keeps §17's rule: it refuses (`limit:aligned-code-moved`)
+  rather than recomputing the padding, since only a probed prologue is
+  ever cut there.
+
+**Evidence.**
+
+- `crates/hod_asm/tests/llvm_mc_x64_align.rs`: 21 bodies, among them
+  zstd's run, max-skip, fills, case forms, and a branch that is short or
+  near depending on the padding. Each was assembled at 64 start offsets
+  with the four `nop` tables, and every result equals `llvm-mc` 22's and
+  19's bytes.
+  - Reserve-then-cut (the shrinking's arithmetic) gives the same bytes.
+  - The refusals are checked by name.
+  - Fill 0x90 equals 22's.
+- `crates/hod_x64/tests/inline_asm_align.rs` checks these against
+  `llc` and `llvm-mc`:
+  - The census-like templates, with `-function-sections` and in one
+    `.text`.
+  - The rule for every CPU, and for `-mcpu`/`-mattr`.
+  - The refusal of an unmeasured tuning.
+
+  It also runs zstd-shaped seeds: a loop after `.p2align 6`/`5`/`4,,10`/
+  `3` in a probed frame with a stack protector, a VLA, branches before
+  and after, and an invoke after the padding. With these seeds it checks:
+  - The programs, linked with bfd, lld and mold, dynamic and static,
+    and run.
+  - `llvm-dwarfdump --verify`, and line and unwind rows on instruction
+    boundaries.
+  - gdb's backtrace and stepping through the padding.
+- The record (`spec/landed/asm/WP-218.md`) has the counts. It also has
+  zstd's two modules built by kiln with `hod --strict`, whose loop heads
+  are on their boundaries as `llc`'s are.

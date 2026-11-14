@@ -739,9 +739,27 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     // The text first: nothing is emitted for a template that refuses.
     let mut body = String::new();
     substitute(cx, inst, asm, &ops, &plan, &mut body)?;
-    let (mut code, mut refs, mut cfi) = (Vec::new(), Vec::new(), Vec::new());
-    asm::assemble_with_cfi(&body, &mut code, &mut refs, &mut cfi, &mut String::new())
-        .map_err(refused)?;
+    let (mut code, mut refs, mut cfi, mut aligns) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // `spec/asm.md` §18: the padding is written at its largest and cut to
+    // what its offset needs once the function's code is complete.
+    let longest = cx.target.nop;
+    let placement = asm::Placement::Reserve;
+    let scratch = &mut String::new();
+    asm::assemble_aligned(
+        &body,
+        placement,
+        longest.max(1),
+        &mut code,
+        &mut refs,
+        &mut cfi,
+        &mut aligns,
+        scratch,
+    )
+    .map_err(refused)?;
+    if longest == 0 && aligns.iter().any(|a| a.align.fill.is_none() && a.len != 0) {
+        return unsupported(crate::tuning::UNMEASURED);
+    }
     let mut fields = Vec::with_capacity(refs.len());
     for r in &refs {
         // A symbol of the module, by its object name, as LLVM's
@@ -763,7 +781,23 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         };
         fields.push((r.offset, kind, sym, r.addend));
     }
-    emit(cx, inst, &ops, plan, stack, &code, &fields, &cfi)
+    emit(
+        cx,
+        inst,
+        &ops,
+        plan,
+        stack,
+        Body { code: &code, fields: &fields, cfi: &cfi, aligns: &aligns },
+    )
+}
+
+/// A template's assembled parts.
+#[derive(Clone, Copy)]
+struct Body<'b> {
+    code: &'b [u8],
+    fields: &'b [Field],
+    cfi: &'b [asm::CfiRow],
+    aligns: &'b [asm::AlignRow],
 }
 
 /// What a template does to the x87 stack (§14, LLVM's
@@ -881,17 +915,15 @@ fn reg_bytes(cx: &FnCx<'_, X64>, r: PReg, ty: TypeId) -> u32 {
 }
 
 #[allow(clippy::too_many_lines, reason = "the sequence of the module documentation, in order")]
-#[allow(clippy::too_many_arguments, reason = "the template's parts, assembled")]
 fn emit<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
     ops: &Ops,
     mut plan: Plan,
     stack: X87Stack,
-    code: &[u8],
-    fields: &[Field],
-    cfi: &[asm::CfiRow],
+    body: Body<'_>,
 ) -> CgResult<()> {
+    let Body { code, fields, cfi, aligns } = body;
     let site = inst.call().expect("checked by the caller");
     let args = site.args();
     deferred_first(cx, inst, None)?;
@@ -1026,6 +1058,11 @@ fn emit<'a>(
     // 4. The template.
     let start = cx.offset();
     cx.emit(code);
+    // `spec/asm.md` §18: each alignment directive's padding, settled when
+    // the function's code is complete.
+    for a in aligns {
+        cx.align_code(start + a.offset, a.len, a.align, cx.target.nop)?;
+    }
     for &(offset, kind, sym, addend) in fields {
         cx.reloc(start + offset, RelocKind::X64(kind), SymRef::Module(sym), addend);
     }

@@ -324,7 +324,9 @@ fn what_is_not_assembled_is_refused_by_name() {
             "asm:operand/specifier",
         ),
         (one("void", "call void asm \"x: jmp x\", \"\"()"), "asm:label"),
-        (one("void", "call void asm \".p2align 4\", \"\"()"), "asm:directive/p2align"),
+        // §18 (WP-218): `.p2align` is taken; its word-fill forms are not.
+        (one("void", "call void asm \".p2alignw 4\", \"\"()"), "asm:directive/p2alignw"),
+        (one("void", "call void asm \"jmp 1f\\0A.p2align 4\\0A1:\", \"\"()"), "asm:align-crossed"),
         (one("void", "call void asm \"jmp 1f\", \"\"()"), "asm:operand/label"),
         (one("void", "call void asm \"nop $1\", \"r\"(i32 %x)"), "asm:template"),
         (one("i32", "%r = call i32 asm \"nop\", \"=r,r\"()"), "asm:constraint/count"),
