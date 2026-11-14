@@ -318,3 +318,23 @@ configure = ["-DSIMDJSON_DEVELOPER_MODE=ON", "-DSIMDJSON_ENABLE_THREADS=ON", "-D
 test = "ctest --output-on-failure -E 'checkperf|fuzz'"
 c_compiler = "clang-19"
 notes = "WP-200, x86-64 only. The simdjson row's runtime dispatch puts each x86-64 kernel (westmere, haswell, icelake) in a `#pragma clang attribute push(__attribute__((target(...))))` region, which kiln rejects ('#pragma clang attribute' is not supported yet); built for Haswell (-march=haswell: AVX2, BMI1/2, PCLMUL, LZCNT, POPCNT in every function) with the icelake kernel off, the haswell kernel is the built-in one and needs no region. qemu-x86_64 runs AVX2."
+
+[boost_tmpl]
+url = "https://github.com/boostorg/boost"
+tag = "boost-1.90.0"
+checkout = "boost"
+submodules = true
+build = "cmake"
+cxx_std = 20
+configure = [
+  "-DBUILD_TESTING=ON", "-DBUILD_SHARED_LIBS=OFF",
+  "-DBOOST_INCLUDE_LIBRARIES=mp11;variant2;describe;container;unordered;json;multi_index;spirit",
+  "-DCMAKE_PROJECT_Boost_INCLUDE=@KILN_OSS@/shims/boost-jamfile-tests.cmake",
+  "-DKILN_BOOST_JAMFILE_LIBRARIES=multi_index;spirit",
+  "-DKILN_BOOST_JAMFILE_SKIP_spirit=^(karma|lex|qi|support|test_headers)_",
+]
+build_targets = ["tests"]
+test = "ctest --output-on-failure --timeout 1200"
+test_timeout = 7200
+c_compiler = "clang-19"
+notes = "WP-200. Eight template-heavy Boost libraries with their own tests: mp11, variant2, describe, container, unordered, json (CMake tests), multi_index and Spirit X3 (b2-only tests, registered by kiln's shim boost-jamfile-tests.cmake, read from kiln's scripts/oss; Spirit's Qi, Karma and Lex tests left out)."
