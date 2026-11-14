@@ -33,7 +33,7 @@ import projects  # noqa: E402
 
 FLAVOURS = ("O0", "O0g")
 MODES = ("llc", "hod", "strict")
-KEEP = 3
+KEEP = int(os.environ.get("HOD_OSS_KEEP") or 1)
 
 
 def roots():

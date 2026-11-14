@@ -3992,7 +3992,7 @@ strict mode's 2 to 1). For a status other than 0 it appends a line to
 (`unsupported construct '<reason>' in function '<f>'`), the compile
 command of the kiln process (from `/proc`) and its directory, and keeps
 the module as `declined/<reason>/<n>.ll` with `<n>.json`, `n` from 1 to
-`$HOD_OSS_KEEP` (3): the first modules of each reason, claimed with an
+`$HOD_OSS_KEEP` (1; modules run to megabytes): the first modules of each reason, claimed with an
 exclusive create.
 
 **report.json** (by `projects.py report-json`): kiln's fields (`tus`,
@@ -4015,7 +4015,7 @@ report and kept modules unless a test that passes under `llc` does not
 pass in it (that tree is kept whole and the test is listed in
 `<findings>/TEST-REGRESSIONS.txt`). Then `oss-report.py collect` copies
 the kept modules into `<findings>/<project>/<reason>/<n>.ll` (at most
-three per reason per project) with `<n>.cmd` (the compile command, its
+`$HOD_OSS_KEEP`, default one, per reason per project) with `<n>.cmd` (the compile command, its
 directory, hod's arguments and diagnostic) and a `README.md` line per
 module, and `oss-report.py census` rewrites `<findings>/CENSUS.md`.
 `<findings>` is `$HOD_OSS_FINDINGS`, else `findings/oss/` in the build
