@@ -348,3 +348,17 @@ test = "ctest --output-on-failure --timeout 1200"
 test_timeout = 7200
 c_compiler = "clang-19"
 notes = "WP-200. Eight template-heavy Boost libraries with their own tests: mp11, variant2, describe, container, unordered, json (CMake tests), multi_index and Spirit X3 (b2-only tests, registered by kiln's shim boost-jamfile-tests.cmake, read from kiln's scripts/oss; Spirit's Qi, Karma and Lex tests left out)."
+
+# ------------------------------------------------ the third set (WP-211)
+# Larger programs with their own test suites. Their findings live apart
+# (HOD_OSS_ROOT=<build root>/oss3, HOD_OSS_FINDINGS=<build root>/findings/oss3).
+
+[flatbuffers]
+url = "https://github.com/google/flatbuffers"
+tag = "v25.12.19"
+build = "cmake"
+cxx_std = 17
+configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF"]
+test = "ctest --output-on-failure"
+c_compiler = "clang-19"
+notes = "WP-211. The flatc schema compiler and the flatbuffers library, built by kiln; flatc generates the tests' C++ during the build; ctest runs flattests (and the sample programs)."
