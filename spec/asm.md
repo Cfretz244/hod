@@ -737,11 +737,6 @@ name with `@@` stays `asm:symbol`. `emit_module_asm.rs`'s `symver` case
 unreferenced names) has `llc` 19's and 22's sections, symbols (as sets)
 and relocations; module text without `.symver` reads as before.
 
-`.cfi_*` in a body needs two changes outside the assembler: `hod_eh`'s
-CFI program has no remember/restore state, and the x86-64 prologue
-writes its callee-saved rows after the body, which `cfi_at`'s ordering
-refuses (WP-204's record).
-
 ## 16. AArch64 prefetch, and the census of AArch64 templates (WP-216)
 
 **`prfm` and `prfum`** (`a64/prefetch.rs`, `encode.rs`
