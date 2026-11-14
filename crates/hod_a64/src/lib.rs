@@ -48,6 +48,7 @@
 //! | `named_reg` | WP-064 | `llvm.read_register`, `read_volatile_register`, `write_register` | `tests/named_reg.rs` |
 //! | `inline_asm` | WP-103 | inline assembly with a template of instructions, through `hod_asm`; `callbr` | `tests/inline_asm.rs` |
 //! | `tail2` | WP-095 | scalar `bfloat` arithmetic, compares and conversions, `extractelement` of `i128` lanes | `tests/tail2.rs` |
+//! | `unwind` | WP-215 | the frame as an unwinder sees it: `llvm.sponentry`, `llvm.addressofreturnaddress`, `llvm.eh.unwind.init` (§5.6.38) | `tests/frame_intrinsics.rs` |
 //! | `tail3` | WP-101 | vectors of `i128` and `fp128` lanes, `bfloat` vectors and intrinsics, `preserve_allcc` | `tests/tail3.rs` |
 //! | `protect` | WP-185 | branch protection: `bti c`/`bti j` landing pads, `paciasp`/`autiasp` and their CFI rows | `tests/protect.rs` |
 //!
@@ -86,6 +87,7 @@ pub mod tail3;
 pub mod target;
 pub mod term;
 pub mod tls;
+pub mod unwind;
 pub mod vcall;
 pub mod vector;
 

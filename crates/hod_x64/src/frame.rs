@@ -181,7 +181,9 @@ pub struct FrameState {
     pub saved: u8,
     /// The function saves every member of [`SAVED`] whatever its body
     /// used (§5.6.15): a `llvm.eh.sjlj.setjmp` resumes with the
-    /// registers of the code that jumped (WP-147, §5.6.16).
+    /// registers of the code that jumped (WP-147, §5.6.16); an
+    /// `llvm.eh.unwind.init` asks for them all as `llc` saves them
+    /// (WP-215, §5.6.38).
     pub save_all: bool,
     /// The frame description, final in [`end`] (the coroutine stubs
     /// build the same frame).
@@ -196,6 +198,9 @@ pub struct FrameState {
     pub probe: u32,
     /// What a `preserve_mostcc`/`preserve_allcc` function also saves.
     pub preserve: Preserve,
+    /// The slot of `rax` and `rdx` and the exit of `llvm.eh.return.i64`
+    /// (WP-215, `crate::unwind`).
+    pub unwind: crate::unwind::UnwindState,
 }
 
 /// `Target::begin_function`: the prologue and its CFI rows.
@@ -242,6 +247,8 @@ pub fn begin(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     }
     // WP-137: a coroutine's mode and frame words.
     crate::coro_body::enter(cx)?;
+    // WP-215: `rax` and `rdx` of a function with `llvm.eh.return.i64`.
+    crate::unwind::enter(cx)?;
     // WP-125: the address returned in `rax`, the register save area.
     crate::call::enter(cx)
 }
@@ -291,6 +298,7 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
             cx.cfi_at(at, CfiOp::Offset { reg: DWARF_XMM0 + u16::from(x.code()), cfa_offset })?;
         }
     }
+    crate::unwind::rows(cx, below)?; // WP-215
     cx.bind(cx.epilogue())?;
     // WP-125: the `sret` or return-in-memory address back in `rax`.
     crate::call::before_return(cx);
@@ -319,6 +327,16 @@ pub fn end(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
             CallTarget::Reg(callee) => put(cx, mc::jmp_r(gp(callee))),
         }
         cx.tail_branch_ends_here(index); // WP-163: `spec/dwarf.md` §6.21
+    }
+    // WP-215 (§5.6.38): the exit of `llvm.eh.return.i64`, whose call left
+    // the handler's slot in `rcx`; the body's rules again, as a tail exit.
+    if let Some(exit) = crate::unwind::exit_label(cx) {
+        cx.bind(exit)?;
+        cx.cfi(CfiOp::DefCfa { reg: DWARF_RBP, offset: INCOMING_BASE });
+        crate::unwind::reload(cx)?;
+        teardown(cx)?;
+        put(cx, mc::mov_rr(Size::Q, RSP, Reg::Rcx));
+        put(cx, mc::ret());
     }
     crate::guard::fail(cx)?; // WP-183: the failure call after the exits
     // Last: the exit sequences above may address locals too (WP-125).

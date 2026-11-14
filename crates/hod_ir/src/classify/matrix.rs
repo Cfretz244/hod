@@ -373,6 +373,12 @@ const X64_ONLY: &str = "an x86 property";
 const X86_SSE: &[TypeClass] = &[TypeClass::Int, TypeClass::Ptr, TypeClass::Vector];
 /// WP-147.
 const SJLJ_A64: &str = "`llc` for AArch64 compiles `setjmp` to 0 and `longjmp` to nothing; clang refuses the builtins there";
+/// WP-215 (`spec/codegen.md` §5.6.38).
+const DWARF_CFA_A64: &str = "`llc` 19 and 22 for AArch64 return the CFA less 16 (the frame pointer), not the CFA their own unwind tables and GCC define";
+const EH_RETURN_A64: &str =
+    "`llc` 19 and 22 for AArch64 emit nothing for it: the code falls through into what follows";
+const SPONENTRY_X64: &str =
+    "`llc` 19 and 22 for x86-64 abort in instruction selection; clang has no builtin for it there";
 /// WP-101.
 const NO_RELOCATION: &str = "no ELF relocation subtracts a symbol's address; `llc` refuses it too";
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
@@ -1931,6 +1937,21 @@ const INTRINSIC: [SupportRow; Intrinsic::ALL.len() - INTRINSIC_A64.len() - INTRI
         on(&[TypeClass::Ptr, TypeClass::Int]),
         "",
     ),
+    row(
+        "intrinsic:llvm.eh.dwarf.cfa",
+        never(DWARF_CFA_A64),
+        on(&[TypeClass::Ptr, TypeClass::Int]),
+        "",
+    ),
+    row(
+        "intrinsic:llvm.eh.return.i64",
+        never(EH_RETURN_A64),
+        on(&[TypeClass::Int, TypeClass::Ptr]),
+        "",
+    ),
+    both("intrinsic:llvm.eh.unwind.init", ON, ""),
+    row("intrinsic:llvm.sponentry", on(&[TypeClass::Ptr]), never(SPONENTRY_X64), ""),
+    both("intrinsic:llvm.addressofreturnaddress", on(&[TypeClass::Ptr]), ""),
     row("intrinsic:llvm.trap", ON, ON, ""),
     row("intrinsic:llvm.debugtrap", ON, ON, ""),
     row("intrinsic:llvm.ubsantrap", on(&[TypeClass::Int]), on(&[TypeClass::Int]), ""),
