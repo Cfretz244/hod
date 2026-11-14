@@ -4037,6 +4037,13 @@ cell says `same (rerun, note n)` and a numbered note under the table
 gives the counts; with fewer reruns, or a failed one, it stays worse,
 with its note.
 
+**Test environment.** Tests run under the row's address-space cap
+(`ulimit -v`, `vmem_kb`) with `MALLOC_ARENA_MAX=4` (glibc reserves 64 MB
+of address space per malloc arena, up to eight per CPU, so a test with
+many threads would otherwise exhaust the cap on a many-CPU host without
+using the memory, and sooner the slower its code), the same in every
+mode and in reruns.
+
 **Clean trees.** Every build empties its tree first, so a tree kept or
 cut off half-built by an earlier build (objects of another kiln or hod,
 which make would not rebuild) is never built on.

@@ -220,8 +220,13 @@ if [ "$CONF_RC" = 0 ]; then
     export KILN_OSS_PHASE=test
     # Per-tree test scratch, so the builds of one project never share it.
     TTMP="$BUILD/test-tmp"; mkdir -p "$TTMP" && find "$TTMP" -mindepth 1 -delete
+    # The cap is on address space, and glibc reserves 64 MB of it for each
+    # malloc arena (up to 8 per CPU): a test running many threads at once
+    # exhausts it on a many-CPU host without using the memory, sooner the
+    # slower its code. MALLOC_ARENA_MAX bounds the reservation, the same
+    # for every mode.
     (cd "$BUILD" && ulimit -v "$KILN_OSS_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
-      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
+      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-4}" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?
     echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)"
   fi

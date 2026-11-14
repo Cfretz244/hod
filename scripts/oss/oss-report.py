@@ -337,6 +337,7 @@ def cmd_rerun(a):
     tmp = os.path.join(tree, "test-tmp")
     os.makedirs(tmp, exist_ok=True)
     env = dict(os.environ, TMPDIR=tmp, TEST_TMPDIR=tmp)
+    env.setdefault("MALLOC_ARENA_MAX", "4")  # as oss-build.sh's test run
 
     def limit():
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
