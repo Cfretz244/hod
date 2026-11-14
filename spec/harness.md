@@ -4047,6 +4047,15 @@ directory; a row whose tests write many small files or need file-system
 behaviour the workspace's bind mount lacks (glog) names a fresh
 directory under `/tmp` in its `test` command and removes it afterwards.
 
+**Job slots.** Project builds and their tests (make, `cmake --install`,
+ctest, and `oss-report.py rerun`) draw from a jobserver pool of their own,
+the fifo `$HOD_OSS_JOBSERVER_FIFO` (default `/run/hod/lanes.fifo` when it
+exists, else the shared pool `scripts/env.sh` names), while cargo builds of
+hod stay on the shared pool. A make client takes a token for every job it
+can start and nothing bounds how many it holds, so two project builds on
+the shared pool hold all its tokens, and its blocked readers (cargo, the
+gate's tests) wait for a slot for as long as the builds run.
+
 **Clean trees.** Every build empties its tree first, so a tree kept or
 cut off half-built by an earlier build (objects of another kiln or hod,
 which make would not rebuild) is never built on.

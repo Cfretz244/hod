@@ -22,6 +22,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
 FINDINGS="${HOD_OSS_FINDINGS:-$BROOT/findings/oss}"
+# The real-project jobserver pool for everything this run starts (as
+# oss-build.sh; spec/harness.md "Job slots").
+LANE_FIFO="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
+[ -p "$LANE_FIFO" ] && export MAKEFLAGS="--jobserver-auth=fifo:$LANE_FIFO"
 FLAVOURS="O0 O0g" MODES="llc hod strict" KEEP="" PROJECTS=()
 while [ $# -gt 0 ]; do
   case "$1" in

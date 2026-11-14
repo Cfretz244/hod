@@ -29,6 +29,7 @@ import glob
 import json
 import os
 import shutil
+import stat
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -340,6 +341,9 @@ def cmd_rerun(a):
     os.makedirs(tmp, exist_ok=True)
     env = dict(os.environ, TMPDIR=tmp, TEST_TMPDIR=tmp)
     env.setdefault("MALLOC_ARENA_MAX", "4")  # as oss-build.sh's test run
+    fifo = os.environ.get("HOD_OSS_JOBSERVER_FIFO") or "/run/hod/lanes.fifo"
+    if stat.S_ISFIFO(os.stat(fifo).st_mode if os.path.exists(fifo) else 0):  # the real-project pool
+        env["MAKEFLAGS"] = f"--jobserver-auth=fifo:{fifo}"
 
     def limit():
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
