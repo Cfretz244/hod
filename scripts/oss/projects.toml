@@ -285,7 +285,7 @@ configure = ["-DHWY_ENABLE_TESTS=ON", "-DHWY_ENABLE_CONTRIB=OFF", "-DHWY_ENABLE_
 test = "ctest --output-on-failure"
 test_timeout = 3600
 c_compiler = "clang-19"
-notes = "WP-200. Portable SIMD with per-target code: every test is compiled once per attainable target (on x86-64 SSE2, SSSE3, SSE4, AVX2, AVX-512 variants, each through `target` attributes and foreach_target.h re-inclusion) and dispatched at run time (qemu-x86_64 has no AVX-512, so AVX2 is the best target the tests run). googletest is downloaded at configure time."
+notes = "WP-200. Portable SIMD with per-target code: every test is compiled once per attainable target (on x86-64 SSE2, SSSE3, SSE4, AVX2, AVX-512 variants, each through `target` attributes and foreach_target.h re-inclusion) and dispatched at run time (qemu-x86_64 has no AVX-512, so AVX2 is the best target the tests run). googletest is downloaded at configure time. Not built yet: every highway header opens with HWY_BEFORE_NAMESPACE(), a `#pragma clang attribute push(__attribute__((target(...))))` on clang, which kiln rejects on both targets ('#pragma clang attribute' is not supported yet); the row waits for kiln."
 
 [range_v3]
 url = "https://github.com/ericniebler/range-v3"
