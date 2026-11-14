@@ -530,7 +530,7 @@ fn assemble_body(
     body: &str,
     code: &mut Vec<u8>,
     refs: &mut Vec<Ref>,
-    mut cfi: Option<&mut Vec<CfiRow>>,
+    cfi: Option<&mut Vec<CfiRow>>,
     scratch: &mut String,
 ) -> Result<(), Refusal> {
     code.clear();
@@ -608,7 +608,7 @@ fn assemble_body(
         return Err(Refusal(op_reason::FORM));
     }
     let offsets = lay_out(&mut items, &bytes, code)?;
-    if let Some(cfi) = cfi.as_deref_mut() {
+    if let Some(cfi) = cfi {
         for (item, op) in pending_cfi {
             let offset = u32::try_from(offsets[item]).map_err(|_| Refusal(op_reason::RANGE))?;
             cfi.push(CfiRow { offset, op });
@@ -621,6 +621,8 @@ fn assemble_body(
 /// 64-bit general register, `rip` or an `xmm` register, with or without
 /// `%`, or the number itself (`spec/asm.md` §15).
 fn cfi_register(text: &str) -> Result<u16, Refusal> {
+    // DWARF numbers of the general registers, by encoding.
+    const GPR: [u16; 16] = [0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15];
     let text = trim(text);
     if text.starts_with(|c: char| c.is_ascii_digit()) {
         let mut c = Cursor::new(text);
@@ -631,8 +633,6 @@ fn cfi_register(text: &str) -> Result<u16, Refusal> {
         return u16::try_from(n).map_err(|_| Refusal(op_reason::REGISTER));
     }
     let name = text.strip_prefix('%').unwrap_or(text).to_ascii_lowercase();
-    // DWARF numbers of the general registers, by encoding.
-    const GPR: [u16; 16] = [0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15];
     match operand::reg_name(&name) {
         Some(operand::RegName::Gpr(g)) if g.size == Size::Q => Ok(GPR[usize::from(g.reg.code())]),
         Some(operand::RegName::Rip) => Ok(16),

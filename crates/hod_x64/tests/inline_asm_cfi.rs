@@ -306,7 +306,8 @@ fn backtrace(toolchain: &Toolchain, dir: &Scratch, program: &Path, port: u16) ->
         let gdb = tool("gdb-multiarch")?;
         let runner = toolchain.runner_command(program);
         let mut line = runner.get_program().to_string_lossy().into_owned();
-        line.push_str(&format!(" -g {port}"));
+        line.push_str(" -g ");
+        line.push_str(&port.to_string());
         for arg in runner.get_args() {
             line.push(' ');
             line.push_str(&arg.to_string_lossy());
@@ -354,7 +355,7 @@ fn gdb_walks_through_the_template() {
     let (objects, bare) = through_objects(&dir);
     let stdcxx = Path::new("-lstdc++");
     let linker = &toolchain.linkers[0];
-    let base = 20000 + (std::process::id() % 20000) as u16;
+    let first_port = 20000 + (std::process::id() % 20000) as u16;
     let mut walked = 0;
     for (n, (who, object)) in
         objects.iter().map(|(w, o)| (w.as_str(), o)).chain([("bare", &bare)]).enumerate()
@@ -363,7 +364,7 @@ fn gdb_walks_through_the_template() {
         toolchain.link_ok(linker, &["-static"], &[&driver, object, stdcxx], &program);
         let (mut got, mut text) = (Vec::new(), String::new());
         for attempt in 0..3u16 {
-            let port = base + 50 * attempt + n as u16;
+            let port = first_port + 50 * attempt + n as u16;
             let Some(out) = backtrace(&toolchain, &dir, &program, port) else { return };
             text = out;
             got = frames(&text);
