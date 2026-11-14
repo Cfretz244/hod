@@ -5,9 +5,14 @@
   oss-report.py collect <project>   copy the modules hod refused in the
                                     project's hod and strict trees into
                                     <findings>/<project>/<reason>/ (at most
-                                    three per reason per project), each
-                                    with its command line and a one-line
-                                    description
+                                    $HOD_OSS_KEEP, default one, per reason
+                                    per project), each with its command
+                                    line and a one-line description
+  oss-report.py rerun <project> <flavour> <mode> <test> [--times N]
+                                    run one ctest test of a kept tree N
+                                    times (default 2) under the row's
+                                    memory cap, appending the count of
+                                    passes to the tree's reruns.jsonl
   oss-report.py status [--out F]    docs/status/oss.md from every report
                                     (stdout without --out)
   oss-report.py census [--out F]    the census page (the status rows and
@@ -65,6 +70,16 @@ def load_reports(oss):
         log = os.path.join(os.path.dirname(path), "test.log")
         if r.get("test_rc") is not None and os.path.exists(log):
             r["test_status"] = projects.test_results(log)[2]
+        # Reruns of single tests (`rerun`): {test: {"runs": n, "passed": k}}.
+        r["reruns"] = {}
+        rr = os.path.join(os.path.dirname(path), "reruns.jsonl")
+        if os.path.exists(rr):
+            with open(rr, encoding="utf-8") as f:
+                for line in f:
+                    e = json.loads(line)
+                    a = r["reruns"].setdefault(e["test"], {"runs": 0, "passed": 0})
+                    a["runs"] += 1
+                    a["passed"] += 1 if e["passed"] else 0
         reps[(r["project"], r["flavour"], r["mode"])] = r
     return reps
 
@@ -104,7 +119,11 @@ def diff_tests(ctl, r):
     return worse, better
 
 
-def status_rows(reps):
+def status_rows(reps, notes=None):
+    """The table; a test worse than the control's that passed every
+    recorded rerun (and at least two) is not counted worse: the cell says
+    `same (rerun)` with a numbered note, appended to `notes`."""
+    notes = [] if notes is None else notes
     out = [
         "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -120,14 +139,28 @@ def status_rows(reps):
             fell = be.get("hod-declined", 0) + be.get("hod-failed", 0)
             no = be.get("llvm", 0)
             diffs = []
+            reran = []
             for name, r in (("hod", h), ("strict", s)):
                 worse, better = diff_tests(l, r)
+                worse, better = worse or [], better or []
+                rr = (r or {}).get("reruns") or {}
+                for t in [t for t in worse if t in rr]:
+                    e = rr[t]
+                    if e["runs"] >= 2 and e["passed"] == e["runs"]:
+                        worse.remove(t)
+                        notes.append(f"{p} {fl} {name}: `{t}` failed in the build's test run and passed {e['passed']} of {e['runs']} reruns under the same memory cap.")
+                        reran.append(len(notes))
+                    else:
+                        notes.append(f"{p} {fl} {name}: `{t}` passed {e['passed']} of {e['runs']} reruns.")
+                        worse[worse.index(t)] = f"{t} (note {len(notes)})"
                 if worse:
                     diffs.append(f"{name}: {len(worse)} worse ({', '.join(worse[:3])}{', ...' if len(worse) > 3 else ''})")
                 if better:
                     diffs.append(f"{name}: {len(better)} better")
             if l and (h or s) and not diffs:
-                diffs.append("same")
+                diffs.append("same (rerun, " + ", ".join(f"note {n}" for n in reran) + ")" if reran else "same")
+            elif reran:
+                diffs.append(", ".join(f"note {n}" for n in reran))
             out.append(
                 f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
@@ -263,7 +296,10 @@ def cmd_collect(a):
 
 def page(reps, title, intro, findings=None):
     lines = [f"# {title}", "", *intro, ""]
-    lines += status_rows(reps)
+    notes = []
+    lines += status_rows(reps, notes)
+    if notes:
+        lines += ["", "Notes:", ""] + [f"{i}. {n}" for i, n in enumerate(notes, 1)]
     lines += ["", "## Refusal census (hybrid builds)", ""]
     lines += census_rows(reps, findings)
     lines += not_offered_rows(reps)
@@ -279,17 +315,56 @@ def write(text, out):
         sys.stdout.write(text)
 
 
+def cmd_rerun(a):
+    """Run one test of a kept tree `a.times` times under the row's cap."""
+    import resource
+    import subprocess
+    import time
+
+    oss, _ = roots()
+    tree = os.path.join(oss, "build", a.project, f"{a.flavour}-{a.mode}")
+    if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")):
+        sys.exit(f"oss-report: {tree} is not a kept build tree")
+    row = projects.load()[a.project]
+    cap = int(os.environ.get("KILN_OSS_VMEM_KB") or row["vmem_kb"]) * 1024
+    tmp = os.path.join(tree, "test-tmp")
+    os.makedirs(tmp, exist_ok=True)
+    env = dict(os.environ, TMPDIR=tmp, TEST_TMPDIR=tmp)
+
+    def limit():
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+
+    for i in range(a.times):
+        p = subprocess.run(["ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
+                           preexec_fn=limit, capture_output=True, text=True)
+        log = os.path.join(tree, f"rerun-{a.test}-{int(time.time())}-{i}.log")
+        with open(log, "w", encoding="utf-8") as f:
+            f.write(p.stdout + p.stderr)
+        per = projects.test_results(log)[2]
+        ok = per.get(a.test) == "Passed"
+        with open(os.path.join(tree, "reruns.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"test": a.test, "passed": ok, "rc": p.returncode, "log": os.path.basename(log),
+                                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+        print(f"oss-report: {a.project} {a.flavour} {a.mode} {a.test}: run {i + 1}: {'passed' if ok else 'failed'}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect")
     c.add_argument("project")
+    r = sub.add_parser("rerun")
+    for n in ("project", "flavour", "mode", "test"):
+        r.add_argument(n)
+    r.add_argument("--times", type=int, default=2)
     for n in ("status", "census"):
         s = sub.add_parser(n)
         s.add_argument("--out")
     a = ap.parse_args()
     if a.cmd == "collect":
         return cmd_collect(a)
+    if a.cmd == "rerun":
+        return cmd_rerun(a)
     oss, findings = roots()
     reps = load_reports(oss)
     kiln = next((r.get("compiler_path") for r in reps.values()), "?")
