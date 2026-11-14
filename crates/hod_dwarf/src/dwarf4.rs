@@ -64,13 +64,19 @@ pub const DWARF_4_SHAPE: &str = "debug:dwarf-4-shape";
 /// families after it are refused in a DWARF 4 unit until checked.
 const LAST_CHECKED: usize = fam::SUBPROGRAM_EMPTY;
 
-/// The families after [`LAST_CHECKED`] whose version 4 shape was
-/// compared with `llc`'s all the same (WP-189: §6.24).
-const fn checked_later(family: usize) -> bool {
+/// The families after [`LAST_CHECKED`], with option mask `mask`, whose
+/// version 4 shape was compared with `llc`'s all the same (WP-189:
+/// §6.24).
+const fn checked_later(family: usize, mask: u32) -> bool {
     family == fam::METHOD_EXPLICIT_QUALIFIED
         // WP-210: §6.27.
         || family == fam::STATIC_VARIABLE_WIDE
         || family == fam::STATIC_MEMBER_WIDE
+        // WP-210 (§6.28): a retained variable's concrete DIE, its
+        // abstract origin alone (no list).
+        || (mask == 0
+            && (family == fam::FORMAL_PARAMETER_OF_ABSTRACT_LIST
+                || family == fam::VARIABLE_OF_ABSTRACT_LIST))
 }
 
 // WP-150: the GNU call-site forms of version 4 (`spec/dwarf.md` §6.21).
@@ -470,12 +476,12 @@ impl Out {
             self.map.push((die as u32, new));
             let code = u32::try_from(code).map_err(|_| bad())?;
             let (family, offset) = family_of(code).ok_or_else(bad)?;
-            if family > LAST_CHECKED && !checked_later(family) {
+            let (mask, _) = split_offset(family, offset);
+            if family > LAST_CHECKED && !checked_later(family, mask) {
                 return Err(bad());
             }
             self.used[code as usize / 64] |= 1 << (code % 64);
             write_uleb(&mut self.info, u64::from(code));
-            let (mask, _) = split_offset(family, offset);
             for slot in FAMILIES[family].slots {
                 if slot.bit == 0 || mask & (1 << (slot.bit - 1)) != 0 {
                     self.attribute(&cx, *slot, &mut pos)?;

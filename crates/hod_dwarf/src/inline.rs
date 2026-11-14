@@ -48,6 +48,9 @@ pub const DEBUG_LOCAL_STATIC: &str = "debug:local-static";
 /// An abstract entity that has no DIE: made by a function after its
 /// subprogram's abstract instance was written.
 const NO_DIE: u32 = u32::MAX - 1;
+/// The keys of retained variables and labels made abstract entities
+/// after a function's records (§6.28): above every record's row.
+const RETAINED_KEY: u32 = 1 << 31;
 /// `DW_INL_inlined`.
 const DW_INL_INLINED: u8 = 1;
 const DW_RLE_BASE_ADDRESSX: u8 = 0x01;
@@ -244,12 +247,16 @@ impl UnitPlan<'_> {
             return Err(unsupported(sp_id, DEBUG_INLINED_FOREIGN_UNIT));
         }
         // WP-195 (§6.25): an import scoped in the subprogram itself is
-        // written under its abstract instance; a retained variable or
-        // label, an import in a block, or retained nodes of a function
-        // also placed out of line are not.
-        if !sp.retained_nodes.is_empty()
-            && (self.inline.has_body(sp_id)
-                || !sp.retained_nodes.iter().all(|&n| self.own_import(n, sp_id)))
+        // written under its abstract instance; WP-210 (§6.28): so is a
+        // retained variable or label of the subprogram or of its blocks,
+        // and when the module also has the function's code, a retained
+        // variable. An import in a block, or a retained import or label
+        // of a function also placed out of line, is not.
+        let body = !sp.retained_nodes.is_empty() && self.inline.has_body(sp_id);
+        if !sp
+            .retained_nodes
+            .iter()
+            .all(|&n| (!body && self.own_import(n, sp_id)) || self.own_entity(n, sp_id, body))
         {
             return Err(unsupported(sp_id, DEBUG_RETAINED_NODES));
         }
@@ -260,6 +267,64 @@ impl UnitPlan<'_> {
     fn own_import(&self, n: DiId, sp: DiId) -> bool {
         self.debug.find_kind(n) == Some(DiKind::ImportedEntity)
             && matches!(self.debug.node(n), DiNode::ImportedEntity(e) if e.scope == Some(sp))
+    }
+
+    /// Whether retained node `n` is a variable or label in `sp` or one of
+    /// its blocks, which [`Self::retained_entities`] can make (§6.28); a
+    /// variable only when `vars_only`.
+    fn own_entity(&self, n: DiId, sp: DiId, vars_only: bool) -> bool {
+        self.retained_entity(n).is_some_and(|(scope, class, _)| {
+            (!vars_only || class != 2)
+                && self.non_file(scope).and_then(|s| self.owner_of(s)).is_ok_and(|o| o == sp)
+        })
+    }
+
+    /// A retained variable's or label's `(scope, class, arg)`, the
+    /// classes of [`FnInline::ents`]; `None` for another node, or a
+    /// variable hod does not write (no type; an aligned parameter or
+    /// unnamed variable, WP-087).
+    fn retained_entity(&self, n: DiId) -> Option<(DiId, u8, u16)> {
+        match self.debug.find_kind(n)? {
+            DiKind::LocalVariable => {
+                let DiNode::LocalVariable(v) = self.debug.node(n) else { return None };
+                if v.ty.is_none() || (v.align != 0 && (v.arg != 0 || v.name.is_empty())) {
+                    return None;
+                }
+                Some((v.scope?, u8::from(v.arg == 0), v.arg))
+            }
+            DiKind::Label => {
+                let DiNode::Label(l) = self.debug.node(n) else { return None };
+                Some((l.scope?, 2, 0))
+            }
+            _ => None,
+        }
+    }
+
+    /// `endFunctionImpl`'s loop over the abstract subprogram scopes: each
+    /// one's retained variables and labels that no record made an
+    /// abstract entity of get one now, in `retainedNodes` order, their
+    /// scopes made first (`getOrCreateAbstractScope`); a parameter is
+    /// placed by its number, a variable or label after those the records
+    /// made (WP-210, §6.28).
+    fn retained_entities(&mut self, s: &mut FnInline) -> Result<(), Error> {
+        let mut next = RETAINED_KEY;
+        for k in 0..s.list.len() {
+            let sp = s.scopes[s.list[k] as usize].0;
+            let DiNode::Subprogram(n) = self.debug.node(sp) else { continue };
+            for &dn in n.retained_nodes {
+                let Some((scope, class, arg)) = self.retained_entity(dn) else { continue };
+                let scope = self.non_file(scope)?;
+                self.abstract_scope(s, scope)?;
+                let key = if class == 0 {
+                    u32::from(arg)
+                } else {
+                    next += 1;
+                    next
+                };
+                self.abstract_entity(s, dn, scope, class, key);
+            }
+        }
+        Ok(())
     }
 
     /// The key of the scope an inlined subprogram's scope `(sp, ia)` is
@@ -325,6 +390,7 @@ impl UnitPlan<'_> {
         if s.list.is_empty() {
             return Ok(());
         }
+        self.retained_entities(s)?;
         s.ents.sort_unstable();
         // Children of each abstract scope, in creation order, and
         // whether it has variables (`needToEmitLexicalScope`).
@@ -893,6 +959,19 @@ impl<'a> Writer<'a> {
         };
         self.abbrev(code(family, 0, false));
         self.exprloc();
+        self.ref4(origin);
+    }
+
+    /// A concrete retained variable with an abstract one: no location,
+    /// `DW_AT_abstract_origin` alone (families 111 and 112 without their
+    /// list; WP-210, §6.28).
+    pub(crate) fn retained_of_abstract(&mut self, kind: Kind, origin: u32) {
+        let family = if kind == Kind::LocalParam {
+            fam::FORMAL_PARAMETER_OF_ABSTRACT_LIST
+        } else {
+            fam::VARIABLE_OF_ABSTRACT_LIST
+        };
+        self.abbrev(code(family, 0, false));
         self.ref4(origin);
     }
 

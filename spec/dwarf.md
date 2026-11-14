@@ -1033,7 +1033,9 @@ lldb `<no location, value may have been optimized out>`, under both. A
 retained label without a record is not written (no producer emits one
 at `-O0`); a function with an abstract instance and retained nodes is
 refused (`debug:retained-nodes`, §6.9), except a function only inlined
-whose retained nodes are its own imports (§6.25).
+whose retained nodes are its own imports (§6.25), variables or labels,
+and a function also placed out of line whose retained nodes are
+variables (§6.28).
 
 **Lexical blocks** (`scope_ranges`). `llc`'s `LexicalScopes` over the
 function's transitions: for each transition with a location, the scopes
@@ -1529,7 +1531,7 @@ declaration's),
 | `debug:inlined-member` | an abstract instance of a member function whose declaration is WP-059's (not among its class's elements, or an out-of-line definition outside a class: `debug:specification` and kin, renamed) |
 | `debug:inlined-discriminator` | a call located in a `DILexicalBlockFile` with a discriminator (`llc` writes `DW_AT_GNU_discriminator`) |
 | `debug:inlined-foreign-unit` | code inlined from a subprogram of another unit |
-| `debug:retained-nodes` | an inlined subprogram with `retainedNodes` (`llc` makes abstract entities no record names), except imports scoped in a subprogram that is only inlined (WP-195, §6.25) |
+| `debug:retained-nodes` | an inlined subprogram with `retainedNodes` that hod does not write: an import in a block of it, or a retained import or label of a function also placed out of line (imports scoped in a subprogram only inlined since WP-195, §6.25; variables and labels since WP-210, §6.28) |
 | `debug:inlined-local-type` | a type local to a function with an abstract instance, or a variable a type names (a VLA bound) in one |
 | `debug:local-static` | a static scoped in a block, or in a subprogram that is not a definition of this unit, or whose early DIE no function filled by `seal()`, or read without the module (`UnitPlan::new`) |
 
@@ -2942,11 +2944,10 @@ subprogram, after its other children. hod records each abstract
 instance with retained nodes when it makes it (`Inline::imports`) and
 writes its imports in `seal_imports`, before those of the function
 being added, in the order the abstract instances were made. Still
-refused: a retained variable or label of an inlined subprogram (`llc`
-makes abstract entities no record names), an import scoped in a block
-of it, and the retained nodes of a function that is also placed out of
-line (one DIE serves both, and `llc` writes the imports under the
-concrete one).
+refused: an import scoped in a block of it, and retained imports of a
+function that is also placed out of line (one DIE serves both, and
+`llc` writes the imports under the concrete one). A retained variable
+or label is written since WP-210 (§6.28).
 
 **The detail of every `debug:` refusal.** `hod_dwarf::Error::detail`
 gives the node's kind, tag and number as before (§6.24), then its
@@ -3007,6 +3008,47 @@ and 55 with that one form; version 4 writes 114 as `DW_TAG_member`
 Test: `crates/hod/tests/debug_libcxx_wp210.rs` (`i128` signed and
 unsigned, `long double`, an aligned member; DWARF 5 with both tags and
 DWARF 4; both targets; tree equal to `llc` 22's).
+
+### 6.28 An inlined subprogram's retained variables (implemented, WP-210)
+
+kiln at `-O2 -g` (libc++'s `.sh.cpp` tests that build with `-O2`, among
+them `std/containers/associative/map/PR28469_undefined_behavior_segfault.sh.cpp`)
+lists a function's parameters and locals in its subprogram's
+`retainedNodes`, as clang does for optimized code. A subprogram with
+any was `debug:retained-nodes` once inlined (§6.25). `llc` 22's
+`endFunctionImpl`, after the function's records made their abstract
+entities (`ensureAbstractEntityIsCreatedIfScoped`), goes over the
+abstract subprogram scopes in the order they were made and, for each
+retained variable or label of each, makes its scope's abstract scope
+(`getOrCreateAbstractScope`, a block's included) and, when the node has
+no abstract entity yet, makes one (`createAbstractEntity`). A
+parameter is placed by its number (`DwarfFile::addScopeVariable`'s
+`Args`), a variable or label after those the records made (`Locals`, in
+order). hod does the same before writing the function's abstract
+instances (`inline.rs` `retained_entities`): the retained ones get keys
+above every record row (`RETAINED_KEY`). A block that gets a variable
+this way is written under the abstract instance; one with only a label
+is not (as before).
+
+A function that also has its own code in the module (its abstract
+instance is the origin of its concrete DIE) writes its retained
+variables that have no record (WP-111) as `DW_AT_abstract_origin`
+alone, no location: families 111 and 112 with no list (mask 0), as
+`llc`'s `constructVariableDIE` of a concrete entity without a location
+whose abstract entity exists. Version 4 writes them unchanged
+(`dwarf4.rs` `checked_later`, mask 0 only). The abstract instance's
+imports are only the retained imports (`seal_imports`).
+
+Still `debug:retained-nodes`: an import scoped in a block of an inlined
+subprogram, and retained imports or labels of a function also placed out of
+line. A variable hod does not write (no type; an aligned parameter or
+unnamed variable, WP-087) also keeps the refusal. Test:
+`crates/hod/tests/debug_libcxx_wp210.rs` (parameter, local, a local in
+a block, a slot named by a record, a label; inlined only, and with the
+function's code before and after its caller; DWARF 5 and 4; both
+targets; tree equal to `llc` 22's). The libc++ module itself is then
+refused for `debug:dbg-value-expr` (a value record's expression,
+outside this package).
 
 ## 7. Speed and memory
 

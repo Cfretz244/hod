@@ -22,12 +22,15 @@ mkdir -p "$out"
 grep -l '^fallback	' "$logdir"/cov/*.tsv 2>/dev/null | while read -r f; do
     key=$(basename "$f" .tsv)
     reason=$(awk -F'\t' '$1 == "fallback" { print $2; exit }' "$f")
-    argv=$(awk -F'\t' -v k="$key" '$1 == k && / -c -o / { print $2; exit }' "$logdir/args.tsv")
+    # The compile step, or a test's one-step compile and link (`.sh.cpp`).
+    argv=$(awk -F'\t' -v k="$key" '$1 == k && / -o / { a = $2; if (/ -c -o /) { print; exit } }
+        END { if (a != "") print a }' "$logdir/args.tsv" | head -n 1 | sed 's/^[^\t]*\t//')
     test=$(printf '%s' "$argv" | tr ' ' '\n' | awk 'index($0, "/libcxx/test/") && /\.cpp$/ {
         print substr($0, index($0, "/libcxx/test/") + 13); exit }')
     ll="$out/$key.ll"
     # shellcheck disable=SC2086 # the recorded command line, split as recorded
-    set -- $(printf '%s' "$argv" | sed "s| -c -o [^ ]*| -S -emit-llvm -o $ll|")
+    set -- $(printf '%s' "$argv" | sed -e "s| -c -o [^ ]*| -S -emit-llvm -o $ll|" \
+        -e "/ -emit-llvm /!{ s| -o [^ ]*| -S -emit-llvm -o $ll|; s| -[lL][^ ]*||g; }")
     if KILN_LLVM_DIR=$LLVM "$KILN" "$@" > /dev/null 2>&1 && [ -s "$ll" ]; then
         env -u HOD_COVERAGE_LOG -u HOD_CENSUS -u HOD_FALLBACK_LLC -u HOD_STRICT \
             "$HOD" --strict -O0 -filetype=obj -relocation-model=pic "$ll" -o /dev/null \

@@ -44,8 +44,11 @@ impl UnitPlan<'_> {
                 abstracts += 1;
                 let sp = self.dies[die as usize].node;
                 let DiNode::Subprogram(s) = self.debug.node(sp) else { continue };
+                // WP-210 (§6.28): its variables and labels are entities.
                 for &n in s.retained_nodes {
-                    self.import(n, Some((sp, die)), &mut chain)?;
+                    if self.debug.find_kind(n) == Some(DiKind::ImportedEntity) {
+                        self.import(n, Some((sp, die)), &mut chain)?;
+                    }
                 }
             }
             let die = self.funcs[i].die;

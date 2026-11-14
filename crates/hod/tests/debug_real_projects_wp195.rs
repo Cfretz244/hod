@@ -400,16 +400,17 @@ fn an_inlined_functions_import_is_under_its_abstract_instance() {
     }
 }
 
-/// A retained variable of an inlined function, or retained nodes of a
-/// function also placed out of line, stay `debug:retained-nodes`.
+/// An import in a block of an inlined function, or a retained import of
+/// a function also placed out of line, stays `debug:retained-nodes`
+/// (a retained variable is written since WP-210, §6.28).
 #[test]
 fn other_retained_nodes_of_inlined_functions_are_refused() {
     for triple in TRIPLES {
         let text = module(IMPORT, triple).replace(
             "!20 = !{!21}",
-            "!20 = !{!21, !33}\n!33 = !DILocalVariable(name: \"u\", scope: !19, file: !1, line: 2, type: !13)",
+            "!20 = !{!21, !33}\n!33 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !35, entity: !22, file: !1, line: 2)\n!35 = distinct !DILexicalBlock(scope: !19, file: !1, line: 2, column: 1)",
         );
-        assert_eq!(refusal(&text).0, "debug:retained-nodes", "{triple}: a variable");
+        assert_eq!(refusal(&text).0, "debug:retained-nodes", "{triple}: an import in a block");
         let text = module(IMPORT, triple).replace(
             "attributes #0",
             "define linkonce_odr dso_local i32 @_Z1fi(i32 %0) #0 !dbg !19 {\n  ret i32 %0, !dbg !34\n}\n\nattributes #0",

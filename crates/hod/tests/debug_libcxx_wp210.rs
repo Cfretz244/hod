@@ -5,6 +5,10 @@
 //!   (`numeric_limits<__int128>::__min`, a `static constexpr long double`)
 //!   is written as `llc` writes it, `DW_AT_const_value` a `block1` of the
 //!   value's bytes (families 114 and 115); it was `debug:die-unsupported`.
+//! - an inlined subprogram's retained variables and labels (kiln `-O2
+//!   -g`) are abstract entities of its abstract instance, and a retained
+//!   variable of the function's own out-of-line code names its abstract
+//!   one (§6.28); they were `debug:retained-nodes`.
 //!
 //! Each module's DIE tree is compared with `llc` 22's (`-O0
 //! -global-isel=0 -fast-isel=0`) line by line, offsets and indices masked,
@@ -95,7 +99,13 @@ fn tree(dwarfdump: &Path, object: &Path) -> Vec<String> {
         let line = line
             .split_once(": ")
             .map_or(line, |(at, rest)| if at.starts_with("0x") { rest } else { line });
-        lines.push(mask_offsets(line));
+        // A slot's offset is hod's frame layout, not the tree's.
+        let line = if line.starts_with("DW_AT_location\t(DW_OP_fbreg") {
+            "DW_AT_location\t(DW_OP_fbreg _)".to_owned()
+        } else {
+            mask_offsets(line)
+        };
+        lines.push(line);
     }
     lines
 }
@@ -201,6 +211,99 @@ fn a_static_members_value_wider_than_64_bits_is_a_block() {
                 "{name}: max"
             );
             assert_eq!(count_prefix(&ours, "DW_AT_alignment\t(16)"), 1, "{name}: big's alignment");
+        }
+    }
+}
+
+/// `int f(int x)` inlined into `g`; `f`'s `retainedNodes` are `x`, `y`
+/// (in a block), `z` (a slot the inlined code declares), `w`, and in
+/// the inlined-only module the label `out`. FFIRST and GFIRST place
+/// `f`'s own code before or after `g`'s.
+const RETAINED: &str = r#"target triple = "TRIPLE"
+
+FFIRST
+define dso_local i32 @g(i32 %a) #0 !dbg !10 {
+  %s = alloca i32, align 4
+    #dbg_declare(ptr %s, !16, !DIExpression(), !20)
+  store i32 %a, ptr %s, align 4, !dbg !20
+  %r = add i32 %a, 1, !dbg !20
+  ret i32 %r, !dbg !21
+}
+GFIRST
+attributes #0 = { noinline nounwind "frame-pointer"="all" }
+
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!2, !3}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus_14, file: !1, producer: "kiln", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, nameTableKind: None)
+!1 = !DIFile(filename: "r.cpp", directory: "/hod/tests")
+!2 = !{i32 7, !"Dwarf Version", i32 VERSION}
+!3 = !{i32 2, !"Debug Info Version", i32 3}
+!5 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)
+!6 = !DISubroutineType(types: !{!5, !5})
+!10 = distinct !DISubprogram(name: "g", scope: !1, file: !1, line: 9, type: !6, scopeLine: 9, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!11 = distinct !DISubprogram(name: "f", scope: !1, file: !1, line: 1, type: !6, scopeLine: 1, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0, retainedNodes: !12)
+!12 = !{!13, !14, !16, !17LABEL}
+!13 = !DILocalVariable(name: "x", arg: 1, scope: !11, file: !1, line: 1, type: !5)
+!14 = !DILocalVariable(name: "y", scope: !15, file: !1, line: 3, type: !5)
+!15 = distinct !DILexicalBlock(scope: !11, file: !1, line: 2, column: 1)
+!16 = !DILocalVariable(name: "z", scope: !11, file: !1, line: 4, type: !5)
+!17 = !DILocalVariable(name: "w", scope: !11, file: !1, line: 5, type: !5)
+!18 = !DILabel(scope: !11, name: "out", file: !1, line: 6)
+!20 = !DILocation(line: 2, column: 3, scope: !11, inlinedAt: !22)
+!21 = !DILocation(line: 10, column: 3, scope: !10)
+!22 = distinct !DILocation(line: 10, column: 10, scope: !10)
+!30 = !DILocation(line: 2, column: 3, scope: !11)
+"#;
+
+const F_BODY: &str = "define dso_local i32 @f(i32 %x) #0 !dbg !11 {
+  %r = add i32 %x, 1, !dbg !30
+  ret i32 %r, !dbg !30
+}
+";
+
+/// §6.28: the abstract instance of `f` has `x`, `z`, `w`, `out` and the
+/// block with `y`, in `llc`'s order; `f`'s own code, before or after `g`,
+/// names its retained `x` by its abstract origin. DWARF 5 and 4, both
+/// targets.
+#[test]
+fn an_inlined_subprograms_retained_nodes_are_abstract_entities() {
+    let scratch = Scratch::new("wp210-retained");
+    for triple in TRIPLES {
+        for version in [5, 4] {
+            for (order, ffirst, gfirst, label) in [
+                ("inlined", "", "", ", !18"),
+                ("f-first", F_BODY, "", ""),
+                ("g-first", "", F_BODY, ""),
+            ] {
+                let name = format!("retained-{}-{version}-{order}", &triple[..6]);
+                let text = RETAINED
+                    .replace("TRIPLE", triple)
+                    .replace("VERSION", &version.to_string())
+                    .replace("FFIRST", ffirst)
+                    .replace("GFIRST", gfirst)
+                    .replace("LABEL", label);
+                let ours = compare(&scratch, &name, &text);
+                if ours.is_empty() {
+                    continue;
+                }
+                let names: Vec<&str> = ours
+                    .iter()
+                    .filter_map(|l| l.strip_prefix("DW_AT_name\t(\""))
+                    .map(|l| l.trim_end_matches("\")"))
+                    .collect();
+                let want: &[&str] = if label.is_empty() {
+                    &["r.cpp", "f", "x", "z", "w", "y", "int", "g"]
+                } else {
+                    &["r.cpp", "f", "x", "z", "w", "out", "y", "int", "g"]
+                };
+                // `f`'s concrete DIE has no name: it is its origin's.
+                assert_eq!(names, want, "{name}");
+                let origins = count_prefix(&ours, "DW_AT_abstract_origin");
+                // Inlined `f` and its `z`; with `f`'s code, also its DIE
+                // and its retained `x`, `z` and `w` (`y`'s block has none).
+                assert_eq!(origins, if label.is_empty() { 6 } else { 2 }, "{name}");
+            }
         }
     }
 }
