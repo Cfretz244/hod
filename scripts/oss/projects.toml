@@ -164,7 +164,12 @@ tag = "v0.7.1"
 build = "cmake"
 cxx_std = 17
 configure = ["-DBUILD_TESTING=ON", "-DWITH_GFLAGS=OFF", "-DWITH_GTEST=OFF", "-DWITH_UNWIND=OFF"]
-test = "ctest --output-on-failure"
+# The tests' directory is a fresh one under /tmp, removed afterwards: on the
+# workspace's bind mount a 10-byte write takes about 0.4 ms under load, and
+# `logging` (TestOneTruncate fills a 3 MB file 10 bytes per write) then
+# times out at 30 s with either back end; on the container's file system it
+# passes in under a second.
+test = "tt=$(mktemp -d /tmp/hod-oss-glog-XXXXXX) && TMPDIR=$tt TEST_TMPDIR=$tt ctest --output-on-failure; rc=$?; rm -rf \"$tt\"; exit $rc"
 c_compiler = "clang-19"
 wave = 2
 verified = true

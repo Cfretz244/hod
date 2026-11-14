@@ -4042,7 +4042,10 @@ with its note.
 of address space per malloc arena, up to eight per CPU, so a test with
 many threads would otherwise exhaust the cap on a many-CPU host without
 using the memory, and sooner the slower its code), the same in every
-mode and in reruns.
+mode and in reruns. `TMPDIR` and `TEST_TMPDIR` are the tree's `test-tmp`
+directory; a row whose tests write many small files or need file-system
+behaviour the workspace's bind mount lacks (glog) names a fresh
+directory under `/tmp` in its `test` command and removes it afterwards.
 
 **Clean trees.** Every build empties its tree first, so a tree kept or
 cut off half-built by an earlier build (objects of another kiln or hod,
