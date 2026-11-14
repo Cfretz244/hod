@@ -57,6 +57,7 @@ this document follows `spec/abi-a64.md`, section for section.
 | `ccc` (0) | specified by this document |
 | `fastcc` (8) | as `ccc`, except one more return register for `float` and `double` (§5.1) |
 | `x86_64_sysvcc` (78) | as `ccc`: it is the System V convention, which is this target's `ccc` (WP-141) |
+| `preserve_mostcc` (14), `preserve_allcc` (15) | as `ccc`; the callee keeps more registers, which is the frame's (`spec/codegen.md` §5.6.23, WP-181) |
 | every other number, including `swiftcc` (16) and `cxx_fast_tlscc` (17) | `abi:cc` |
 
 `hod_x64::abi::cc_is_c` is the predicate for the first three rows. "As
@@ -351,7 +352,7 @@ be `i8`, `i16`, `i32`, `i64`, `ptr`, `half`, `bfloat`, `float`, `double`,
 | vector | pieces |
 |---|---|
 | N = 1, element `half` or `bfloat` | one vector piece of 2 bytes (LLVM widens it: a 16-byte stack slot, and `xmm3` among the return registers, where a `half` takes 8 and `xmm0`..`xmm2`) |
-| N = 1, any other element | the element, as a scalar (`<1 x i64>` in a general register, `<1 x float>` in an `xmm`) |
+| N = 1, any other element | the element, as a scalar (`<1 x i64>` in a general register, `<1 x float>` in an `xmm`); a lone `<1 x i64>` or `<1 x ptr>` argument or result is one `Lanes { bits: 64, lane: 8, first: 0, len: 1 }` part (`abi::LONE_LANE`, WP-174): its value is an `xmm` and the part a general register or an 8-byte slot, moved with `movq`; as a member of an aggregate it is plain bytes |
 | N a power of two, N·E ≤ 16 | one vector piece of N·E bytes (`<2 x float>` widened into one `xmm`) |
 | N a power of two, N·E > 16 | N·E/16 vector pieces of 16 bytes (`<8 x float>`: two `xmm`) |
 | N not a power of two, `next_pow2(N)`·E = 16 | one vector piece of N·E bytes (`<3 x float>`, `<6 x i16>`) |

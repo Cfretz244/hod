@@ -144,6 +144,9 @@ pub fn intrinsic<'a>(
     args: &'a [Value],
 ) -> CgResult<()> {
     use Intrinsic as I;
+    if let Some(done) = crate::x86::intrinsic(cx, inst, which, args) {
+        return done;
+    }
     if let Some(done) = crate::lanes::intrinsic(cx, inst, which, args) {
         return done;
     }
@@ -1273,6 +1276,7 @@ fn sjlj_setjmp<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>, buf: Value) -> CgResu
     put(cx, mc::mov_ri(Size::D, RAX, 0));
     crate::common::branch(cx, done)?;
     cx.bind(resume)?;
+    crate::cet::landing(cx); // WP-184: `longjmp` jumps here
     put(cx, mc::mov_ri(Size::D, RAX, 1));
     cx.bind(done)?;
     let rd = cx.def_reg(inst)?;

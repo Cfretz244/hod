@@ -188,6 +188,13 @@ Two things a producer of LLVM IR must know:
 - `uwtable` and `frame-pointer` values that LLVM's verifier accepts and
   no LLVM version defines (3, 5, ...) are errors here.
 
+`classify` (§8) accepts the AArch64 branch-protection flags and the
+function attributes `branch-target-enforcement`, `sign-return-address`,
+`sign-return-address-key` and `guarded-control-stack` on both targets
+(WP-185): AArch64 implements them (`spec/codegen.md` §5.6.26), x86-64
+ignores them as `llc` does. `branch-protection-pauth-lr`, flag and
+attribute, stays refused on AArch64 (`module:`/`attr:branch-protection-pauth-lr`).
+
 ### 2.2 Symbols
 
 One `SymId` space, because code refers to all of them the same way: by
@@ -978,9 +985,11 @@ does not have is `Rejected`. The lists below are the table, in full.
   `sanitize_address`, `sanitize_alloc_token`, `sanitize_hwaddress`,
   `sanitize_memory`, `sanitize_memtag`, `sanitize_numerical_stability`,
   `sanitize_realtime`, `sanitize_realtime_blocking`, `sanitize_thread`,
-  `sanitize_type`, `convergent` (below); with a value: `uwtable`
+  `sanitize_type`, `convergent` (below), `noredzone` (below),
+  `nocf_check` (below); with a
+  value: `uwtable`
   (`UwTable`: `sync` or `async`) and `alignstack(N)`.
-- On functions, as strings (`FnStr`, 21 keys): `target-cpu`,
+- On functions, as strings (`FnStr`, 22 keys): `target-cpu`,
   `target-features`, `tune-cpu`, `frame-pointer`,
   `patchable-function-entry`, `patchable-function-prefix`,
   `function-instrument`, `branch-target-enforcement`,
@@ -988,9 +997,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `branch-protection-pauth-lr`, `guarded-control-stack`,
   `stack-probe-size`, `probe-stack`, `split-stack`,
   `zero-call-used-regs`, `stack-protector-buffer-size`,
-  `min-legal-vector-width`, `no-jump-tables`, `no-builtins`, and every
+  `min-legal-vector-width`, `no-jump-tables`, `no-builtins`, every
   name that starts with `no-builtin-` (the one prefix entry of the
-  table).
+  table), and `disable-tail-calls` (below).
 - On calls: `noreturn`, `nounwind`, `returns_twice`, `convergent`, the
   tail kind and the calling convention (the call instruction's own
   fields, §5.4).
@@ -999,7 +1008,9 @@ does not have is `Rejected`. The lists below are the table, in full.
   `branch-protection-pauth-lr` and `guarded-control-stack` are the two
   missing members of the `sign-return-address` family;
   `stack-protector-buffer-size` decides which functions `ssp` protects
-  and is on every function clang emits; `min-legal-vector-width` bounds
+  in LLVM and is on every function clang emits (hod reads it with the
+  attribute and protects a superset, `spec/codegen.md` §5.6.24: `ssp`,
+  `sspstrong` and `sspreq` are rows `ON` on both targets, WP-183); `min-legal-vector-width` bounds
   the vector registers an x86 function may use and is on every x86
   function clang emits; `no-jump-tables` forbids a code shape.
 
@@ -1033,6 +1044,51 @@ does not have is `Rejected`. The lists below are the table, in full.
   `declare i1 @llvm.is.constant.*` (`__builtin_constant_p`, all over
   libc++), and on calls in CUDA, OpenCL and HIP code; no CPU front end
   emits the bundle.
+
+  `"disable-tail-calls"` (WP-179; `"true"` or `"false"`, the value kept
+  as written) is LLVM's `TargetLowering` rule that in such a function no
+  call is a tail call except a `musttail` one; `"false"` is the
+  default. It is not in `Attributes.td` (LLVM reads it by name), so the
+  lists of `crates/hod_ir/tests/data` do not have it. clang and kiln put
+  it on a function with `__attribute__((disable_tail_calls))`
+  (googletest's `GTEST_NO_TAIL_CALL_`). hod makes no tail call but a
+  `musttail` one in any function (`spec/codegen.md` §7.1 "Tail kinds"),
+  so the code is the code without it; `classify` accepts it on every
+  target (`attr:disable-tail-calls`, row `ON`).
+
+  `noredzone` (WP-179) forbids keeping data below the stack pointer;
+  clang puts it on every function with `-mno-red-zone`. hod keeps none
+  there on either target (`spec/codegen.md` §5.6 "The red zone is not
+  used"; on AArch64 nothing is addressed below `sp` either), so it
+  changes no code; `classify` accepts it on every target
+  (`attr:noredzone`, row `ON`).
+
+  `nocf_check` (WP-184; clang's `__attribute__((nocf_check))`), a
+  function flag (`FnAttrs::NO_CF_CHECK`, bit 21) and a call-site flag
+  (`CallDesc::nocf_check`, `CallSite::is_nocf_check`, printed after the
+  call as ` nocf_check`). On a function it drops the entry `endbr64` of
+  a `cf-protection-branch` module; on an indirect call it asks for
+  `notrack` (`spec/codegen.md` §5.6.25). `classify` accepts it on every
+  target (`attr:nocf_check`, row `ON`); it changes no AArch64 code, as
+  in `llc`.
+
+  `"probe-stack"` and `"stack-probe-size"` (WP-186; clang's
+  `-fstack-clash-protection` writes `"probe-stack"="inline-asm"` on every
+  function, `-mstack-probe-size=N` the size) are read together by
+  `FnAttrsView::stack_probe` (`hod_ir::StackProbe`): no `"probe-stack"`
+  is `None` (a `"stack-probe-size"` alone changes nothing, as in `llc`);
+  `"inline-asm"` is `Inline(P)`, `P` the size or 4096 without one; any
+  other `"probe-stack"` value names a probe function to call
+  (`__probestack`-style), refused as `attr:probe-stack-function`; a size
+  that is not a decimal multiple of 4096 in `[4096, 2^24)` is refused as
+  `attr:stack-probe-size-value` (`llc` takes others, and some of them do
+  not probe: 0 on x86-64 allocates the whole frame at once). Both rows
+  are `ON` (`attr:probe-stack`, `attr:stack-probe-size`); what the
+  targets build is `spec/codegen.md` §5.6.27. kiln accepts
+  `-fstack-clash-protection` and writes neither attribute.
+  `"zero-call-used-regs"="skip"` zeroes nothing and is accepted (the
+  classifier skips its row); every other value is refused as
+  `attr:zero-call-used-regs` (WP-186).
 
 **Dropped**, because only an optimizer (or a pass that runs before any
 backend) reads them:
@@ -1082,15 +1138,15 @@ backend) reads them:
 producer records with `record_unsupported`, §2). It is never silently
 dropped. Of LLVM 19's and 22's attribute names these are:
 `coro_elide_safe`, `coro_only_destroy_when_complete`,
-`fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`, `nocf_check`,
+`fn_ret_thunk_extern`, `hybrid_patchable`, `jumptable`,
 `nodivergencesource`, `noduplicate`, `noimplicitfloat`, `nonlazybind`,
-`noredzone`, `optdebug`, `optforfuzzing`, `safestack`, `shadowcallstack`,
+`optdebug`, `optforfuzzing`, `safestack`, `shadowcallstack`,
 `speculative_load_hardening`, `strictfp`, and the strings
 `allow_direct_access_in_hot_patch_function`, `denormal-fp-math`,
 `denormal-fp-math-f32`, `loader-replaceable`,
 `marked_for_windows_hot_patching`, `no-inline-line-tables`,
 `profile-sample-accurate`, `use-sample-profile`. Some of them change
-code (`noredzone`, `noimplicitfloat`, `nonlazybind`, `nocf_check`,
+code (`noimplicitfloat`, `nonlazybind`,
 `shadowcallstack`, ...) and move to "kept" with the work package that
 implements them; some look optimizer-only (`nodivergencesource`,
 `noduplicate`, `optdebug`, `optforfuzzing`, the profile strings) and
@@ -1867,6 +1923,16 @@ first occurrence, where `symbols` counts the distinct symbols it was met
 at. Its first entry is the first reason. It is for coverage reports, not
 for the compile path.
 
+A census is the findings of one `Support`, so a pair `<row>/<class>` is
+in it only where §8.3 makes the pair a finding: while `type:<class>` is
+not supported, the finding at that subject is `type:<class>`, and the
+pair appears only under a `Support` with that type row switched on.
+Classifying again and again, switching on each first reason, therefore
+meets such a pair after its `type:` row, where the census of the first
+`Support` has the type row alone (WP-027: the `token` parameter of
+`classify_random`'s seed 360 under WP-033's matrix; pinned by
+`a_pair_is_found_only_behind_its_type_row`).
+
 ### 8.10 `docs/status/support.md`
 
 `support_markdown()` writes the matrix as a document: a per-group
@@ -1885,12 +1951,22 @@ operands; everything else goes the long way (`Walker::inst`), which is
 the definition, and debug builds check on every instruction that the
 short way never accepts what the long way refuses.
 
-Measured by `examples/classify_throughput.rs` (release, aarch64, on a
-shared host under heavy load, so only ratios to building in the same run
-mean anything): classifying an accepted body costs about half of
-building it (about 8 ns per instruction against 16 ns to build). That
-misses the goal of a small fraction; `spec/landed/ir/WP-009.md` has the
-numbers.
+The short way reads one word per opcode (`Support::short`, built with
+the support masks): whether the short way may decide the op, whether it
+is a call or memory op, its inline operand count, and its row's accepted
+classes. A direct callee accepted with no declared attributes is
+remembered for the body (8 slots, keyed by symbol and function type).
+The constant walk does not descend into leaf elements of an aggregate
+below the nesting limit.
+
+Measured with callgrind (release, strict, one thread, both targets; see
+`spec/landed/ir/WP-027.md`). On the bench inputs, classify is a small
+fraction of a whole run: 0.6 to 2.3% of the instructions (0.9 to 3.3%
+before WP-027). In isolation (`examples/classify_throughput.rs` with `build` and `classify`),
+classifying an accepted body costs 92 instructions per IR instruction,
+against 183 to build it. That is half of building, down from 89% before
+WP-027. The rest is operand iteration and the per-operand value and
+class match.
 
 ## 9. Printer
 
@@ -2398,8 +2474,15 @@ are `TwoTyped` (malformed). A rejected attribute is recorded as
 an interned set to `out`: flags, the unwind-table kind unless none, the
 stack alignment, the strings (the merge of two groups on one function).
 `CALL_SITE_FLAGS` are the call-site function attributes kept (`noreturn`,
-`nounwind`, `returns_twice`, `convergent`); `set_call_site_flags` sets
-`CallDesc`'s fields from them.
+`nounwind`, `returns_twice`, `convergent`, `alwaysinline`, and
+`noinline` as `CALL_SITE_NOINLINE`, a bit above every `FnAttrs` flag:
+a function's `noinline` is dropped, a call site's is kept, WP-188);
+`set_call_site_flags` sets `CallDesc`'s fields from them. A call site
+with both `alwaysinline` and `noinline` is malformed, as in LLVM's
+verifier ("'noinline and alwaysinline' are incompatible"); the printer
+writes them in place after `convergent`. The text reader takes
+`noinline` from a group (`AttrGroup::noinline`) or in place; the
+bitcode reader from a call-site group's kind 14.
 
 **Special globals and attachments** (§2.2). `SpecialGlobal::from_name`
 (without `@`): `llvm.global_ctors`, `llvm.global_dtors`, `llvm.used`,

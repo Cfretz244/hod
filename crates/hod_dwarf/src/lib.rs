@@ -60,6 +60,7 @@ mod label;
 mod leb;
 mod line;
 mod local_type;
+mod loclists;
 mod policy;
 mod reduced;
 pub mod scope;
@@ -84,6 +85,7 @@ pub use inline::{
     DEBUG_INLINED_DISCRIMINATOR, DEBUG_INLINED_FOREIGN_UNIT, DEBUG_INLINED_LOCAL_TYPE,
     DEBUG_INLINED_MEMBER, DEBUG_LOCAL_STATIC, DEBUG_RETAINED_NODES,
 };
+pub use loclists::{DEBUG_DBG_VALUE_EXPR, DEBUG_DBG_VALUE_FRAGMENT, ValueLoc};
 pub use reduced::{LINE_TABLES_INLINED, LINE_TABLES_VARIABLES, REDUCED_UNIT_ENTITIES, has_dies};
 pub use split::{
     DWO_ID, SPLIT_DWARF_4, SPLIT_INLINING, SPLIT_NAME, SPLIT_REDUCED, SPLIT_SEVERAL_UNITS,
@@ -290,6 +292,26 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+// WP-189: a refusal names the node it met (`spec/dwarf.md` §6.24).
+impl Error {
+    /// The detail of an [`Error::Unsupported`] refusal, for the coverage
+    /// log: the node's kind and DWARF tag as LLVM writes them, its number
+    /// and what is not written (`DIDerivedType DW_TAG_member (node 12):
+    /// a member of this shape`). `None` for every other error.
+    pub fn detail(&self, debug: &hod_ir::DebugInfo) -> Option<String> {
+        let Self::Unsupported { node, what } = *self else { return None };
+        let id = hod_ir::DiId::new(node);
+        let kind = debug.find_kind(id).map_or("(no node)", hod_ir::DiKind::llvm_name);
+        let tag = if debug.contains(id) { debug.tag(id) } else { 0 };
+        // A kind without a tag field (`DISubprogram`) has tag 0.
+        Some(match (tag, hod_ir::dw_tag_name(tag)) {
+            (0, _) => format!("{kind} (node {node}): {what}"),
+            (_, Some(tag)) => format!("{kind} {tag} (node {node}): {what}"),
+            (_, None) => format!("{kind} tag {tag:#x} (node {node}): {what}"),
+        })
+    }
+}
 
 impl From<hod_obj::Error> for Error {
     fn from(e: hod_obj::Error) -> Self {

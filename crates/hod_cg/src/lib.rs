@@ -47,12 +47,15 @@ mod coro;
 mod coro_body;
 mod coro_debug;
 mod cx;
+mod dbg_value;
 mod debug_calls;
 mod driver;
 pub mod emit;
 pub mod error;
 pub mod features;
 mod frame;
+mod guard;
+mod idhash;
 mod key_rows;
 mod label;
 pub mod lanes;
@@ -76,11 +79,13 @@ pub use coro_body::{
     BEGIN_SHARED_BLOCK, CORO_TARGET, CoroLayout, CoroSlots, OUTSIDE_COROUTINE, OVERALIGNED_STACK,
 };
 pub use cx::{FnCx, Scratch, TailExit};
+pub use dbg_value::{DEBUG_DBG_VALUE_ARGLIST, DEBUG_DBG_VALUE_COROUTINE, ValueAt, ValueRange};
 pub use debug_calls::{DebugCallRow, DebugCallee};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};
 pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
+pub use guard::{GUARD_BYTES, GuardPlan, SSP_COROUTINE, SSP_TARGET};
 pub use key_rows::{DEBUG_KEY_INSTRUCTIONS_COROUTINE, DEBUG_KEY_INSTRUCTIONS_MIXED};
 pub use label::{FixupKind, Label, Labels, OutOfRange};
 pub use loc::{Class, Loc};
@@ -92,4 +97,4 @@ pub use record::{
 };
 pub use reg::{MIN_POOL_FPR, MIN_POOL_GPR, PReg, RegInfo, RegSet};
 pub use sym::{RuntimeFn, SymRef};
-pub use target::{CallEmit, CallTarget, Target};
+pub use target::{BranchTarget, CallEmit, CallTarget, Target};
