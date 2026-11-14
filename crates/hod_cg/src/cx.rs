@@ -575,7 +575,15 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// Adds a relocation at `offset` of the function's code (§9.2).
     #[inline]
     pub fn reloc(&mut self, offset: u32, kind: RelocKind, sym: SymRef, addend: i64) {
-        self.out.relocs.push(Reloc { offset, kind, sym, addend });
+        self.out.relocs.push(Reloc { offset, kind, sym, addend, branch: false });
+    }
+
+    /// Adds a relocation at `offset` that addresses the target of a call
+    /// or tail call with a `kind` that is not a branch relocation
+    /// ([`Reloc::branch`]): it goes to a local copy as a branch does.
+    #[inline]
+    pub fn branch_reloc(&mut self, offset: u32, kind: RelocKind, sym: SymRef, addend: i64) {
+        self.out.relocs.push(Reloc { offset, kind, sym, addend, branch: true });
     }
 
     /// Adds a call-frame instruction that holds from the current offset

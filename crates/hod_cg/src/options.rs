@@ -27,6 +27,11 @@ pub struct Options {
     /// (`hod_obj::Object::dwo`). The `.dwo` name is the unit's
     /// `splitDebugFilename`; the caller checks it is the option's.
     pub split_dwarf: hod_dwarf::SplitDwarf,
+    /// `-enable-tlsdesc` (WP-213, `spec/codegen.md` §5.6.37): x86-64
+    /// reaches a variable of the general- or local-dynamic model through
+    /// a TLS descriptor rather than `__tls_get_addr`. AArch64 always
+    /// does, and ignores the option, as `llc` does.
+    pub tls_descriptors: bool,
 }
 
 /// A `.debug_*` section of 4 GiB or more with compression asked for: the

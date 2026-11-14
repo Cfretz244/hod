@@ -70,6 +70,37 @@ fn local_dynamic() -> Vec<Item> {
     ]
 }
 
+/// A TLS descriptor (WP-213) of `target`: the `lea` and the call, then
+/// the thread pointer added, as `llc -enable-tlsdesc` writes them.
+fn descriptor(target: &'static str) -> Vec<Item> {
+    let fs0 = Mem::abs(0).with_seg(Seg::Fs);
+    vec![
+        (
+            lea(Size::Q, Reg::Rax, Mem::rip(0)),
+            Some(("GOTPC32_TLSDESC", target)),
+            format!("lea rax, [rip + {target}@TLSDESC]"),
+        ),
+        (
+            tlsdesc_call(),
+            Some(("TLSDESC_CALL", target)),
+            format!("call qword ptr [rax + {target}@TLSCALL]"),
+        ),
+        (add_rm(Size::Q, Reg::Rax, fs0), None, "add rax, qword ptr fs:[0]".into()),
+    ]
+}
+
+/// Local dynamic through a descriptor: `_TLS_MODULE_BASE_`'s, then the
+/// variable's offset in the block.
+fn local_descriptor() -> Vec<Item> {
+    let mut out = descriptor("_TLS_MODULE_BASE_");
+    out.push((
+        lea(Size::Q, Reg::Rax, field(Mem::base(Reg::Rax, 0))),
+        Some(("DTPOFF32", "x")),
+        "lea rax, [rax + x@DTPOFF]".into(),
+    ));
+    out
+}
+
 fn initial_exec() -> Vec<Item> {
     let mut out = Vec::new();
     for n in [0, 3, 8, 12, 13, 15] {
@@ -120,18 +151,21 @@ fn source(items: &[Item], from_hod: bool) -> String {
         ".section .tdata,\"awT\",@progbits\n.globl x\n.type x,@object\n.p2align 3\n\
          x: .quad 7\n.size x, 8\n.text\n.globl _start\n.type _start,@function\n_start:\n",
     );
+    // hod writes `_TLS_MODULE_BASE_` as a TLS symbol, as the assembler
+    // does for a `@TLSDESC` reference.
+    if items.iter().any(|(_, reloc, _)| matches!(reloc, Some((_, "_TLS_MODULE_BASE_")))) {
+        s.push_str(".type _TLS_MODULE_BASE_,@tls_object\n");
+    }
     for (i, (inst, reloc, text)) in items.iter().enumerate() {
         if from_hod {
             let bytes: Vec<String> = inst.bytes().iter().map(|b| format!("{b:#04x}")).collect();
             writeln!(s, "h{i}: .byte {}", bytes.join(",")).unwrap();
             if let Some((kind, symbol)) = reloc {
-                let site = inst.site().expect("a relocated instruction has a site");
-                writeln!(
-                    s,
-                    ".reloc h{i}+{}, R_X86_64_{kind}, {symbol}{:+}",
-                    site.offset, site.addend
-                )
-                .unwrap();
+                // The descriptor call's relocation marks the instruction:
+                // its first byte, addend 0.
+                let (offset, addend) =
+                    inst.site().map_or((0, 0), |site| (site.offset, site.addend));
+                writeln!(s, ".reloc h{i}+{offset}, R_X86_64_{kind}, {symbol}{addend:+}").unwrap();
             }
         } else {
             writeln!(s, "h{i}: {text}").unwrap();
@@ -259,9 +293,11 @@ fn build(tools: &Tools, label: &str, items: &[Item]) -> Built {
 #[test]
 fn tls_sequences_link_as_llvms() {
     let linkers = linkers();
-    let models: [(&str, Vec<Item>); 4] = [
+    let models: [(&str, Vec<Item>); 6] = [
         ("gd", general_dynamic()),
         ("ld", local_dynamic()),
+        ("desc", descriptor("x")),
+        ("ldesc", local_descriptor()),
         ("ie", initial_exec()),
         ("le", local_exec()),
     ];
@@ -317,12 +353,20 @@ fn tls_sequences_link_as_llvms() {
                             assert_eq!(at_h0, first, "{what}: relaxed in a shared object");
                             assert!(dynamic.contains("R_X86_64_DTPMOD64"), "{what}:\n{dynamic}");
                         }
+                        // A descriptor is resolved by the loader:
+                        // `R_X86_64_TLSDESC`, the `lea` kept.
+                        ("desc" | "ldesc", "shared") => {
+                            assert_eq!(at_h0, first, "{what}: relaxed in a shared object");
+                            assert!(dynamic.contains("R_X86_64_TLSDESC"), "{what}:\n{dynamic}");
+                        }
                         ("ie", "shared") => {
                             assert!(dynamic.contains("R_X86_64_TPOFF64"), "{what}:\n{dynamic}");
                         }
                         // In an executable the dynamic models are
                         // rewritten into a thread-pointer access.
-                        ("gd" | "ld", _) => assert_ne!(at_h0, first, "{what}: not relaxed"),
+                        ("gd" | "ld" | "desc" | "ldesc", _) => {
+                            assert_ne!(at_h0, first, "{what}: not relaxed");
+                        }
                         _ => {}
                     }
                     linked += 1;

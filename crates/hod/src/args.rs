@@ -135,6 +135,7 @@ enum Opt {
     FunctionSections,
     DataSections,
     X86BranchesWithin32B,
+    EnableTlsdesc,
     TimeTrace,
     Strict,
     Version,
@@ -167,6 +168,7 @@ impl Opt {
             "function-sections" => Opt::FunctionSections,
             "data-sections" => Opt::DataSections,
             "x86-branches-within-32B-boundaries" => Opt::X86BranchesWithin32B,
+            "enable-tlsdesc" => Opt::EnableTlsdesc,
             "time-trace" => Opt::TimeTrace,
             "strict" => Opt::Strict,
             "version" => Opt::Version,
@@ -200,6 +202,7 @@ impl Opt {
             Opt::FunctionSections
                 | Opt::DataSections
                 | Opt::X86BranchesWithin32B
+                | Opt::EnableTlsdesc
                 | Opt::TimeTrace
                 | Opt::Strict
                 | Opt::Version
@@ -377,6 +380,7 @@ impl Parser {
             Opt::FunctionSections => options.function_sections = on,
             Opt::DataSections => options.data_sections = on,
             Opt::X86BranchesWithin32B => options.x86_branches_within_32b = on,
+            Opt::EnableTlsdesc => options.tls_descriptors = on,
             Opt::Strict => self.line.strict = Some(on),
             Opt::Version if on && self.line.action == Action::Compile => {
                 self.line.action = Action::Version;
@@ -658,6 +662,7 @@ mod tests {
             "-fp-contract=fast",
             "-code-model=large",
             "-x86-branches-within-32B-boundaries",
+            "-enable-tlsdesc",
             "-debugger-tune=gdb",
             "-split-dwarf-file=a.dwo",
             "-split-dwarf-output=a.dwo",
@@ -677,6 +682,7 @@ mod tests {
             data_sections: true,
             fp_contract: Some(FpContract::Fast),
             x86_branches_within_32b: true,
+            tls_descriptors: true,
             debugger_tuning: Some(DebuggerTuning::Gdb),
             split_dwarf_file: Some("a.dwo".into()),
             split_dwarf_output: Some("a.dwo".into()),
@@ -737,6 +743,11 @@ mod tests {
             (&["-function-sections", "-function-sections=FALSE"], |l| !l.options.function_sections),
             (&["-data-sections"], |l| l.options.data_sections && !l.options.function_sections),
             (&["--data-sections=True"], |l| l.options.data_sections),
+            (&["-enable-tlsdesc"], |l| l.options.tls_descriptors),
+            (&["--enable-tlsdesc"], |l| l.options.tls_descriptors),
+            (&["-enable-tlsdesc=1"], |l| l.options.tls_descriptors),
+            (&["-enable-tlsdesc", "-enable-tlsdesc=false"], |l| !l.options.tls_descriptors),
+            (&["--enable-tlsdesc=0"], |l| !l.options.tls_descriptors),
             (&["-mcpu=generic"], |l| l.options.cpu.as_deref() == Some("generic")),
             (&["--mcpu", "x86-64-v3"], |l| l.options.cpu.as_deref() == Some("x86-64-v3")),
             (&["-mattr=+neon,-sve"], |l| l.options.features == ["+neon", "-sve"]),

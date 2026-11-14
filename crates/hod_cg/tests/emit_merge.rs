@@ -287,6 +287,7 @@ fn check_carried(program: &Generated, chunk: &Chunk, emitted: &Emitted) {
                 SymRef::Runtime(f) => assert_eq!(name, f.name().as_bytes()),
                 // The test target never refers to it (WP-105).
                 SymRef::NoopCoroFrame => unreachable!("the noop coroutine frame"),
+                SymRef::TlsModuleBase => unreachable!("_TLS_MODULE_BASE_ (x86-64 only)"),
             }
         }
         // Rows: the same rows, function-relative, in the merged tables.

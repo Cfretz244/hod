@@ -200,11 +200,11 @@ impl ModuleEmitter<'_> {
             };
             let standard = matches!(s.name.as_str(), ".text" | ".rodata" | ".data" | ".bss");
             let found = if standard {
-                self.sections.implicit(kind, false, false, NO_GROUP, b"", 1, &mut name)
+                self.sections.implicit(kind, false, false, false, NO_GROUP, b"", 1, &mut name)
             } else {
                 name.clear();
                 name.extend_from_slice(s.name.as_bytes());
-                self.sections.explicit(s.name.as_bytes(), kind, false, NO_GROUP, 1)
+                self.sections.explicit(s.name.as_bytes(), kind, false, false, NO_GROUP, 1)
             };
             let id = match found {
                 Found::Old(id) => id,

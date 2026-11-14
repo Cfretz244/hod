@@ -25,6 +25,25 @@
 //!     lea rd, [rd + x@TPOFF]                       R_X86_64_TPOFF32
 //! ```
 //!
+//! With `-enable-tlsdesc` (`clang -mtls-dialect=gnu2`, WP-213,
+//! `spec/codegen.md` §5.6.37) the two dynamic models are TLS
+//! descriptors instead, as `llc` writes them; the static models do not
+//! change:
+//!
+//! ```text
+//! general dynamic:
+//!     lea rax, [rip + x@tlsdesc]       R_X86_64_GOTPC32_TLSDESC
+//!     call [rax]                       R_X86_64_TLSDESC_CALL (at the call)
+//!     add rax, fs:[0]                  ; rax = &x
+//! local dynamic: the same for _TLS_MODULE_BASE_, then
+//!     lea rax, [rax + x@DTPOFF]        R_X86_64_DTPOFF32
+//! ```
+//!
+//! The descriptor's function returns the offset from the thread pointer
+//! in `rax` and keeps every other register; it writes the flags (`llc`'s
+//! `TLS_desc` defines `rax` and `eflags`). So both ways in are the
+//! operand form ([`descriptor`]): the flags and `rax` saved, nothing else.
+//!
 //! The relocations carry no addend (as `llc`'s, and as on AArch64): an
 //! offset from the symbol is added in code afterwards
 //! ([`common::add_addend`](crate::common::add_addend)).
@@ -50,12 +69,12 @@
 //! call.
 
 use hod_cg::{Access, CgResult, FnCx, SymRef, TlsAccess};
-use hod_ir::{CodeModel, Const, Inst, Intrinsic, SymId, Value, ValueKind};
+use hod_ir::{Const, Inst, Intrinsic, SymId, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Mem, Reg, Seg, Size, Xmm};
-use hod_obj::X64Reloc;
+use hod_obj::{RelocKind, X64Reloc};
 
-use crate::common::{CODE_MODEL, RSP, add_addend, deferred_first, gp, put, put_reloc, unsupported};
+use crate::common::{RSP, add_addend, deferred_first, gp, put, put_reloc};
 use crate::target::X64;
 
 /// The group's refusal before WP-134; no lowering returns it any more
@@ -111,6 +130,53 @@ fn dynamic_pair(cx: &mut FnCx<'_, X64>, sym: SymId, model: TlsAccess) -> CgResul
     };
     let len = cx.offset() - call_at;
     cx.record_call_site(call_at, len);
+    Ok(())
+}
+
+/// The descriptor call (module docs): `lea rax, [rip + t@tlsdesc]`;
+/// `call [rax]`, `t` being `sym` (general dynamic) or
+/// `_TLS_MODULE_BASE_` (local dynamic). `rax` is then the offset of `t`
+/// from the thread pointer; the flags are written, nothing else. Records
+/// the call site.
+fn descriptor_call(cx: &mut FnCx<'_, X64>, sym: SymId, model: TlsAccess) -> CgResult<()> {
+    let target =
+        if model == TlsAccess::LocalDynamic { SymRef::TlsModuleBase } else { SymRef::Module(sym) };
+    let lea = mc::lea(Size::Q, Reg::Rax, Mem::rip(0));
+    put_reloc(cx, lea, X64Reloc::GotPc32Tlsdesc, target, 0)?;
+    let at = cx.offset();
+    let call = mc::tlsdesc_call();
+    put(cx, call);
+    cx.reloc(at, RelocKind::X64(X64Reloc::TlsdescCall), target, 0);
+    cx.record_call_site(at, call.len() as u32);
+    Ok(())
+}
+
+/// A dynamic model through a TLS descriptor, as an operand (module
+/// docs): writes `rd` and nothing else, the flags kept. `pushfq`, then
+/// `rax` saved (`push rax`, or 8 bytes reserved when `rd` is `rax`, so
+/// that `rsp` stays 16-aligned at the call), the descriptor call, the
+/// thread pointer added (`add rax, fs:[0]`), for local dynamic the
+/// variable's offset in the block (`DTPOFF32`), the result moved to `rd`,
+/// `rax` and the flags restored.
+fn descriptor(cx: &mut FnCx<'_, X64>, rd: Reg, sym: SymId, model: TlsAccess) -> CgResult<()> {
+    put(cx, mc::pushfq());
+    if rd == Reg::Rax {
+        put(cx, mc::lea(Size::Q, RSP, sp(-8)));
+    } else {
+        put(cx, mc::push_r(Reg::Rax));
+    }
+    descriptor_call(cx, sym, model)?;
+    put(cx, mc::add_rm(Size::Q, Reg::Rax, thread_pointer()));
+    if model == TlsAccess::LocalDynamic {
+        dtpoff(cx, Reg::Rax, Reg::Rax, sym)?;
+    }
+    if rd == Reg::Rax {
+        put(cx, mc::lea(Size::Q, RSP, sp(8)));
+    } else {
+        put(cx, mc::mov_rr(Size::Q, rd, Reg::Rax));
+        put(cx, mc::pop_r(Reg::Rax));
+    }
+    put(cx, mc::popfq());
     Ok(())
 }
 
@@ -196,6 +262,9 @@ pub fn address(
     addend: i64,
 ) -> CgResult<()> {
     match model {
+        TlsAccess::GeneralDynamic | TlsAccess::LocalDynamic if cx.options.tls_descriptors => {
+            descriptor(cx, rd, sym, model)?;
+        }
         TlsAccess::GeneralDynamic | TlsAccess::LocalDynamic => save_and_call(cx, rd, sym, model)?,
         TlsAccess::InitialExec | TlsAccess::LocalExec => static_model(cx, rd, sym, model)?,
     }
@@ -219,11 +288,12 @@ fn tls_symbol(cx: &FnCx<'_, X64>, ptr: Value) -> Option<(SymId, i64)> {
 /// `llvm.threadlocal.address(sym)` and `llvm.thread.pointer()`: the hook
 /// of the dispatch (`target.rs`). A dynamic model is lowered as a call
 /// (§4.4): every register value is displaced, then the bare pair; the
-/// static models and anything else are the operand's own sequence.
+/// static models, a descriptor (WP-213) and anything else are the
+/// operand's own sequence.
 ///
 /// # Errors
-/// [`CODE_MODEL`] for a code model other than small; `Internal` for an
-/// operand list the verifier rejects.
+/// [`CODE_MODEL`](crate::common::CODE_MODEL) for a code model other than small and large;
+/// `Internal` for an operand list the verifier rejects.
 pub fn intrinsic<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -236,7 +306,8 @@ pub fn intrinsic<'a>(
             if !matches!(ptr.kind(), ValueKind::Sym(_) | ValueKind::Const(_)) {
                 return cx.bug("llvm.threadlocal.address of something that is no symbol");
             }
-            let dynamic = tls_symbol(cx, ptr).and_then(|(sym, addend)| {
+            let descriptors = cx.options.tls_descriptors;
+            let dynamic = tls_symbol(cx, ptr).filter(|_| !descriptors).and_then(|(sym, addend)| {
                 match hod_cg::sym_access(cx.module, cx.options, sym) {
                     Access::Tls(model @ (TlsAccess::GeneralDynamic | TlsAccess::LocalDynamic)) => {
                         Some((sym, addend, model))
@@ -249,9 +320,9 @@ pub fn intrinsic<'a>(
                 cx.put(ptr, rd)?;
                 return cx.finish(inst, rd);
             };
-            if cx.options.code_model(cx.module) != CodeModel::Small {
-                return unsupported(CODE_MODEL);
-            }
+            // The large code model's sequences are the small model's, as
+            // `llc` 19 and 22 write them (§5.6.36).
+            crate::common::large(cx)?;
             cx.displace_all()?;
             let rd = cx.def_reg(inst)?;
             dynamic_pair(cx, sym, model)?;
