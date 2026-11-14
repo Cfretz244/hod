@@ -42,7 +42,9 @@
 # programs under CMAKE_CROSSCOMPILING_EMULATOR ($HOD_OSS_X64_QEMU -L
 # <sysroot>, so ctest runs the tests under qemu), links get 16 GB of
 # address space (KILN_OSS_LINK_VMEM_KB: mold maps every archive), the test
-# timeout is the row's times $HOD_OSS_X64_TEST_SLOWDOWN (default 4) and
+# timeout and ctest's per-test default (DART_TESTING_TIMEOUT, 1500 s, for
+# a project that includes CTest) are times $HOD_OSS_X64_TEST_SLOWDOWN
+# (default 4), and the test step's
 # its address-space cap $HOD_OSS_X64_TEST_VMEM_KB (default 16 GB: a guest
 # thread is a host thread of qemu's), and
 # the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
@@ -103,7 +105,8 @@ case "$TARGET" in
     XCONF=(-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=x86_64
       -DCMAKE_C_COMPILER_TARGET=x86_64-linux-gnu
       "-DCMAKE_CROSSCOMPILING_EMULATOR=$X64_QEMU;-L;$X64_SYSROOT"
-      "-DCMAKE_FIND_ROOT_PATH=$X64_SYSROOT" -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER)
+      "-DCMAKE_FIND_ROOT_PATH=$X64_SYSROOT" -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
+      -DDART_TESTING_TIMEOUT=$((1500 * ${HOD_OSS_X64_TEST_SLOWDOWN:-4})))
     export HOD_OSS_TARGET_TRIPLE="$X64_TRIPLE" KILN_OSS_LINK_VMEM_KB="${KILN_OSS_LINK_VMEM_KB:-16000000}" ;;
   *) echo "oss-build: --target must be aarch64 or x86_64" >&2; exit 2 ;;
 esac
