@@ -658,6 +658,22 @@ symbol offset):
 | absolute address in the low 4 GiB (non-PIC) | `mov_ri32` | `R_X86_64_32` |
 | absolute 64-bit address (any code model) | `movabs_ri` | `R_X86_64_64` |
 
+The large code model (`spec/codegen.md` §5.6.36, WP-209) adds 64-bit
+fields only, each the `Abs64` immediate of `movabs_ri` at offset 2 with
+addend 0 plus the symbol offset:
+
+| reference | instruction | relocation |
+|---|---|---|
+| any symbol outside PIC, a call's callee included | `movabs_ri` | `R_X86_64_64` |
+| the GOT's distance from a `lea r, [rip - 7]` | `movabs_ri`, addend the immediate's distance from the `lea` (9) | `R_X86_64_GOTPC64` against `_GLOBAL_OFFSET_TABLE_` |
+| a dso-local symbol's offset from the GOT | `movabs_ri` | `R_X86_64_GOTOFF64` |
+| the offset of a symbol's GOT entry | `movabs_ri` | `R_X86_64_GOT64` |
+| `.eh_frame`'s and the LSDA's pointers (data, `hod_eh`) | an 8-byte field | `R_X86_64_PC64` |
+
+`R_X86_64_GOTPCREL64`, `R_X86_64_GOTPLT64` and `R_X86_64_PLTOFF64` are
+named in `hod_obj` and never written, as `llc` writes none at `-O0`.
+Thread-local references keep the table above.
+
 The code generator picks the relocation and gives it to the object writer
 (`spec/object.md` "Relocations"); this crate names only the place and the
 addend.

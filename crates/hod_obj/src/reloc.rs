@@ -171,6 +171,12 @@ reloc_kinds! {
         Pc64 = 24, "R_X86_64_PC64";
         GotOff64 = 25, "R_X86_64_GOTOFF64";
         GotPc32 = 26, "R_X86_64_GOTPC32";
+        // The large code model (WP-209).
+        Got64 = 27, "R_X86_64_GOT64";
+        GotPcrel64 = 28, "R_X86_64_GOTPCREL64";
+        GotPc64 = 29, "R_X86_64_GOTPC64";
+        GotPlt64 = 30, "R_X86_64_GOTPLT64";
+        PltOff64 = 31, "R_X86_64_PLTOFF64";
         GotPc32Tlsdesc = 34, "R_X86_64_GOTPC32_TLSDESC";
         TlsdescCall = 35, "R_X86_64_TLSDESC_CALL";
         GotPcrelX = 41, "R_X86_64_GOTPCRELX";
