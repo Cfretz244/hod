@@ -418,7 +418,7 @@ fn dot_minus(text: &str) -> Option<&str> {
 }
 
 /// Splits operand text at top-level commas (outside strings).
-fn split_commas(text: &str) -> Vec<&str> {
+pub(crate) fn split_commas(text: &str) -> Vec<&str> {
     let b = text.as_bytes();
     let mut parts = Vec::new();
     let mut start = 0;
@@ -1065,29 +1065,11 @@ impl State<'_> {
     /// (zeros to a multiple of 4, then `nop`s), unless a fill is given;
     /// data with zeros. No mapping symbol marks the padding.
     fn align(&mut self, rest: &str, log2: bool) -> R<()> {
-        let parts = split_commas(rest);
-        let (n, fill) = match parts.as_slice() {
-            [n] => (constant(n)?, None),
-            [n, f] => (constant(n)?, Some(constant(f)?)),
-            _ => return fail(op_reason::FORM),
-        };
-        let align = if log2 {
-            if !(0..=16).contains(&n) {
-                return fail(op_reason::RANGE);
-            }
-            1u64 << n
-        } else {
-            match u64::try_from(n) {
-                Ok(0) => 1,
-                Ok(a) if a.is_power_of_two() && a <= 1 << 16 => a,
-                _ => return fail(op_reason::RANGE),
-            }
-        };
-        if let Some(f) = fill
-            && !(-128..256).contains(&f)
-        {
-            return fail(op_reason::RANGE);
+        if split_commas(rest).len() > 2 {
+            // A maximum (§17 takes one in an inline body only).
+            return fail(op_reason::FORM);
         }
+        let crate::align::Align { align, fill, .. } = crate::align::parse(rest, log2)?;
         let x64 = self.isa == Isa::X64;
         let s = self.section();
         s.align = s.align.max(align);
@@ -1098,7 +1080,7 @@ impl State<'_> {
             }
         } else {
             match fill {
-                Some(f) => s.bytes.extend(std::iter::repeat_n(f as u8, pad)),
+                Some(f) => s.bytes.extend(std::iter::repeat_n(f, pad)),
                 // x86-64: LLVM's no-ops of at most 15 bytes (generic
                 // tuning), longest first.
                 None if s.kind == SectionKind::Text && x64 => {
@@ -1344,7 +1326,7 @@ impl Symbol {
     }
 }
 
-fn constant(text: &str) -> R<i64> {
+pub(crate) fn constant(text: &str) -> R<i64> {
     let mut c = Cursor::new(text);
     let v = c.constant()?;
     if !c.at_end() {

@@ -16,6 +16,11 @@
 //! `ldp x29, x30, [sp]` · `add sp, sp, #FRAME` (one instruction, or
 //! `#hi12, lsl #12` then `#lo12`) · `ret`; a tail exit is the same
 //! teardown ending in `b callee` or `br x16`.
+//!
+//! WP-215 (§5.6.38): `llvm.sponentry` asks for the incoming base; a body
+//! that calls `llvm.eh.unwind.init` stores `x19`..`x28` and `d8`..`d15`
+//! at `[x29 + 16]` right after `mov x29, sp` and every exit reloads them
+//! (`unwind`).
 
 use hod_cg::abi::{PartKind, Place};
 use hod_cg::{CallTarget, CfiOp, CgError, CgResult, FnCx, FrameDesc, FrameRef, LIMIT_FRAME_SIZE};
@@ -68,17 +73,20 @@ pub struct FrameState {
     pub probe: u32,
     /// Branch protection (WP-185, `crate::protect`).
     pub protect: crate::protect::ProtectState,
+    /// The save area of `llvm.eh.unwind.init` (WP-215, `crate::unwind`).
+    pub unwind: crate::unwind::UnwindState,
 }
 
 /// Whether the function addresses its incoming stack area (§5.5): it has
-/// a stack-passed or `byval` argument, or is variadic.
+/// a stack-passed or `byval` argument, is variadic, or calls
+/// `llvm.sponentry` (WP-215, §5.6.38).
 fn needs_incoming_base(cx: &FnCx<'_, A64>) -> bool {
     let asg = cx.fn_assignment();
     let stack = asg
         .args
         .iter()
         .any(|part| matches!(part.place, Place::Stack(_)) || part.kind == PartKind::Pointee);
-    stack || is_variadic(cx)
+    stack || is_variadic(cx) || crate::unwind::needs_entry_sp(cx)
 }
 
 /// Whether the function being compiled is variadic.
@@ -111,6 +119,7 @@ pub fn begin(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     put(cx, mc::mov_sp(Size::X, FP, SP));
     crate::tail2::save_preserved(cx)?;
     crate::tail3::save_all(cx)?;
+    crate::unwind::save(cx)?; // WP-215: `llvm.eh.unwind.init`
     crate::coro_body::save(cx)?;
     if base {
         let FrameRef::Local(slot) = cx.alloc_slot(8, 8)? else {
@@ -185,6 +194,7 @@ pub fn end(cx: &mut FnCx<'_, A64>) -> CgResult<()> {
     prologue_rows(cx, at, frame)?;
     crate::tail2::preserved_rows(cx, Some(at + PROLOGUE_BYTES + crate::tail2::SAVE_BYTES), frame)?;
     crate::tail3::all_rows(cx, Some(at + PROLOGUE_BYTES), frame)?;
+    crate::unwind::rows(cx, true, frame)?;
     let saved_at = cx.state.frame.coro.saved_at;
     crate::coro_body::rows(cx, Some(saved_at), frame)?;
 
@@ -250,6 +260,7 @@ fn body_rows(cx: &mut FnCx<'_, A64>, frame: u32) {
     // WP-095: a hook that cannot fail when the prologue's rows did not.
     let _ = crate::tail2::preserved_rows(cx, None, frame);
     let _ = crate::tail3::all_rows(cx, None, frame);
+    let _ = crate::unwind::rows(cx, false, frame);
     let _ = crate::coro_body::rows(cx, None, frame);
     crate::protect::restate(cx); // WP-185
 }
@@ -265,6 +276,7 @@ fn teardown(cx: &mut FnCx<'_, A64>, frame: u32) -> CgResult<()> {
     cx.cfi(CfiOp::DefCfa { reg: DWARF_SP, offset: frame as i32 });
     crate::tail2::restore_preserved(cx);
     crate::tail3::restore_all(cx);
+    crate::unwind::restore(cx);
     crate::coro_body::restore(cx);
     put(cx, mc::ldp_off(Size::X, Reg::X29.zr(), Reg::X30.zr(), SP, 0));
     cx.cfi(CfiOp::Restore { reg: DWARF_FP });

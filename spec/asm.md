@@ -150,7 +150,9 @@ of §7 holds the choice. Covered:
   and from FP, `#imm8`), `fabs` `fneg` `fsqrt` `frint*`, `fadd` `fsub`
   `fmul` `fdiv` `fnmul` `fmax` `fmin` `fmaxnm` `fminnm`, `fmadd`
   `fmsub` `fnmadd` `fnmsub`, `fcmp` `fcmpe` (`#0.0`), `fccmp` `fccmpe`
-  `fcsel` `fcvt` `scvtf` `ucvtf` `fcvt{n,a,p,m,z}{s,u}`.
+  `fcsel` `fcvt` `scvtf` `ucvtf` `fcvt{n,a,p,m,z}{s,u}`;
+- scalar SIMD on `s`/`d` registers (§17): `fcvtzs` `fcvtzu`
+  (`fcvtzs d0, d1`), `fcmeq` (register, and `#0.0`/`#0`).
 
 Any other mnemonic is `asm:mnemonic/<name>`; a known mnemonic with
 operands outside these forms is `asm:operand/<what>` (`form`, `range`,
@@ -164,7 +166,9 @@ A body is the substituted template. Numeric local labels (`1:`, `1b`,
 direction is `asm:operand/label`, one out of the instruction's reach
 `asm:operand/reach`. A named label is `asm:label` (a body may be
 emitted more than once by an optimiser; hod refuses rather than
-guesses); any directive is `asm:directive/<name>`. A reference to a
+guesses); `.p2align`, `.balign` and `.align` pad as §17 says
+(`a64::assemble_at`); any other directive is `asm:directive/<name>`. A
+reference to a
 symbol is returned as a `Ref` (offset, kind, name, addend) for the
 caller.
 
@@ -221,7 +225,14 @@ The lowering is `spec/codegen.md` §5.5.3 "WP-103". In short:
   assembled by hod and by `llvm-mc` 22 and 19
   (`-triple=aarch64-linux-gnu -mattr=+lse,+crc`), word for word; the
   refused table checks each name; feature gating; `prfm` with an offset
-  only `prfum` takes against `llvm-mc` 22 alone (§16).
+  only `prfum` takes against `llvm-mc` 22 alone (§16); the aligned
+  bodies of §17 at 16 start offsets, and fill 0 as `llvm-mc` 22 writes
+  it.
+- `crates/hod_a64/tests/inline_asm_align.rs` (§17): templates with
+  alignment directives at several offsets of their functions, in hod's
+  objects and `llc` 19's and 22's: the bytes `llvm-mc` writes at that
+  offset, the sections aligned alike; a cut before an aligned template
+  refused.
 - `crates/hod_asm/tests/census_a64.rs` (§16): the AArch64 census, each
   body by the table; the accepted ones `llvm-mc` 22's and 19's words.
 - Unit tests in each module: statements, expressions, substitution,
@@ -255,16 +266,20 @@ range, register, sysreg, option, vector, fp-immediate, specifier,
 expression, symbol, label, reach, literal-pool}`, `asm:label`,
 `asm:lexical`, `asm:feature`, `asm:template`, `asm:dialect`,
 `asm:section`, `asm:symbol`, `asm:unaligned` (an instruction of module
-text at an offset that is not a multiple of 4, §9).
+text at an offset that is not a multiple of 4, §9). From code
+generation: `limit:aligned-code-moved` (§17: an aligned template after
+bytes the code's shrinking removes).
 
 The AArch64 mnemonics real templates still need, and their refusals, are
-§16's table: the NEON and SVE instructions (`asm:mnemonic/fmla`,
-`/umlal`, `/pmull`, `/fcmeq`, `/cntb`, ...; `asm:operand/vector` for a
-vector arrangement of a scalar mnemonic, `asm:operand/register` for its
-scalar SIMD form), `asm:directive/p2align` and the other directives,
-`asm:mnemonic/adrp` (with `asm:operand/specifier` for `:lo12:`),
-`asm:mnemonic/ld1`. A prefetch operation that is no name of §16 is
-`asm:operand/option`; `prfm` and `prfum` take no write-back.
+§16's table as §17 leaves it: the NEON and SVE instructions
+(`asm:mnemonic/fmla`, `/umlal`, `/pmull`, `/cntb`, ...;
+`asm:operand/vector` for a vector arrangement of a known mnemonic,
+`fcmeq v0.4s` among them), the directives other than §17's
+(`asm:directive/inst`, `/arch_extension`, `/balignw`, ...; on x86-64
+`asm:directive/p2align` stays, §17), `asm:mnemonic/adrp` (with
+`asm:operand/specifier` for `:lo12:`), `asm:mnemonic/ld1`. A prefetch
+operation that is no name of §16 is `asm:operand/option`; `prfm` and
+`prfum` take no write-back.
 
 ## 9. Module-level assembly (`module.rs`, WP-112)
 
@@ -784,24 +799,120 @@ valgrind's headers), and the templates of the saved kiln-built modules
 whose body `llvm-mc` 22 reads as AArch64 after its operands are
 substituted. 140 of 211 templates assemble (116 before WP-216); every
 accepted body is `llvm-mc` 22's and 19's words. The kernel's arm64 UAPI
-headers and musl (not installed) have no AArch64 template.
+headers and musl (not installed) have no AArch64 template. WP-217
+corrected the count to 177 (§17): 143 assemble.
 
-**Stays refused**, with the census's count of templates:
+**Stays refused** after WP-217, with the census's count of templates:
 
 | form | refusal | templates |
 |---|---|---|
-| `.p2align` in a body (zstd's loop alignment) | `asm:directive/p2align` | 34 |
 | NEON with vector arrangements (`fmla`, `umlal`, `pmull`, `pmull2`, `fcmeq`, `fcvtzs`/`fcvtzu`/`fcvtns` `.4s`) | `asm:mnemonic/<m>`, `asm:operand/vector` | 31 |
-| scalar SIMD forms (`fcvtzs d0, d1`, `fcmeq d0, d1, d1`) | `asm:operand/register`, `asm:mnemonic/fcmeq` | 3 |
 | `.arch_extension crypto` (before AES in NEON) | `asm:directive/arch_extension` | 1 |
 | SVE (`cntb`) | `asm:mnemonic/cntb` | 1 |
 | an instruction as data (`.inst 0xd4200000`) | `asm:directive/inst` | 1 |
 | `adrp` | `asm:mnemonic/adrp` | 0 |
 | `ld1` and the other structure loads | `asm:mnemonic/ld1` | 0 |
 
-`.p2align` in an inline body aligns to the function's place in its
-section, which the body does not know; NEON needs vector operands and
-registers in the lowering (`asm:operand/vector` is the parser's).
+NEON needs vector operands and registers in the lowering
+(`asm:operand/vector` is the parser's).
 `adrp sym` alone writes `R_AARCH64_ADR_PREL_PG_HI21`, a reference kind
 neither caller has, and is of use only with `:lo12:sym` (a relocation
 specifier): no census template writes either, so both wait.
+
+## 17. Alignment directives in AArch64 templates; scalar SIMD forms (WP-217)
+
+**The directives** (`align.rs`, `a64::assemble_at`): `.p2align n`,
+`.align n` (AArch64: a power of two, as `.p2align`), `.balign n`, in any
+case, each `{, fill}{, max}` as `llvm-mc` 19 and 22 read them:
+
+- `n` is a constant expression: 0..16 for the power forms; for
+  `.balign` a power of two up to 65536 (0 means 1). Another value is
+  `asm:operand/range` (`.balign 3` is an error to `llvm-mc`; hod keeps
+  alignments at most 64 KiB).
+- `fill` is -128..255, written as that byte; empty (`4,,8`) means none.
+  Another value is `asm:operand/range`; `.p2align 4,` (a trailing empty
+  operand) is `asm:operand/syntax`; a fourth operand
+  `asm:operand/form`.
+- `max` below 1 is `asm:operand/range` (an error to `llvm-mc`); at or
+  above the alignment it has no effect (`llvm-mc` warns). When the
+  padding would be more than `max` bytes, none is written.
+- The padding without a fill is `nop` words (code is a multiple of 4
+  bytes). With a fill byte `f`, it is words of four `f`s; no `$d` mapping
+  symbol marks it (`llvm-mc` writes none).
+- **Fill 0** is the one difference between the two majors: `llvm-mc` 19
+  writes `nop`s (it reads a fill equal to the target's no-op byte as code
+  alignment), 22 writes zero words. hod writes 22's (kiln's LLVM;
+  `llvm_mc.rs` `fill_zero_is_llvm_22_s`).
+- `.balignw`, `.balignl`, `.p2alignw`, `.p2alignl` and the other
+  directives stay `asm:directive/<name>`.
+
+Module text (§9) takes the same operands without `max`.
+
+**Where the boundary is counted.** `llvm-mc` pads to the section
+offset; the section's alignment is raised to the directive's even when
+`max` skips the padding. In code, hod compiles each function at offset 0
+of its own buffer and `add_func` places it at a multiple of its
+alignment. A template whose body aligns is assembled once at 0 (its
+size, its refusals) and again at its offset in the function's code;
+the function's alignment is raised to the body's largest
+(`FnCx::raise_align`), so the boundary counted from the function's
+start is a boundary of the section.
+
+- With one section per function (`-function-sections`) the bytes are
+  `llc`'s: each template's words equal `llvm-mc`'s at the same section
+  offset, in hod's object and in `llc` 19's and 22's, and each
+  `.text.<f>` is aligned alike (`inline_asm_align.rs`).
+- In one `.text`, `llc` pads inside the function from the section
+  offset; hod puts the padding before the function (it starts at a
+  multiple of the alignment). The bytes differ where the padding is; the
+  instruction after each directive is on its boundary in both, and the
+  section's alignment is the same.
+- **The size bound** holds: the body's size at its offset is the one
+  written, and a branch the larger code puts out of reach retries the
+  function in far mode, as for any code.
+- **Shrinking** (`spec/codegen.md` §5.6.15) removes bytes after the
+  code exists. Bytes removed before an aligned template would move it off
+  its boundary: the function is refused with `limit:aligned-code-moved`.
+  On AArch64 only a probed frame's prologue (`"probe-stack"`) is cut;
+  kiln writes no `probe-stack` in the modules built so far.
+- **Rows**: line, `eh_frame` and debug rows are offsets in the
+  function's code, which holds the padding; none is written for the
+  padding itself (`llc` writes none either).
+
+**Scalar SIMD** (`encode.rs` `scalar_simd`), on `s` and `d` registers
+of the same size (feature `fp`, as the other forms; `llvm-mc` needs
+`neon` for them, which every AArch64 Linux target has): `fcvtzs`,
+`fcvtzu` (`0x5ea1_b800`, `0x7ea1_b800`), `fcmeq` register
+(`0x5e20_e400`, `rm` at bit 16) and against `#0.0` or `#0`
+(`0x5ea0_d800`); bit 22 is the size. Another immediate is
+`asm:operand/fp-immediate`, registers of different sizes or an `h`
+register `asm:operand/register`, a vector arrangement
+`asm:operand/vector`.
+
+**The census** (`census_a64.rs`, §16) is corrected: the 34 `.p2align`
+templates are zstd's, all under `#if defined(__GNUC__) &&
+defined(__x86_64__)` (kiln's AArch64 zstd modules have no template):
+they are x86-64 templates, out of the AArch64 census. upb's
+`encode_longvarint` (grpc's and protobuf's copies) aligns its jump
+table with `.p2align 3` under `#ifndef __SEH__` inside the string; its
+row now holds the directive and assembles. The three scalar SIMD rows
+assemble. **143 of 177** templates assemble (140 of 211 before).
+
+**x86-64.** The x86-64 census (§13) has no template refused for an
+alignment directive. zstd's 34 (`.p2align 5`, `.p2align 4`, in
+`ZSTD_compressBlock_*` and `ZSTD_decompressSequences*`) are x86-64
+templates and stay `asm:directive/p2align`:
+
+- x86-64 code shrinks: every `-O0` branch is relaxable and the prologue
+  is cut (§5.6.15), so nearly every function with such a template would
+  be `limit:aligned-code-moved`. Taking them needs padding counted after
+  the shrinking, or a shrinking that keeps it.
+- The padding's `nop`s follow the function's tuning: `llc` 19 and 22
+  write 15-byte `nop`s for `tune-cpu` (else `target-cpu`) `generic`,
+  `x86-64`, `x86-64-v2`..`-v4` (and `skylake`), 10-byte ones with no
+  CPU (`llc`'s default `i586` tuning) or `tune-cpu` `i586` (measured
+  with 31 bytes of padding: 15, 15, 1 against 10, 10, 10, 1). kiln writes
+  `"target-cpu"="x86-64" "tune-cpu"="generic"`: the 15-byte table of
+  `hod_mc_x64::nop`.
+- Fill `0x90` differs as fill 0 does on AArch64: `nop`s to 19, `0x90`
+  bytes to 22.

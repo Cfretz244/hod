@@ -445,7 +445,9 @@ pointer by the rounded size and yields the new stack pointer, aligned as
 asked. Nothing in the frame is addressed from the stack pointer, so no
 other code changes. `llvm.stacksave` and `llvm.stackrestore` read and
 write the stack pointer. The epilogue restores the stack pointer from the
-frame pointer.
+frame pointer. Because the frame pointer and the CFA do not move with it,
+the frame intrinsics of §5.6.38 give the same answers after a dynamic
+allocation.
 
 ### 5.3 Outgoing arguments
 
@@ -469,7 +471,9 @@ It leaves the `eh_data` registers alone.
 ### 5.4 Prologue, epilogue and limits
 
 - **Always a frame pointer**, with the standard frame record, so stack
-  walkers that follow the frame chain work without unwind tables.
+  walkers that follow the frame chain work without unwind tables
+  (`"frame-pointer"` attributes do not change it; the frame intrinsics
+  rely on it, §5.6.38).
 - `Target::begin_function` emits the prologue in a **fixed-size form**
   whose immediates are not yet known, allocates what it needs from the
   frame, and emits the entry code of §4.8. `Target::end_function`, called
@@ -1016,7 +1020,8 @@ refusal of "Memory (WP-036)" below: those names are no longer produced.
   saved `x29` `n` times; `returnaddress(n)` loads `[record, #8]` of the
   `n`-th record. Every hod function saves `lr` in its frame record, so
   `returnaddress(0)` is a load too. A depth above 256 is
-  `a64:frame-depth`.
+  `a64:frame-depth`. `sponentry`, `addressofreturnaddress` and
+  `eh.unwind.init`: §5.6.38.
 - **Folded:** `objectsize` is `-1` (`min` false) or `0`; `is.constant`
   is true for a literal constant operand (an integer, a float, `null`,
   `zeroinitializer`, `undef`, `poison`) and false otherwise, as `llc`'s
@@ -2844,7 +2849,8 @@ sequence puts an instruction other than `mov`, `lea`, `movzx`/`movsx`,
   `SIGILL`). `debugtrap` is `int3`.
 - **Frames.** `frameaddress(n)` follows `rbp` n times; `returnaddress(n)`
   reads `[frame + 8]`. Depths above 256 are refused
-  (`x64:frame-depth`).
+  (`x64:frame-depth`). `eh.dwarf.cfa`, `addressofreturnaddress`,
+  `eh.unwind.init` and `eh.return.i64`: §5.6.38.
 - **The rest.** `readcyclecounter` is `rdtsc`, then `shl rdx, 32; or
   rax, rdx`. `prefetch` and `clear_cache` emit nothing (x86 caches are
   coherent). `ptrmask` is `and`. `eh.typeid.for` is the type's index
@@ -4791,6 +4797,66 @@ Evidence: `spec/landed/codegen/WP-213.md` (the census of every access
 shape under both dialects against `llc` 19 and 22, the linkers'
 relaxations, programs run under `qemu-x86_64`).
 
+#### 5.6.38 The frame as an unwinder sees it (WP-215, both targets)
+
+The intrinsics an unwinder, a stack walker or a `valgrind.h`-style call
+macro reaches for. Clang writes them for `__builtin_dwarf_cfa`,
+`__builtin_unwind_init`, `__builtin_eh_return`, `__builtin_sponentry`
+and `__builtin_frame_address`/`__builtin_return_address`; kiln reaches
+only the last two today. Each follows `llc` 19 and 22 at `-O0`, except
+where `llc` cannot build it or builds it wrong: those are refused by
+their matrix rows (`spec/ir.md` §8).
+
+| intrinsic | x86-64 | AArch64 |
+|---|---|---|
+| `llvm.frameaddress(n)` | `rbp` followed `n` times (§5.6.8) | `x29` followed `n` times (§5.5, WP-041) |
+| `llvm.returnaddress(n)` | `[frame(n) + 8]` | `[frame(n) + 8]`, `xpaclri` (§5.6.26) |
+| `llvm.eh.dwarf.cfa(k)` | `rbp + 16 + sext(k)`; `k` may be a variable | refused: `intrinsic:llvm.eh.dwarf.cfa` |
+| `llvm.addressofreturnaddress` | `rbp + 8` | `x29 + 8` |
+| `llvm.sponentry` | refused: `intrinsic:llvm.sponentry` | the incoming base (§5.5), the CFA |
+| `llvm.eh.unwind.init` | saves `rbx`, `r12`..`r15` | saves `x19`..`x28`, `d8`..`d15` |
+| `llvm.eh.return.i64(off, h)` | below | refused: `intrinsic:llvm.eh.return.i64` |
+
+- **The CFA.** On x86-64 the CFA is `rbp + 16` in the whole body,
+  whatever the frame holds: over-aligned slots and VLAs are dynamic
+  (§5.2), the frame is never realigned, and a variadic function's
+  register save area is in the local area. So `eh.dwarf.cfa(0)` is the
+  caller's stack pointer before the call in every one of those frames.
+- **Why AArch64 refuses two.** `llc` 19 and 22 compute `eh.dwarf.cfa(k)`
+  as `x29 + k`, while the frame's row says the CFA is `x29 + 16`
+  (gcc's `__builtin_dwarf_cfa()` is the CFA; clang's is 16 below it).
+  `llc` emits nothing for `eh.return.i64`: the block falls through. A
+  lowering that follows `llc` would be wrong, and a right one has no
+  oracle. `llvm.sponentry` aborts `llc` on x86-64.
+- **`eh.unwind.init`.** The function saves every callee-saved register
+  in its frame, with rows, and reloads them in each exit, so an unwinder
+  can find and install them. x86-64 pushes the whole save set (§5.6.1).
+  AArch64 stores the ten general and eight `d` registers in a 144-byte
+  area at `[x29 + 16]`, right after `mov x29, sp`, rows at their offsets
+  from the CFA; teardown reloads them with `Restore` rows. In a
+  `preserve_mostcc` or `preserve_allcc` function or a coroutine body
+  (whose own areas take those bytes or `x19`) it is
+  `a64:unwind-init-convention`.
+- **`eh.return.i64` on x86-64.** A function that calls it stores `rax`
+  and `rdx` in a 16-byte slot after the prologue, with rows (DWARF 0 and
+  1), where an unwinder writes the exception's registers. The call sets
+  `rcx = rbp + 8 + off`, stores `h` at `[rcx]`, and branches to an exit
+  emitted after the tail exits: `rax`, `rdx` reloaded, the teardown
+  (stack-protector check included, §5.6.24), `mov rsp, rcx; ret`. The
+  ordinary epilogue does not reload them, so a path that returns a value
+  keeps it (`llc` 19 and 22 pop `rax` over it; gcc does not). Under the
+  shadow stack (`cf-protection-return`, §5.6.25) the `ret` would not
+  match: `x64:eh-return-shadow-stack`. In a `preserve_mostcc` or
+  `preserve_allcc` function or a coroutine body:
+  `x64:eh-return-convention`. `llvm.eh.return.i32` aborts `llc` on
+  x86-64 and stays unknown (`intrinsic:llvm.eh.return.i32`).
+- **Templates.** A template that points `rbp` at the CFA and realigns
+  `rsp` around a call (`valgrind.h`'s `CALL_FN_*`, §5.6.28 and
+  `spec/asm.md` §15) takes the CFA from `eh.dwarf.cfa(0)`; exceptions and
+  gdb walk through it.
+
+Evidence: `spec/landed/codegen/WP-215.md`.
+
 ## 6. Control flow
 
 ### 6.1 Reachability
@@ -6300,7 +6366,9 @@ pub enum CgError {
 - `classify` decides what is supported, before code generation
   (`spec/ir.md` §8). Code generation reports `Unsupported` only for what
   cannot be known until code exists: `limit:frame-size`,
-  `limit:function-size`, and limits of the same kind added with a test;
+  `limit:function-size`, and limits of the same kind added with a test
+  (`limit:aligned-code-moved`, `spec/asm.md` §17: shrinking would move
+  an aligned inline-assembly template);
   also the `call:` reasons for a call the assignment cannot place
   (`call:musttail-ret-memory`, `call:part-register-class`,
   `call:byval-not-on-stack`). A function has at most 1 GiB of code

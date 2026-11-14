@@ -81,6 +81,12 @@ intrinsics! {
     StackRestore = "llvm.stackrestore" [P(0)],
     FrameAddress = "llvm.frameaddress" [Ret],
     ReturnAddress = "llvm.returnaddress" [],
+    // The frame as the unwinder sees it (WP-215).
+    EhDwarfCfa = "llvm.eh.dwarf.cfa" [],
+    EhReturnI64 = "llvm.eh.return.i64" [],
+    EhUnwindInit = "llvm.eh.unwind.init" [],
+    SpOnEntry = "llvm.sponentry" [Ret],
+    AddressOfReturnAddress = "llvm.addressofreturnaddress" [Ret],
     // Traps.
     Trap = "llvm.trap" [],
     DebugTrap = "llvm.debugtrap" [],
