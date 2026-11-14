@@ -159,6 +159,10 @@ pub struct Options {
     pub fp_contract: Option<FpContract>,
     /// `-x86-branches-within-32B-boundaries`.
     pub x86_branches_within_32b: bool,
+    /// `-enable-tlsdesc` (`clang -mtls-dialect=gnu2`): TLS descriptors
+    /// for the dynamic TLS models on x86-64; no effect on AArch64, which
+    /// always uses them (`spec/codegen.md` §5.6.37).
+    pub tls_descriptors: bool,
     /// `-debugger-tune=`.
     pub debugger_tuning: Option<DebuggerTuning>,
     /// `-split-dwarf-file=`: the `.dwo` name recorded in the skeleton unit.

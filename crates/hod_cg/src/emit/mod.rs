@@ -169,6 +169,8 @@ pub struct ModuleEmitter<'m> {
     places: Vec<Place>,
     groups: Vec<Group>,
     runtime: Vec<u32>,
+    /// `_TLS_MODULE_BASE_` ([`SymRef::TlsModuleBase`]), once named.
+    tls_module_base: u32,
     local_aliases: IdMap<SymId, SymbolId>,
     /// The local copies of `available_externally` functions (WP-021).
     copies: IdMap<SymId, SymbolId>,
@@ -373,6 +375,7 @@ impl<'m> ModuleEmitter<'m> {
             places: vec![Place::NONE; count],
             groups: Vec::new(),
             runtime: vec![NOWHERE; RuntimeFn::ALL.len()],
+            tls_module_base: NOWHERE,
             local_aliases: IdMap::default(),
             copies: IdMap::default(),
             signatures: IdMap::default(),
@@ -887,6 +890,7 @@ impl<'m> ModuleEmitter<'m> {
     fn code_target(&mut self, sym: SymRef, addend: i64) -> Option<(SymbolId, i64)> {
         let sym = match sym {
             SymRef::Runtime(func) => return Some((self.runtime_symbol(func), addend)),
+            SymRef::TlsModuleBase => return Some((self.tls_module_base_symbol(), addend)),
             // Placed in `finish`, after every function (WP-105).
             SymRef::NoopCoroFrame => return None,
             SymRef::Module(sym) => sym,
@@ -975,6 +979,23 @@ impl<'m> ModuleEmitter<'m> {
             };
         }
         SymbolId::from_index(*slot)
+    }
+
+    /// `_TLS_MODULE_BASE_`: the module's symbol of that name if it has
+    /// one, else an undefined global `STT_TLS` symbol (`llc`'s), on first
+    /// use.
+    fn tls_module_base_symbol(&mut self) -> SymbolId {
+        const NAME: &[u8] = b"_TLS_MODULE_BASE_";
+        if self.tls_module_base == NOWHERE {
+            self.tls_module_base = if let Some(sym) = self.module.find_symbol(NAME) {
+                sym.index() as u32
+            } else {
+                let name = self.obj.add_string(NAME).unwrap_or(hod_obj::StrId::EMPTY);
+                let symbol = Symbol { kind: SymbolKind::Tls, ..Symbol::undefined(name) };
+                self.obj.add_symbol(symbol).index()
+            };
+        }
+        SymbolId::from_index(self.tls_module_base)
     }
 
     /// Finishes the object: aliases and IFUNCs, the initializers'

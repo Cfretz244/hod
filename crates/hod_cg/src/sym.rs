@@ -16,6 +16,13 @@ pub enum SymRef {
     /// `spec/codegen.md` "Coroutines"): a private constant that module
     /// emission places, with the function it points to, on first use.
     NoopCoroFrame,
+    /// `_TLS_MODULE_BASE_`: the start of the module's TLS block, whose
+    /// descriptor an x86-64 local-dynamic access calls (WP-213,
+    /// `spec/codegen.md` §5.6.37). Module emission maps it to the
+    /// module's own symbol of that name if it declares one, and to a new
+    /// undefined global `STT_TLS` symbol otherwise, as `llc` writes it;
+    /// the linker defines it.
+    TlsModuleBase,
 }
 
 macro_rules! runtime_fns {
