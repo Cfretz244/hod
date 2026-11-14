@@ -3375,6 +3375,26 @@ Every reference to a bound label is then patched again; one out of
 reach is an internal error. A function that asked for
 neither costs nothing.
 
+**Alignment points (WP-218, `spec/asm.md` §18).** An x86-64 template
+that aligns is emitted with each directive's largest padding
+(`min(align - 1, max)` bytes) and registers it with
+`FnCx::align_code(at, reserved, align, longest)`, which also raises the
+function's alignment to the directive's. Shrinking then treats each
+point as a third kind of edit, merged with the cuts and the relaxed
+branches in offset order: the padding kept is what the point's offset
+after the edits before it needs (`pad(map(at))`, none when that is more
+than `max`), the rest of the reserved bytes go, and the kept bytes are
+filled again (`nop`s of the function's tuning, or the fill byte).
+Padding can grow when bytes before it go, so a relaxed branch across a
+point may fall out of reach: each pass checks the chosen branches
+against the edits it would make, and one that no longer reaches is
+taken back and never chosen again in that function. The set is a
+fixpoint of at most 32 passes; if none is found, no branch is relaxed,
+which is always valid (the padding is then at most what was reserved).
+A function without alignment points shrinks as before. AArch64 does not
+shrink code around its points: a cut before one is still
+`limit:aligned-code-moved` (`spec/asm.md` §17).
+
 **1. The save set.** The prologue pushes only the members of `rbx`,
 `r12`..`r15` the body used (`hod_cg` records every register `alloc`,
 `take_reg` and `own` hand out: `FnCx::regs_used`), plus `rbx` in a

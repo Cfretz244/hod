@@ -69,12 +69,28 @@ pub struct X64 {
     /// one per attribute set and compiles every function of the set with
     /// it).
     pub own: bool,
+    /// The longest `nop` of the padding an alignment directive of a
+    /// template writes (`spec/asm.md` §18, [`crate::tuning`]); 0 for a
+    /// tuning CPU hod has not measured.
+    pub nop: u8,
 }
 
 impl X64 {
     /// The target of a function whose attribute set is `attrs`: what its
     /// `target-cpu` and `target-features` decide, and its coroutine mark.
     pub fn of_attrs(attrs: hod_ir::FnAttrsView<'_>) -> X64 {
+        X64::of_attrs_with(attrs, None, &[])
+    }
+
+    /// [`X64::of_attrs`] for a compile with `-mcpu` `cpu` and `-mattr`
+    /// `mattr`: as `llc` gives them to a function (`target-cpu` when it
+    /// has none, the features after its own), they decide its padding
+    /// `nop`s (`spec/asm.md` §18); nothing else (`spec/abi-x64.md` §1.3).
+    pub fn of_attrs_with(
+        attrs: hod_ir::FnAttrsView<'_>,
+        cpu: Option<&str>,
+        mattr: &[String],
+    ) -> X64 {
         let text = |what| attrs.string(what).and_then(|s| std::str::from_utf8(s).ok());
         let features = features::of_function_with(
             text(FnStr::TargetCpu),
@@ -83,7 +99,14 @@ impl X64 {
             text(FnStr::MinLegalVectorWidth),
         );
         let coro = attrs.has(hod_ir::FnAttrs::PRESPLIT_COROUTINE);
-        X64 { features, coro, own: true }
+        let items = text(FnStr::TargetFeatures)
+            .into_iter()
+            .flat_map(|f| f.split(','))
+            .chain(mattr.iter().flat_map(|f| f.split(',')));
+        let nop =
+            crate::tuning::longest_nop(text(FnStr::TuneCpu), text(FnStr::TargetCpu).or(cpu), items)
+                .unwrap_or(0);
+        X64 { features, coro, own: true, nop }
     }
 }
 
@@ -104,6 +127,8 @@ pub const X64: X64 = X64 {
     },
     coro: false,
     own: false,
+    // No tuning CPU: LLVM's default tuning (`i586`), `crate::tuning`.
+    nop: 10,
 };
 
 /// What the target remembers about the function being compiled

@@ -131,7 +131,7 @@ struct Group {
 
 /// The [`Group`] of each attribute set a body's function has, by
 /// `FnAttrsId` index; `None` for a set no body uses.
-fn groups(module: &Module, bodies: &[Body]) -> Vec<Option<Group>> {
+fn groups(module: &Module, bodies: &[Body], options: &Options) -> Vec<Option<Group>> {
     let arch = module.target().arch();
     let mut groups: Vec<Option<Group>> = Vec::new();
     for body in bodies {
@@ -155,7 +155,11 @@ fn groups(module: &Module, bodies: &[Body]) -> Vec<Option<Group>> {
                 .map(|(reason, feature)| (reason, feature.to_owned()))
         });
         let x64 = match arch {
-            Arch::X86_64 => hod_x64::X64::of_attrs(attrs),
+            // `-mcpu` and `-mattr` decide only the padding `nop`s
+            // (`spec/asm.md` §18).
+            Arch::X86_64 => {
+                hod_x64::X64::of_attrs_with(attrs, options.cpu.as_deref(), &options.features)
+            }
             Arch::Aarch64 => hod_x64::X64,
         };
         groups[index] = Some(Group { refused, x64 });
@@ -549,7 +553,7 @@ pub fn generate_with(
         _ => None,
     };
     let workers = lease.as_ref().map_or(wanted, |lease| 1 + lease.count);
-    let groups = groups(module, bodies);
+    let groups = groups(module, bodies, options);
     let compiled =
         compile_bodies(module, &groups, bodies, cg, workers, work_size, &mut module_emitter);
     drop(lease);
@@ -623,7 +627,7 @@ mod tests {
                     attributes #0 = { \"target-features\"=\"+avx2\" }\n";
         let module =
             hod_ll::parse_module(text.as_bytes(), &hod_ll::ParseOptions::default()).unwrap().module;
-        let groups = groups(&module, &[]);
+        let groups = groups(&module, &[], &obj());
         assert!(groups.is_empty(), "no body, no set parsed");
         let SymbolKind::Function { attrs, .. } =
             module.symbol(module.find_symbol(b"f").unwrap()).kind()
@@ -632,6 +636,36 @@ mod tests {
         };
         let own = hod_x64::X64::of_attrs(module.fn_attrs(attrs));
         assert!(own.own && own.features.abi.avx && !hod_x64::X64.own);
+    }
+
+    // spec/asm.md §18: `-mcpu` tunes the padding of a function without a
+    // `target-cpu` of its own, and `-mattr` comes after its features.
+    #[test]
+    fn mcpu_and_mattr_choose_the_padding_nops() {
+        let text = "target triple = \"x86_64-unknown-linux-gnu\"\n\
+                    define void @f() #0 {\n  \
+                    call void asm sideeffect \
+                    \"int3\\0A.p2align 6\\0Aint3\\0A.p2align 6\\0Aint3\", \"\"()\n  \
+                    ret void\n}\nattributes #0 = { nounwind }\n";
+        let own = text.replace("{ nounwind }", "{ nounwind \"target-cpu\"=\"x86-64\" }");
+        let nop7 = [0x0f, 0x1f, 0x80, 0, 0, 0, 0].repeat(9);
+        // The 63 bytes between the last two `int3`s: six 10-byte nops, a
+        // 3-byte one.
+        let mut nop10 = vec![0xcc];
+        for _ in 0..6 {
+            nop10.extend([0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0]);
+        }
+        nop10.extend([0x0f, 0x1f, 0x00, 0xcc]);
+        let nop15 = [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0];
+        let has = |o: &[u8], w: &[u8]| o.windows(w.len()).any(|x| x == w);
+        let slm = Options { cpu: Some("slm".to_owned()), ..obj() };
+        let object = crate::compile(text.as_bytes(), &slm).unwrap();
+        assert!(has(&object, &nop7), "-mcpu=slm: 7-byte nops");
+        let object = crate::compile(own.as_bytes(), &slm).unwrap();
+        assert!(has(&object, &nop15) && !has(&object, &nop7), "its own target-cpu first");
+        let off = Options { features: vec!["-fast-15bytenop".to_owned()], ..obj() };
+        let object = crate::compile(own.as_bytes(), &off).unwrap();
+        assert!(has(&object, &nop10) && !has(&object, &nop15), "-mattr after its features");
     }
 
     fn obj() -> Options {
