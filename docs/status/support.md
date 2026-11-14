@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 928 | 361 | 11 | 556 | 688 | 10 | 230 |
-| total | 1254 | 582 | 59 | 613 | 912 | 61 | 281 |
+| `intrinsic` | 967 | 361 | 11 | 595 | 727 | 10 | 230 |
+| total | 1293 | 582 | 59 | 652 | 951 | 61 | 281 |
 
 ## `module`
 
@@ -1459,6 +1459,45 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.avx512bf16.cvtneps2bf16.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.vcvtneps2bf16128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 | `intrinsic:llvm.x86.vcvtneps2bf16256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.fpclass.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.fpclass.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.fpclass.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.max.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.max.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.max.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.min.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.min.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.min.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 
 ## Structural rules
 

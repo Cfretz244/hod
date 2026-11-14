@@ -1306,6 +1306,10 @@ mod dataflow {
                         if half_source(m) && matches!(op, Opnd::Vec(..) | Opnd::Mem { .. }) {
                             v.truncate(Self::width(dest) / 2);
                         }
+                        // `vcvtph2pd` reads a quarter.
+                        if m == "vcvtph2pd" && matches!(op, Opnd::Vec(..) | Opnd::Mem { .. }) {
+                            v.truncate(Self::width(dest) / 4);
+                        }
                         inputs.push(v);
                     }
                 }
@@ -1315,6 +1319,41 @@ mod dataflow {
                 let v = inputs.pop().unwrap();
                 self.write(dest, &v, vex);
                 return true;
+            }
+            // A masked move of the whole unmasked result of a node with
+            // lanes of its size is that node masked (`llc` keeps
+            // `vcvtph2pd` and its mask apart).
+            if is_move(m) && mask.is_some() {
+                let w = Self::width(dest);
+                let moved = inputs.last().unwrap();
+                if let Some(Src::Node(n)) = moved.first().map(|s| s.src) {
+                    let whole = moved.len() == w
+                        && moved
+                            .iter()
+                            .enumerate()
+                            .all(|(i, s)| *s == Sym::of(Src::Node(n), i as i64));
+                    let inner = graph.nodes[n as usize].clone();
+                    if whole && inner.mask.is_none() && lane_bytes(&inner.mnemonic) == lane_bytes(m)
+                    {
+                        let mut ins = inputs[..inputs.len() - 1].to_vec();
+                        ins.extend(inner.inputs);
+                        let mut d: Vec<String> =
+                            deco.iter().filter(|d| *d == "{z}").cloned().collect();
+                        d.extend(inner.deco);
+                        let node = Node {
+                            mnemonic: inner.mnemonic,
+                            imm: inner.imm,
+                            deco: d,
+                            mask,
+                            inputs: ins,
+                        };
+                        let id = graph.intern(node);
+                        let out: Vec<Sym> =
+                            (0..w as i64).map(|i| Sym::of(Src::Node(id), i)).collect();
+                        self.write(dest, &out, vex);
+                        return true;
+                    }
+                }
             }
             let id = graph.intern(Node { mnemonic: m.to_string(), imm, deco, mask, inputs });
             let w = Self::width(dest);
@@ -1359,13 +1398,16 @@ enum Fam {
     VPCLMUL,
     /// `avx512bf16`.
     BF16,
+    /// `avx512fp16`: needs BW, DQ and VL, so it is refused without VL at
+    /// every width.
+    FP16,
     /// A VEX form of the 128- or 256-bit GFNI, VAES or VPCLMULQDQ names
     /// (`x86::ext`), by its feature: compared here by dataflow, as no
     /// emulator here has GFNI or VPCLMULQDQ (`tests/x86_ext.rs` executes
     /// the VAES ones).
     Vex(&'static str),
 }
-use Fam::{BF16, BW, DQ, F, GFNI, VAES, VBMI, VBMI2, VPCLMUL, Vex};
+use Fam::{BF16, BW, DQ, F, FP16, GFNI, VAES, VBMI, VBMI2, VPCLMUL, Vex};
 
 /// The census's F/VL, BW and DQ names (design 0007 §5.1): the family,
 /// the role of each operand, the declaration. Roles: `v` a vector, `p`
@@ -1710,6 +1752,141 @@ const NAMES: &[(Fam, &str, &str)] = &[
     (BF16, "v", "<16 x bfloat> @llvm.x86.avx512bf16.cvtneps2bf16.512(<16 x float>)"),
     (BF16, "v", "<8 x bfloat> @llvm.x86.vcvtneps2bf16128(<4 x float>)"),
     (BF16, "v", "<8 x bfloat> @llvm.x86.vcvtneps2bf16256(<8 x float>)"),
+    (FP16, "vi", "<8 x i1> @llvm.x86.avx512fp16.fpclass.ph.128(<8 x half>, i32)"),
+    (FP16, "vi", "<16 x i1> @llvm.x86.avx512fp16.fpclass.ph.256(<16 x half>, i32)"),
+    (FP16, "vi", "<32 x i1> @llvm.x86.avx512fp16.fpclass.ph.512(<32 x half>, i32)"),
+    (FP16, "vpm", "<8 x half> @llvm.x86.avx512fp16.mask.getexp.ph.128(<8 x half>, <8 x half>, i8)"),
+    (
+        FP16,
+        "vpm",
+        "<16 x half> @llvm.x86.avx512fp16.mask.getexp.ph.256(<16 x half>, <16 x half>, i16)",
+    ),
+    (
+        FP16,
+        "vpms",
+        "<32 x half> @llvm.x86.avx512fp16.mask.getexp.ph.512(<32 x half>, <32 x half>, i32, i32)",
+    ),
+    (FP16, "vpm", "<8 x half> @llvm.x86.avx512fp16.mask.rcp.ph.128(<8 x half>, <8 x half>, i8)"),
+    (
+        FP16,
+        "vpm",
+        "<16 x half> @llvm.x86.avx512fp16.mask.rcp.ph.256(<16 x half>, <16 x half>, i16)",
+    ),
+    (
+        FP16,
+        "vpm",
+        "<32 x half> @llvm.x86.avx512fp16.mask.rcp.ph.512(<32 x half>, <32 x half>, i32)",
+    ),
+    (
+        FP16,
+        "vipm",
+        "<8 x half> @llvm.x86.avx512fp16.mask.rndscale.ph.128(<8 x half>, i32, <8 x half>, i8)",
+    ),
+    (
+        FP16,
+        "vipm",
+        "<16 x half> @llvm.x86.avx512fp16.mask.rndscale.ph.256(<16 x half>, i32, <16 x half>, i16)",
+    ),
+    (
+        FP16,
+        "vipms",
+        "<32 x half> @llvm.x86.avx512fp16.mask.rndscale.ph.512(<32 x half>, i32, <32 x half>, i32, i32)",
+    ),
+    (FP16, "vpm", "<8 x half> @llvm.x86.avx512fp16.mask.rsqrt.ph.128(<8 x half>, <8 x half>, i8)"),
+    (
+        FP16,
+        "vpm",
+        "<16 x half> @llvm.x86.avx512fp16.mask.rsqrt.ph.256(<16 x half>, <16 x half>, i16)",
+    ),
+    (
+        FP16,
+        "vpm",
+        "<32 x half> @llvm.x86.avx512fp16.mask.rsqrt.ph.512(<32 x half>, <32 x half>, i32)",
+    ),
+    (
+        FP16,
+        "vpm",
+        "<8 x half> @llvm.x86.avx512fp16.mask.vcvtpd2ph.128(<2 x double>, <8 x half>, i8)",
+    ),
+    (
+        FP16,
+        "vpm",
+        "<8 x half> @llvm.x86.avx512fp16.mask.vcvtpd2ph.256(<4 x double>, <8 x half>, i8)",
+    ),
+    (
+        FP16,
+        "vpme",
+        "<8 x half> @llvm.x86.avx512fp16.mask.vcvtpd2ph.512(<8 x double>, <8 x half>, i8, i32)",
+    ),
+    (
+        FP16,
+        "vpm",
+        "<2 x double> @llvm.x86.avx512fp16.mask.vcvtph2pd.128(<8 x half>, <2 x double>, i8)",
+    ),
+    (
+        FP16,
+        "vpm",
+        "<4 x double> @llvm.x86.avx512fp16.mask.vcvtph2pd.256(<8 x half>, <4 x double>, i8)",
+    ),
+    (
+        FP16,
+        "vpms",
+        "<8 x double> @llvm.x86.avx512fp16.mask.vcvtph2pd.512(<8 x half>, <8 x double>, i8, i32)",
+    ),
+    (FP16, "vpm", "<8 x i16> @llvm.x86.avx512fp16.mask.vcvtph2w.128(<8 x half>, <8 x i16>, i8)"),
+    (
+        FP16,
+        "vpm",
+        "<16 x i16> @llvm.x86.avx512fp16.mask.vcvtph2w.256(<16 x half>, <16 x i16>, i16)",
+    ),
+    (
+        FP16,
+        "vpme",
+        "<32 x i16> @llvm.x86.avx512fp16.mask.vcvtph2w.512(<32 x half>, <32 x i16>, i32, i32)",
+    ),
+    (FP16, "vpm", "<8 x i16> @llvm.x86.avx512fp16.mask.vcvttph2uw.128(<8 x half>, <8 x i16>, i8)"),
+    (
+        FP16,
+        "vpm",
+        "<16 x i16> @llvm.x86.avx512fp16.mask.vcvttph2uw.256(<16 x half>, <16 x i16>, i16)",
+    ),
+    (
+        FP16,
+        "vpms",
+        "<32 x i16> @llvm.x86.avx512fp16.mask.vcvttph2uw.512(<32 x half>, <32 x i16>, i32, i32)",
+    ),
+    (FP16, "vpm", "<8 x i16> @llvm.x86.avx512fp16.mask.vcvttph2w.128(<8 x half>, <8 x i16>, i8)"),
+    (
+        FP16,
+        "vpm",
+        "<16 x i16> @llvm.x86.avx512fp16.mask.vcvttph2w.256(<16 x half>, <16 x i16>, i16)",
+    ),
+    (
+        FP16,
+        "vpms",
+        "<32 x i16> @llvm.x86.avx512fp16.mask.vcvttph2w.512(<32 x half>, <32 x i16>, i32, i32)",
+    ),
+    (FP16, "vv", "<8 x half> @llvm.x86.avx512fp16.max.ph.128(<8 x half>, <8 x half>)"),
+    (FP16, "vv", "<16 x half> @llvm.x86.avx512fp16.max.ph.256(<16 x half>, <16 x half>)"),
+    (FP16, "vvs", "<32 x half> @llvm.x86.avx512fp16.max.ph.512(<32 x half>, <32 x half>, i32)"),
+    (FP16, "vv", "<8 x half> @llvm.x86.avx512fp16.min.ph.128(<8 x half>, <8 x half>)"),
+    (FP16, "vv", "<16 x half> @llvm.x86.avx512fp16.min.ph.256(<16 x half>, <16 x half>)"),
+    (FP16, "vvs", "<32 x half> @llvm.x86.avx512fp16.min.ph.512(<32 x half>, <32 x half>, i32)"),
+    (
+        FP16,
+        "vvv",
+        "<8 x half> @llvm.x86.avx512fp16.vfmaddsub.ph.128(<8 x half>, <8 x half>, <8 x half>)",
+    ),
+    (
+        FP16,
+        "vvv",
+        "<16 x half> @llvm.x86.avx512fp16.vfmaddsub.ph.256(<16 x half>, <16 x half>, <16 x half>)",
+    ),
+    (
+        FP16,
+        "vvve",
+        "<32 x half> @llvm.x86.avx512fp16.vfmaddsub.ph.512(<32 x half>, <32 x half>, <32 x half>, i32)",
+    ),
 ];
 
 /// A declaration's result type, name and parameter types.
@@ -1860,7 +2037,7 @@ fn cases_of(row: usize) -> Vec<Case> {
 /// for `-mavx512f -mavx512vl -mavx512bw -mavx512dq -mavx512vbmi2`,
 /// without `evex512`; WP-220's families after them).
 const AVX512_FEATURES: &str = "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c,+avx512vbmi,\
-     +aes,+pclmul,+gfni,+vaes,+vpclmulqdq,+avx512bf16";
+     +aes,+pclmul,+gfni,+vaes,+vpclmulqdq,+avx512bf16,+avx512fp16";
 
 /// The module of `cases`: `void <prefix>tK(ptr %out, ptr %a, ptr %b, ptr
 /// %c, i64 %m)` each, with `features`.
@@ -2374,6 +2551,7 @@ fn avx512_refusals_and_rows() {
         VPCLMUL => format!("{AVX512_FEATURES},-vpclmulqdq"),
         Vex(feature) => format!("{AVX512_FEATURES},-{feature}"),
         BF16 => format!("{AVX512_FEATURES},-avx512bf16"),
+        FP16 => format!("{AVX512_FEATURES},-avx512fp16"),
     };
     // GFNI, VAES and VPCLMULQDQ without `avx512f`: their EVEX forms are
     // not there.
@@ -2402,7 +2580,7 @@ fn avx512_refusals_and_rows() {
         }
         let bytes = params.iter().chain([&ret]).map(|t| bytes_of(t)).max().unwrap();
         let vl = bytes < 64 && !name.ends_with(".sd") && !matches!(fam, Vex(_));
-        let want = if vl { refused.clone() } else { None };
+        let want = if vl || fam == FP16 { refused.clone() } else { None };
         assert_eq!(refusal_under(base.clone(), &no_vl), want, "{name} without avx512vl");
         let want = if bytes == 64 { refused.clone() } else { None };
         assert_eq!(refusal_under(base.clone(), &no_512), want, "{name} with -evex512");
@@ -2489,6 +2667,7 @@ fn avx512_driver(cases: &[Case]) -> String {
             Vex("vaes") => 128,
             Vex(_) => 256,
             BF16 => 4 | 512,
+            FP16 => 2 | 4 | 8 | 1024,
         };
         if let Vex(_) = fam {
             need &= !3;
@@ -2527,6 +2706,7 @@ fn avx512_driver(cases: &[Case]) -> String {
            if (__builtin_cpu_supports(\"vaes\")) have |= 128;\n  \
            if (__builtin_cpu_supports(\"vpclmulqdq\")) have |= 256;\n  \
            if (__builtin_cpu_supports(\"avx512bf16\")) have |= 512;\n  \
+           if (__builtin_cpu_supports(\"avx512fp16\")) have |= 1024;\n  \
            long compared = 0, skipped = 0, wrong = 0;\n  \
            for (unsigned f = 0; f < sizeof h / sizeof *h; f++) {\n    \
              if ((info[f][1] & have) != info[f][1]) { skipped++; continue; }\n    \

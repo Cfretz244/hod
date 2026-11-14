@@ -38,7 +38,7 @@
 //!   width less one for an arithmetic one; a variable count goes through
 //!   `xmm15` (`movd`) to the shift by a vector count;
 //! - `fpclass` writes `k0` and its result (`<N x i1>`, class `Gpr`) is
-//!   `kmovw`'s zero-extension.
+//!   the zero-extension of `kmovw` (`kmovd` for more than 16 lanes).
 //!
 //! The upper halves of `zmm0`..`zmm15` are not cleared afterwards
 //! (`vzeroupper`): they hold no value of hod's, and a later legacy SSE
@@ -103,7 +103,7 @@ type Row = (&'static str, Avx512, &'static str, Op);
 
 #[allow(clippy::too_many_lines, reason = "one arm per name")]
 fn row(which: Intrinsic<'_>) -> Option<Row> {
-    use Avx512::{Bf16, Bw, Dq, F, Gfni, Vaes, Vbmi, Vpclmulqdq};
+    use Avx512::{Bf16, Bw, Dq, F, Fp16, Gfni, Vaes, Vbmi, Vpclmulqdq};
     use Intrinsic as I;
     Some(match which {
         I::X86Avx512MaskGetexpPs512 => {
@@ -782,6 +782,157 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
         I::X86Vcvtneps2bf16256 => {
             ("intrinsic:llvm.x86.vcvtneps2bf16256", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
         }
+        // FP16 (WP-220): the names of the census only.
+        I::X86Avx512fp16FpclassPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.fpclass.ph.128", Fp16, "vi", Op::Cmp(ECmp::Fpclassph))
+        }
+        I::X86Avx512fp16FpclassPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.fpclass.ph.256", Fp16, "vi", Op::Cmp(ECmp::Fpclassph))
+        }
+        I::X86Avx512fp16FpclassPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.fpclass.ph.512", Fp16, "vi", Op::Cmp(ECmp::Fpclassph))
+        }
+        I::X86Avx512fp16MaskGetexpPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.128", Fp16, "vpm", Op::E2(E2::Getexpph))
+        }
+        I::X86Avx512fp16MaskGetexpPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.256", Fp16, "vpm", Op::E2(E2::Getexpph))
+        }
+        I::X86Avx512fp16MaskGetexpPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.512", Fp16, "vpms", Op::E2(E2::Getexpph))
+        }
+        I::X86Avx512fp16MaskRcpPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.128", Fp16, "vpm", Op::E2(E2::Rcpph))
+        }
+        I::X86Avx512fp16MaskRcpPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.256", Fp16, "vpm", Op::E2(E2::Rcpph))
+        }
+        I::X86Avx512fp16MaskRcpPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.512", Fp16, "vpm", Op::E2(E2::Rcpph))
+        }
+        I::X86Avx512fp16MaskRndscalePh128 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.128",
+            Fp16,
+            "vipm",
+            Op::E2Imm(E2Imm::Rndscaleph),
+        ),
+        I::X86Avx512fp16MaskRndscalePh256 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.256",
+            Fp16,
+            "vipm",
+            Op::E2Imm(E2Imm::Rndscaleph),
+        ),
+        I::X86Avx512fp16MaskRndscalePh512 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.512",
+            Fp16,
+            "vipms",
+            Op::E2Imm(E2Imm::Rndscaleph),
+        ),
+        I::X86Avx512fp16MaskRsqrtPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.128", Fp16, "vpm", Op::E2(E2::Rsqrtph))
+        }
+        I::X86Avx512fp16MaskRsqrtPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.256", Fp16, "vpm", Op::E2(E2::Rsqrtph))
+        }
+        I::X86Avx512fp16MaskRsqrtPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.512", Fp16, "vpm", Op::E2(E2::Rsqrtph))
+        }
+        I::X86Avx512fp16MaskVcvtpd2ph128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.128", Fp16, "vpm", Op::E2(E2::Cvtpd2ph))
+        }
+        I::X86Avx512fp16MaskVcvtpd2ph256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.256", Fp16, "vpm", Op::E2(E2::Cvtpd2ph))
+        }
+        I::X86Avx512fp16MaskVcvtpd2ph512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.512", Fp16, "vpme", Op::E2(E2::Cvtpd2ph))
+        }
+        I::X86Avx512fp16MaskVcvtph2pd128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.128", Fp16, "vpm", Op::E2(E2::Cvtph2pd))
+        }
+        I::X86Avx512fp16MaskVcvtph2pd256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.256", Fp16, "vpm", Op::E2(E2::Cvtph2pd))
+        }
+        I::X86Avx512fp16MaskVcvtph2pd512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.512", Fp16, "vpms", Op::E2(E2::Cvtph2pd))
+        }
+        I::X86Avx512fp16MaskVcvtph2w128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.128", Fp16, "vpm", Op::E2(E2::Cvtph2w))
+        }
+        I::X86Avx512fp16MaskVcvtph2w256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.256", Fp16, "vpm", Op::E2(E2::Cvtph2w))
+        }
+        I::X86Avx512fp16MaskVcvtph2w512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.512", Fp16, "vpme", Op::E2(E2::Cvtph2w))
+        }
+        I::X86Avx512fp16MaskVcvttph2uw128 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.128",
+            Fp16,
+            "vpm",
+            Op::E2(E2::Cvttph2uw),
+        ),
+        I::X86Avx512fp16MaskVcvttph2uw256 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.256",
+            Fp16,
+            "vpm",
+            Op::E2(E2::Cvttph2uw),
+        ),
+        I::X86Avx512fp16MaskVcvttph2uw512 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.512",
+            Fp16,
+            "vpms",
+            Op::E2(E2::Cvttph2uw),
+        ),
+        I::X86Avx512fp16MaskVcvttph2w128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.128", Fp16, "vpm", Op::E2(E2::Cvttph2w))
+        }
+        I::X86Avx512fp16MaskVcvttph2w256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.256", Fp16, "vpm", Op::E2(E2::Cvttph2w))
+        }
+        I::X86Avx512fp16MaskVcvttph2w512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.512", Fp16, "vpms", Op::E2(E2::Cvttph2w))
+        }
+        I::X86Avx512fp16MaxPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.max.ph.128", Fp16, "vv", Op::E3(E3::Maxph, Form::Plain))
+        }
+        I::X86Avx512fp16MaxPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.max.ph.256", Fp16, "vv", Op::E3(E3::Maxph, Form::Plain))
+        }
+        I::X86Avx512fp16MaxPh512 => (
+            "intrinsic:llvm.x86.avx512fp16.max.ph.512",
+            Fp16,
+            "vvs",
+            Op::E3(E3::Maxph, Form::Plain),
+        ),
+        I::X86Avx512fp16MinPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.min.ph.128", Fp16, "vv", Op::E3(E3::Minph, Form::Plain))
+        }
+        I::X86Avx512fp16MinPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.min.ph.256", Fp16, "vv", Op::E3(E3::Minph, Form::Plain))
+        }
+        I::X86Avx512fp16MinPh512 => (
+            "intrinsic:llvm.x86.avx512fp16.min.ph.512",
+            Fp16,
+            "vvs",
+            Op::E3(E3::Minph, Form::Plain),
+        ),
+        I::X86Avx512fp16VfmaddsubPh128 => (
+            "intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.128",
+            Fp16,
+            "vvv",
+            Op::E3(E3::Vfmaddsub213ph, FMA213),
+        ),
+        I::X86Avx512fp16VfmaddsubPh256 => (
+            "intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.256",
+            Fp16,
+            "vvv",
+            Op::E3(E3::Vfmaddsub213ph, FMA213),
+        ),
+        I::X86Avx512fp16VfmaddsubPh512 => (
+            "intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.512",
+            Fp16,
+            "vvve",
+            Op::E3(E3::Vfmaddsub213ph, FMA213),
+        ),
         _ => return None,
     })
 }
@@ -1152,7 +1303,9 @@ fn lower<'a>(
         Op::Cmp(cmp) => {
             put(cx, mc::ecmp_kri(cmp, vl, mc::K::K0, mc::K::K0, v[0], imm));
             let rd = cx.def_reg(inst)?;
-            put(cx, mc::kmov_rk(Size::W, gp(rd), mc::K::K0));
+            // `vfpclassph` of 32 lanes: `kmovd`.
+            let size = if lanes > 16 { Size::D } else { Size::W };
+            put(cx, mc::kmov_rk(size, gp(rd), mc::K::K0));
             return cx.finish(inst, rd);
         }
     }
