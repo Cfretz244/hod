@@ -65,6 +65,11 @@ pub struct Scratch {
     pub(crate) cuts: Vec<(u32, u32)>,
     pub(crate) relax: Vec<crate::shrink::Relax>,
     pub(crate) chosen: Vec<bool>,
+    /// Branches that went out of reach once relaxed (`shrink`, with
+    /// code alignment points): kept in their long form.
+    pub(crate) banned: Vec<bool>,
+    /// The code alignment points of the function ([`FnCx::align_code`]).
+    pub(crate) aligns: Vec<crate::shrink::CodeAlign>,
     pub(crate) edits: crate::shrink::Edits,
     pub(crate) frame: Frame,
     pub(crate) labels: Labels,
@@ -114,6 +119,8 @@ impl Default for Scratch {
             cuts: Vec::new(),
             relax: Vec::new(),
             chosen: Vec::new(),
+            banned: Vec::new(),
+            aligns: Vec::new(),
             edits: crate::shrink::Edits::default(),
             frame: Frame::default(),
             labels: Labels::default(),
@@ -168,6 +175,8 @@ impl Scratch {
             + bytes(&self.cuts)
             + bytes(&self.relax)
             + bytes(&self.chosen)
+            + bytes(&self.banned)
+            + bytes(&self.aligns)
             + self.edits.allocated_bytes()
     }
 }

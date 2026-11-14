@@ -185,6 +185,7 @@ impl<'a, T: Target> FnCx<'a, T> {
         s.used = RegSet::EMPTY;
         s.cuts.clear();
         s.relax.clear();
+        s.aligns.clear();
         s.frame.reset(T::STACK_ALIGN);
         s.labels.reset(blocks as u32);
         s.slots.clear();

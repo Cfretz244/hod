@@ -28,6 +28,36 @@ impl Align {
         let pad = at.wrapping_neg() & (self.align - 1);
         if self.max.is_some_and(|m| pad > m) { 0 } else { pad }
     }
+
+    /// The most padding the directive can write at any offset: the
+    /// alignment less one, or the maximum (`spec/asm.md` §18).
+    pub fn most(&self) -> u64 {
+        self.max.unwrap_or(self.align - 1).min(self.align - 1)
+    }
+}
+
+/// The longest `nop` LLVM 19 and 22 write in x86-64 code padding for a
+/// tuning: 7, 10, 11 or 15 bytes (`spec/asm.md` §18).
+pub const X64_NOP_LENGTHS: [u8; 4] = [7, 10, 11, 15];
+
+/// Fills `out` with x86-64 code padding as LLVM 19 and 22 write it
+/// (`spec/asm.md` §18): every byte `fill` when one is given, else `nop`s
+/// of at most `longest` bytes each, longest first (`hod_mc_x64::nop`'s
+/// forms, the 11- to 15-byte ones with extra `66` prefixes).
+pub fn fill_x64(out: &mut [u8], fill: Option<u8>, longest: u8) {
+    if let Some(f) = fill {
+        out.fill(f);
+        return;
+    }
+    // No padding needs no length (an unmeasured tuning's is 0).
+    debug_assert!(out.is_empty() || (1..=15).contains(&longest), "a nop length of {longest}");
+    let mut rest = out;
+    while !rest.is_empty() {
+        let n = rest.len().min(usize::from(longest.clamp(1, 15)));
+        let (head, tail) = rest.split_at_mut(n);
+        head.copy_from_slice(hod_mc_x64::nop(n).bytes());
+        rest = tail;
+    }
 }
 
 /// Reads `n{, fill{, max}}`: `n` is the power of two (`log2`) or the
@@ -106,5 +136,25 @@ mod tests {
         assert!(a("4,", true).is_err());
         let m = Align { align: 64, fill: None, max: Some(8) };
         assert_eq!((m.pad(0), m.pad(56), m.pad(52), m.pad(4)), (0, 8, 0, 0));
+        assert_eq!(m.most(), 8);
+        assert_eq!(Align { align: 16, fill: None, max: None }.most(), 15);
+        assert_eq!(Align { align: 1, fill: None, max: None }.most(), 0);
+    }
+
+    /// §18: 31 bytes of padding, as `llvm-mc` writes them for the 15- and
+    /// 10-byte tunings; a fill byte as itself.
+    #[test]
+    fn x64_padding() {
+        let mut out = [0u8; 31];
+        fill_x64(&mut out, None, 15);
+        assert_eq!(&out[..2], &[0x66, 0x66]);
+        assert_eq!(&out[15..17], &[0x66, 0x66]);
+        assert_eq!(out[30], 0x90);
+        fill_x64(&mut out, None, 10);
+        assert_eq!(&out[..3], &[0x66, 0x2e, 0x0f]);
+        assert_eq!(&out[20..23], &[0x66, 0x2e, 0x0f]);
+        assert_eq!(out[30], 0x90);
+        fill_x64(&mut out, Some(0xcc), 15);
+        assert!(out.iter().all(|&b| b == 0xcc));
     }
 }

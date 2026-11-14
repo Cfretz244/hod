@@ -88,6 +88,10 @@ pub mod other {
     /// An instruction of module-level assembly at an offset that is not a
     /// multiple of 4.
     pub const UNALIGNED: &str = "asm:unaligned";
+    /// A branch of an x86-64 inline body to a label on the other side of
+    /// an alignment directive that may pad (`spec/asm.md` §18): its
+    /// distance would change when the padding is settled.
+    pub const ALIGN_CROSSED: &str = "asm:align-crossed";
 }
 
 fn names() -> &'static Mutex<HashSet<&'static str>> {

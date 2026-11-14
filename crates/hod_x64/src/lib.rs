@@ -47,6 +47,7 @@
 //! | `constaddr` | WP-126 | constant operands that hold addresses: differences, relocated images | `tests/aggr.rs` |
 //! | `tail` | (later) | what no group package takes | |
 //! | `coro` | WP-137 | coroutine handle operations: `llvm.coro.resume`, `destroy`, `done`, `promise`, `noop` | `tests/coro_body.rs` |
+//! | `tuning` | WP-218 | the longest padding `nop` by tuning CPU and features (`spec/asm.md` §18) | unit, `tests/inline_asm_align.rs` |
 //! | `coro_body` | WP-137 | coroutine bodies: `rbx` as the frame base, the entry stubs, the body intrinsics, symmetric transfer | `tests/coro_body.rs` |
 
 pub mod abi;
@@ -76,6 +77,7 @@ pub mod tail;
 pub mod target;
 pub mod term;
 pub mod tls;
+pub mod tuning;
 pub mod vcall;
 pub mod vector;
 pub mod x86;
