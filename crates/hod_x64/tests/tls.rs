@@ -768,7 +768,10 @@ fn descriptors(code: &[String]) -> Descriptors {
 /// descriptor dialect, hod under stress too, and the two mixtures of
 /// dialects (hod's descriptors with `llc`'s `__tls_get_addr`, and the
 /// reverse).
-const WHO_DESC: [(&str, (Who, Dialect), (Who, Dialect)); 7] = [
+/// Who builds a module, in which dialect.
+type Builder = (Who, Dialect);
+
+const WHO_DESC: [(&str, Builder, Builder); 7] = [
     ("hod", (Who::Hod, DESC), (Who::Hod, DESC)),
     ("hod-stress", (Who::Hod, STRESS), (Who::Hod, STRESS)),
     ("llc19", (Who::Llc(19), DESC), (Who::Llc(19), DESC)),

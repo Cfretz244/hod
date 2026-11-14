@@ -136,6 +136,7 @@ pub enum FpContract {
 /// [`Options::default`] is `llc` run with no options: assembly output at
 /// `-O2`, everything else left to the module and the target.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools, reason = "llc's independent flags, any combination")]
 pub struct Options {
     /// `-mtriple=`: overrides the module's `target triple`.
     pub triple: Option<String>,
