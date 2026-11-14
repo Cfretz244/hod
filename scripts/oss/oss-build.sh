@@ -127,6 +127,13 @@ fi
 
 CFG="$(python3 "$HERE/projects.py" shell "$PROJECT")" || exit 2
 eval "$CFG"
+# `@KILN_OSS@` in a configure flag or the test command is kiln's
+# scripts/oss (its project shims, read where they are: the Boost rows'
+# boost-jamfile-tests.cmake), $KILN_OSS_DIR, default <workspace>/kiln/scripts/oss.
+KILN_OSS_DIR="${KILN_OSS_DIR:-$(dirname "$BROOT")/kiln/scripts/oss}"
+P_CONFIGURE=("${P_CONFIGURE[@]//@KILN_OSS@/$KILN_OSS_DIR}")
+P_INSTALL_CONFIGURE=("${P_INSTALL_CONFIGURE[@]//@KILN_OSS@/$KILN_OSS_DIR}")
+P_TEST="${P_TEST//@KILN_OSS@/$KILN_OSS_DIR}"
 
 CXX="${KILN_OSS_CXX:-$BROOT/target-kiln/release/kiln++}"
 [ -x "$CXX" ] || { echo "oss-build: no kiln++ at $CXX (set KILN_OSS_CXX)" >&2; exit 2; }
