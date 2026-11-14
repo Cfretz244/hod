@@ -183,6 +183,27 @@ def census_rows(reps, findings=None):
     return out
 
 
+def strict_rows(reps):
+    """The strict builds by what kiln's statistics log says of each
+    object (`backend`), not by the build's exit status (WP-191): under
+    KILN_HOD_STRICT=1 an object hod declined is still built by llc."""
+    rows = []
+    for p in order(reps):
+        for fl in FLAVOURS:
+            r = reps.get((p, fl, "strict"))
+            if not r or not r.get("hod"):
+                continue
+            be = r["hod"].get("backends", {})
+            refused = ", ".join(f"`{k}` {v['modules']}" for k, v in r["hod"].get("refusals", {}).items()) or "-"
+            rows.append(f"| {p} | {fl} | {r['hod'].get('objects', 0)} | {be.get('hod', 0)} | {be.get('hod-declined', 0)} | "
+                        f"{be.get('hod-failed', 0)} | {be.get('llvm', 0)} | {build_cell(r)} | {test_cell(r)} | {refused} |")
+    if not rows:
+        return []
+    return ["", "## Strict builds (kiln's statistics log)", "",
+            "| project | flavour | objects | hod | declined | failed | llvm | build | tests | refusals (modules) |",
+            "|---|---|---|---|---|---|---|---|---|---|", *rows]
+
+
 def not_offered_rows(reps):
     agg = {}
     for (p, fl, m), r in reps.items():
@@ -305,6 +326,7 @@ def page(reps, title, intro, findings=None):
     lines += ["", "## Refusal census (hybrid builds)", ""]
     lines += census_rows(reps, findings)
     lines += not_offered_rows(reps)
+    lines += strict_rows(reps)
     return "\n".join(lines) + "\n"
 
 

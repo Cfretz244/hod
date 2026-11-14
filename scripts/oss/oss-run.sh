@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# oss-run.sh <project>... [--flavours "O0 O0g"] [--target aarch64|x86_64] [--strict] [--keep]
+# oss-run.sh <project>... [--flavours "O0 O0g"] [--target aarch64|x86_64] [--strict] [--reuse-control] [--keep]
 #
 # The lane's whole procedure for each project (spec/harness.md "Real
 # projects"), one build at a time: for each flavour, the hybrid build
@@ -14,6 +14,8 @@
 # build even when the hybrid build fell back (its compiles of the refused
 # modules fail, `make -k` builds the rest and the tests that link run).
 # Each kept refusal is then reduced to its smallest module (oss-reduce.py).
+# `--reuse-control` keeps a control build's report that exists (a rerun
+# with a new hod: the control does not change).
 #
 # It runs from a copy of scripts/oss taken when it starts
 # (<root>/lane-<pid>/, removed at exit), and bash parses this file whole
@@ -26,12 +28,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
 FINDINGS="${HOD_OSS_FINDINGS:-$BROOT/findings/oss}"
-FLAVOURS="O0 O0g" TARGET=aarch64 STRICT="" KEEP="" PROJECTS=()
+FLAVOURS="O0 O0g" TARGET=aarch64 STRICT="" REUSE="" KEEP="" PROJECTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --flavours) FLAVOURS="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --strict) STRICT=1; shift ;;
+    --reuse-control) REUSE=1; shift ;;
     --keep) KEEP=1; shift ;;
     -*) echo "oss-run: unknown option $1" >&2; exit 2 ;;
     *) PROJECTS+=("$1"); shift ;;
@@ -67,6 +70,10 @@ one() {
   local p="$1" fl="$2" m="$3"
   echo "oss-run: $p $fl $m ($(date -u +%H:%M:%S))"
   if [ "$m" = llc ]; then
+    if [ -n "$REUSE" ] && [ -f "$OSS/${TP}build/$p/$fl-llc/report.json" ]; then
+      echo "oss-run: $p $fl llc: the control's report is kept"
+      return
+    fi
     local prune=(--prune); [ -z "$KEEP" ] || prune=()
     "$HERE/oss-build.sh" "$p" --mode llc --flavour "$fl" --target "$TARGET" "${prune[@]}"
     return
