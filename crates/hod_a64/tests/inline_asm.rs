@@ -3,7 +3,8 @@
 //! `tests/data/inline_asm/functions.ll` (syscalls, system registers, a
 //! hand-written atomic, explicit registers, tied and memory operands,
 //! clobbers of registers hod uses and of callee-saved ones, flag outputs,
-//! immediates, several outputs, a call from the template, `asm goto`)
+//! immediates, several outputs, a call from the template, `asm goto`,
+//! prefetches and `xpaclri`)
 //! are compiled by hod and by `llc -O0 -global-isel=0 -fast-isel=0` of
 //! each LLVM major present, under the plain, stress and far options;
 //! each object is linked with `tests/data/inline_asm/driver.c` under
@@ -118,6 +119,23 @@ fn template_words_appear_in_the_code() {
     let words = code_words(&m, &bodies, &Options::default());
     // llvm-mc: add x10, x9, #1; eor x10, x10, x9, lsl #3; dmb ish.
     let want = [0x9100_052a_u32, 0xca09_0d4a, 0xd503_3bbf];
+    assert!(
+        words.windows(3).any(|w| w == want),
+        "the template's words are not in the code: {words:08x?}"
+    );
+}
+
+// spec/asm.md §16: RocksDB's prefetch template (`r,I`, `${0:x}`, the
+// immediate printed without `#`), a register offset, and `prfm` with an
+// offset only `prfum` takes (LLVM 22's choice), in a fixed register.
+#[test]
+fn prefetch_words_appear_in_the_code() {
+    let ll = "define void @f(ptr %p) {\n  call void asm sideeffect \"PRFM PLDL1KEEP, [${0:x},$1]\\0A prfm pstl2strm, [$0, x10, lsl #3]\\0A prfm plil1keep, [$0, #-8]\", \"{x9},I,~{x10}\"(ptr %p, i32 1024)\n  ret void\n}\n";
+    let (m, bodies) = parse(&format!("{}{ll}", ll_header(22)));
+    let words = code_words(&m, &bodies, &Options::default());
+    // llvm-mc-22: prfm pldl1keep, [x9, #1024]; prfm pstl2strm, [x9, x10,
+    // lsl #3]; prfum plil1keep, [x9, #-8].
+    let want = [0xf982_0120_u32, 0xf8aa_7933, 0xf89f_8128];
     assert!(
         words.windows(3).any(|w| w == want),
         "the template's words are not in the code: {words:08x?}"

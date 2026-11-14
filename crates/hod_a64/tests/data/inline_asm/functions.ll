@@ -235,3 +235,25 @@ lp:
   ret i32 -1
 }
 declare i32 @hod_test_personality(...)
+
+; WP-216 (`spec/asm.md` §16): RocksDB's `PRFM PLDL1KEEP, [${0:x},$1]`
+; with `r,I`, then the register-offset, extended-index, unscaled and
+; literal forms, upper and lower case; the prefetches change nothing, the
+; loads after them read the array. `xpaclri` strips nothing from a plain
+; value in x30 (`HINT #7`); the template keeps the return address in x9
+; itself (`llc` saves no `lr` for a clobber of x30 in a leaf).
+define i64 @prefetch_sum(ptr %p, i64 %i, i32 %j) {
+  call void asm sideeffect "PRFM PLDL1KEEP, [${0:x},$1]", "r,I"(ptr %p, i32 1024)
+  call void asm sideeffect "prfm pstl2strm, [$0, $1, lsl #3]\0A prfm plil3keep, [$0, ${2:w}, sxtw #3]\0A prfm #5, [$0, ${2:w}, uxtw]", "r,r,r"(ptr %p, i64 %i, i32 %j)
+  call void asm sideeffect "prfum pldl2keep, [$0, #-8]\0A prfm pldl3strm, [$0, #32760]\0A 1: prfm pldl1strm, 1b\0A prfm pstl1keep, 2f\0A 2:", "r"(ptr %p)
+  %a = load i64, ptr %p
+  %q = getelementptr i64, ptr %p, i64 %i
+  %b = load i64, ptr %q
+  %s = add i64 %a, %b
+  ret i64 %s
+}
+
+define i64 @xpaclri_lr(i64 %x) {
+  %r = call i64 asm sideeffect "mov x9, x30\0A mov x30, $1\0A xpaclri\0A mov $0, x30\0A mov x30, x9", "=r,r,~{x9}"(i64 %x)
+  ret i64 %r
+}
