@@ -257,3 +257,58 @@ define i64 @xpaclri_lr(i64 %x) {
   %r = call i64 asm sideeffect "mov x9, x30\0A mov x30, $1\0A xpaclri\0A mov $0, x30\0A mov x30, x9", "=r,r,~{x9}"(i64 %x)
   ret i64 %r
 }
+
+; spec/asm.md §17 (WP-217): alignment directives in templates. Each
+; `adr` takes the address of the instruction after a directive; the low
+; bits are zero when the boundary is counted from the section (and the
+; function and section are aligned enough), after linking.
+define i64 @align_probe() {
+  %a = call i64 asm sideeffect "nop\0A.p2align 5\0A1: adr $0, 1b", "=r"()
+  %b = call i64 asm sideeffect "nop\0Anop\0A.balign 64\0A1: adr $0, 1b", "=r"()
+  %c = call i64 asm sideeffect ".align 4\0A1: adr $0, 1b", "=r"()
+  %d = call i64 asm sideeffect "b 1f\0A.P2ALIGN 3, 0xff\0A1: adr $0, 1b\0A.p2align 1\0A.balign 2", "=r"()
+  %am = and i64 %a, 31
+  %bm = and i64 %b, 63
+  %cm = and i64 %c, 15
+  %dm = and i64 %d, 7
+  %ab = or i64 %am, %bm
+  %cd = or i64 %cm, %dm
+  %r = or i64 %ab, %cd
+  ret i64 %r
+}
+
+; A branch over fill words and a maximum the padding passes.
+define i64 @align_fill(i64 %x) {
+  %r = call i64 asm "nop\0Ab 1f\0A.balign 32, 0xff\0A1: add $0, $1, #1\0A.p2align 6,,8\0Aadd $0, $0, #1", "=r,r"(i64 %x)
+  ret i64 %r
+}
+
+; zstd's loop alignment (`zstd_decompress_block.c`, `zstd_lazy.c`: one
+; directive or `nop` per statement), in front of a loop and in it.
+define i64 @zstd_loop(i64 %n) {
+entry:
+  call void asm sideeffect ".p2align 6", ""()
+  call void asm sideeffect "nop", ""()
+  call void asm sideeffect ".p2align 5", ""()
+  call void asm sideeffect "nop", ""()
+  call void asm sideeffect ".p2align 4", ""()
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i1, %loop ]
+  %s = phi i64 [ 0, %entry ], [ %s1, %loop ]
+  call void asm sideeffect ".p2align 3", ""()
+  %s1 = add i64 %s, %i
+  %i1 = add i64 %i, 1
+  %more = icmp slt i64 %i1, %n
+  br i1 %more, label %loop, label %exit
+exit:
+  ret i64 %s1
+}
+
+; upb's `encode_longvarint` (`upb/wire/encode.c`, without BTI): a
+; computed branch into a table of 8-byte entries placed after
+; `.p2align 3`.
+define void @upb_longvarint(ptr %p, i64 %val, i64 %skip) {
+  %r = call { i64, i64 } asm sideeffect "adr $0, 0f\0Aadd $0, $0, $4, lsl #3\0Amov ${1:w}, #0x80\0Abr $0\0A.p2align 3\0A0:\0Aorr $0, $1, $2, lsr #56\0Astrb ${0:w}, [$3, #8]\0Aorr $0, $1, $2, lsr #49\0Astrb ${0:w}, [$3, #7]\0Aorr $0, $1, $2, lsr #42\0Astrb ${0:w}, [$3, #6]\0Aorr $0, $1, $2, lsr #35\0Astrb ${0:w}, [$3, #5]\0Aorr $0, $1, $2, lsr #28\0Astrb ${0:w}, [$3, #4]\0Aorr ${0:w}, ${1:w}, ${2:w}, lsr #21\0Astrb ${0:w}, [$3, #3]\0Aorr ${0:w}, ${1:w}, ${2:w}, lsr #14\0Astrb ${0:w}, [$3, #2]\0Aorr ${0:w}, ${1:w}, ${2:w}, lsr #7\0Astrb ${0:w}, [$3, #1]\0Aorr ${0:w}, ${2:w}, #0x80\0Astrb ${0:w}, [$3]\0A", "=&r,=&r,r,r,r,~{memory}"(i64 %val, ptr %p, i64 %skip)
+  ret void
+}

@@ -20,7 +20,9 @@
 //! 3. The inputs are loaded into their registers (an integer narrower
 //!    than 64 bits zero-extended), the memory operands' addresses
 //!    computed into theirs.
-//! 4. The template's words.
+//! 4. The template's words (assembled again at their offset when the
+//!    body aligns, `spec/asm.md` §17: the function's alignment is
+//!    raised to the body's).
 //! 5. The register outputs are stored to their slots (an indirect one
 //!    through its pointer), the flag outputs (`={@cc<cond>}`) are
 //!    `cset` and stored, the callee-saved registers restored.
@@ -585,7 +587,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, A64>, inst: Inst<'a>) -> CgResult<()> {
             syms.push(Some(sym));
         }
     }
-    emit(cx, inst, &ops, plan, &code, &syms)
+    emit(cx, inst, &ops, plan, (&body, &mut code), &syms)
 }
 
 /// The name an `asm goto` target prints as: `.Lhod_asm_goto_<n>`.
@@ -662,7 +664,7 @@ fn emit<'a>(
     inst: Inst<'a>,
     ops: &Ops,
     mut plan: Plan,
-    code: &asm::Code,
+    (body, code): (&str, &mut asm::Code),
     syms: &[Option<hod_ir::SymId>],
 ) -> CgResult<()> {
     let site = inst.call().expect("checked by the caller");
@@ -783,6 +785,16 @@ fn emit<'a>(
     }
     // 4. The template.
     let start = cx.offset();
+    if code.align != 0 {
+        // `spec/asm.md` §17: an alignment directive pads to a boundary
+        // counted from the function's start, which is at least as
+        // aligned in its section; the body is assembled again at its
+        // place (the same statements: the references stay `syms`'). A
+        // prologue cut before it (a probed frame's unused room) refuses
+        // the function: `limit:aligned-code-moved`.
+        asm::assemble_at(body, features(cx), start, code, &mut String::new()).map_err(refused)?;
+        cx.raise_align(code.align, start + 4 * code.words.len() as u32);
+    }
     let mut labels: Vec<(u32, asm::RefKind, u8)> = Vec::new();
     for word in &code.words {
         put(cx, *word);

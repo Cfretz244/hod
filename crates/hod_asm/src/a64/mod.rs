@@ -4,9 +4,10 @@
 //! labels, and instructions ([`encode`]) whose words come from
 //! `hod_mc_a64`'s checked encoders.
 //!
-//! An inline body defines no symbol: a named label, a directive or a
-//! reference to a numeric label the body does not define is refused
-//! (`asm:label`, `asm:directive/<name>`, `asm:operand/label`). A
+//! An inline body defines no symbol: a named label, a directive other
+//! than the alignment directives (§17, [`assemble_at`]) or a reference to
+//! a numeric label the body does not define is refused (`asm:label`,
+//! `asm:directive/<name>`, `asm:operand/label`). A
 //! reference to a symbol is returned as a [`Ref`], for the caller to make
 //! a relocation of (or to resolve, for an `asm goto` target).
 
@@ -132,6 +133,10 @@ pub struct Code {
     pub words: Vec<u32>,
     /// The references to symbols (fields zero in `words`).
     pub refs: Vec<Ref>,
+    /// The largest alignment an alignment directive of the body asked
+    /// for, in bytes (0 when there is none, §17): the code must start at
+    /// an offset of its section that is `start` modulo it.
+    pub align: u32,
 }
 
 impl Code {
@@ -264,8 +269,33 @@ pub fn assemble(
     code: &mut Code,
     scratch: &mut String,
 ) -> Result<(), Refusal> {
+    assemble_at(body, features, 0, code, scratch)
+}
+
+/// The `nop` word, the padding of an alignment directive without a fill.
+pub const NOP: u32 = 0xd503_201f;
+
+/// [`assemble`] for a body whose first word is at byte offset `start`
+/// (a multiple of 4) of a code origin aligned to at least
+/// [`Code::align`]: `.p2align`, `.balign` and `.align` (a power of two)
+/// pad to their boundary counted from that origin (§17), with `nop`
+/// words, or with the fill byte when one is written; a maximum the
+/// padding would pass leaves it out.
+///
+/// # Errors
+/// As [`assemble`]; [`crate::align::parse`]'s refusals of a directive's
+/// operands.
+pub fn assemble_at(
+    body: &str,
+    features: Features,
+    start: u32,
+    code: &mut Code,
+    scratch: &mut String,
+) -> Result<(), Refusal> {
+    debug_assert!(start.is_multiple_of(4), "a body at an offset that is not a multiple of 4");
     code.words.clear();
     code.refs.clear();
+    code.align = 0;
     crate::text::clean(body, scratch)?;
     let mut defs: Vec<LocalDef> = Vec::new();
     let mut pending: Vec<Pending> = Vec::new();
@@ -282,7 +312,20 @@ pub fn assemble(
         }
         let (mnemonic, rest) = split_mnemonic(stmt);
         if mnemonic.starts_with('.') {
-            return Err(reason::directive(mnemonic));
+            let is = |name: &str| mnemonic.eq_ignore_ascii_case(name);
+            let log2 = if is(".p2align") || is(".align") {
+                true
+            } else if is(".balign") {
+                false
+            } else {
+                return Err(reason::directive(mnemonic));
+            };
+            let a = crate::align::parse(rest, log2)?;
+            code.align = code.align.max(a.align as u32);
+            let pad = a.pad(u64::from(start) + u64::from(offset_of(code)?));
+            let word = a.fill.map_or(NOP, |f| u32::from_le_bytes([f; 4]));
+            code.words.extend(std::iter::repeat_n(word, (pad / 4) as usize));
+            continue;
         }
         let ops = operand::parse(rest)?;
         let e = encode::encode(mnemonic, ops.as_slice(), features)?;
@@ -340,7 +383,8 @@ mod tests {
         assert_eq!(asm("1: cbnz x0, 1b").unwrap(), [0xb500_0000]);
         assert_eq!(asm("b 1f\n1:").unwrap(), [0x1400_0001]);
         assert_eq!(asm("x: nop").err(), Some(Refusal(other::LABEL)));
-        assert_eq!(asm(".p2align 2").err(), Some(reason::directive(".p2align")));
+        assert_eq!(asm(".inst 0").err(), Some(reason::directive(".inst")));
+        assert_eq!(asm("nop\n.p2align 2").unwrap(), [NOP]);
         assert_eq!(asm("b 2f").err(), Some(Refusal(op_reason::LABEL)));
         assert_eq!(asm("frob x0").err(), Some(reason::mnemonic("frob")));
         let mut code = Code::default();
@@ -349,6 +393,31 @@ mod tests {
             code.refs,
             [Ref { offset: 0, kind: RefKind::Call26, name: "dump".into(), addend: 0 }]
         );
+    }
+
+    /// §17: alignment directives pad from the origin `start` counts from.
+    #[test]
+    fn alignment() {
+        const B: u32 = 0x1400_0000;
+        let at = |text: &str, start: u32| {
+            let mut code = Code::default();
+            assemble_at(text, Features::BASE, start, &mut code, &mut String::new())
+                .map(|()| (code.words, code.align))
+        };
+        // `b 1f` over the padding to the label after it.
+        assert_eq!(
+            at("b 1f\n.p2align 4\n1: nop", 0).unwrap(),
+            (vec![B | 4, NOP, NOP, NOP, NOP], 16)
+        );
+        assert_eq!(at("b 1f\n.p2align 4\n1: nop", 8).unwrap(), (vec![B | 2, NOP, NOP], 16));
+        assert_eq!(at("b 1f\n.p2align 4\n1: nop", 12).unwrap(), (vec![B | 1, NOP], 16));
+        assert_eq!(at(".balign 16, 0xff\nnop", 4).unwrap(), (vec![!0, !0, !0, NOP], 16));
+        assert_eq!(at(".P2ALIGN 6,,8\nnop", 52).unwrap(), (vec![NOP], 64));
+        assert_eq!(at(".p2align 6,,8\nnop", 56).unwrap(), (vec![NOP, NOP, NOP], 64));
+        assert_eq!(at(".align 3\n.balign 2\n.p2align 0\nnop", 4).unwrap(), (vec![NOP, NOP], 8));
+        assert_eq!(at("nop", 4).unwrap(), (vec![NOP], 0));
+        assert_eq!(at(".balign 3", 0).err(), Some(Refusal(op_reason::RANGE)));
+        assert_eq!(at(".balignw 4", 0).err(), Some(reason::directive(".balignw")));
     }
 
     #[test]

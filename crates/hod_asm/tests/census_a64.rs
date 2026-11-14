@@ -75,9 +75,11 @@ const CENSUS: &[Row] = &[
     ),
     row("prfm pldl1keep, [x8]", "eigen NEON PacketMath.h, zstd compiler.h (Q operand)", 3, Ok),
     row("prfm pldl2keep, [x8]", "zstd compiler.h (Q operand)", 2, Ok),
-    // A computed branch into the template.
+    // A computed branch into the template, past `.p2align 3` (§17; the
+    // census of WP-216 left out the directive, written under
+    // `#ifndef __SEH__` inside the string).
     row(
-        "adr x8, 0f\nadd x8, x8, x10, lsl #3\nmov w9, #0x80\nbr x8\n0:\n\
+        "adr x8, 0f\nadd x8, x8, x10, lsl #3\nmov w9, #0x80\nbr x8\n.p2align 3\n0:\n\
          orr x8, x9, x11, lsr #56\nstrb w8, [x12, #8]\norr x8, x9, x11, lsr #49\n\
          strb w8, [x12, #7]\norr w8, w9, w11, lsr #21\nstrb w8, [x12, #3]\n\
          orr w8, w11, #0x80\nstrb w8, [x12]",
@@ -108,13 +110,15 @@ const CENSUS: &[Row] = &[
         13,
         Ok,
     ),
+    // Scalar SIMD forms (§17).
+    row("fcvtzs d8, d9", "highway arm_neon-inl.h (scalar SIMD form)", 1, Ok),
+    row("fcvtzu d8, d9", "highway arm_neon-inl.h (scalar SIMD form)", 1, Ok),
+    row("fcmeq d8, d9, d9", "highway arm_neon-inl.h (scalar SIMD form)", 1, Ok),
+    // zstd's 34 `.p2align 3..6` templates (`zstd_lazy.c`,
+    // `zstd_decompress_block.c`, cmake's and mold's copies), counted
+    // here by WP-216, are all under `#if defined(__GNUC__) &&
+    // defined(__x86_64__)`: x86-64 templates, `census_x64.rs` (§17).
     // Stays refused.
-    row(
-        ".p2align 5",
-        "zstd lazy/decompress (cmake, mold copies): .p2align 3..6",
-        34,
-        No("asm:directive/p2align"),
-    ),
     row(
         "fmla v8.4s, v9.4s, v10.s[0]",
         "eigen NEON GeneralBlockPanelKernel.h",
@@ -128,26 +132,8 @@ const CENSUS: &[Row] = &[
         No("asm:operand/vector"),
     ),
     row("fcvtzu v8.4s, v9.4s", "highway arm_neon-inl.h", 5, No("asm:operand/vector")),
-    row("fcmeq v8.8h, v9.8h, v9.8h", "highway arm_neon-inl.h", 5, No("asm:mnemonic/fcmeq")),
+    row("fcmeq v8.8h, v9.8h, v9.8h", "highway arm_neon-inl.h", 5, No("asm:operand/vector")),
     row("fcvtns v8.4s, v9.4s", "opencv intrin_neon.hpp", 1, No("asm:operand/vector")),
-    row(
-        "fcvtzs d8, d9",
-        "highway arm_neon-inl.h (scalar SIMD form)",
-        1,
-        No("asm:operand/register"),
-    ),
-    row(
-        "fcvtzu d8, d9",
-        "highway arm_neon-inl.h (scalar SIMD form)",
-        1,
-        No("asm:operand/register"),
-    ),
-    row(
-        "fcmeq d8, d9, d9",
-        "highway arm_neon-inl.h (scalar SIMD form)",
-        1,
-        No("asm:mnemonic/fcmeq"),
-    ),
     row("umlal v8.2d, v9.2s, v10.2s", "xxhash.h (zstd copies)", 3, No("asm:mnemonic/umlal")),
     row(
         "pmull v8.1q, v9.1d, v10.1d",

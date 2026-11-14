@@ -43,6 +43,12 @@ pub const LIMIT_FUNCTION_SIZE: &str = "limit:function-size";
 /// relocation model is given by an option.
 pub const MODULE_CODE_MODEL_LARGE_PIC: &str = "module:code-model-large-pic";
 
+/// Code that pads to a boundary counted from the function's start (an
+/// alignment directive of an inline-assembly template, `spec/asm.md`
+/// §17) after bytes that shrinking the code removes (§5.6.15): the
+/// padding would no longer reach its boundary.
+pub const LIMIT_ALIGNED_CODE_MOVED: &str = "limit:aligned-code-moved";
+
 /// A `musttail` call of a function that returns in memory without an
 /// `sret` parameter: the buffer's address would have to be forwarded.
 pub const CALL_MUSTTAIL_RET_MEMORY: &str = "call:musttail-ret-memory";
