@@ -10,6 +10,8 @@ and the project's per-test results.
   projects.py list [--json]              project names, one per line
   projects.py shell <project>            the project's table as bash assignments
   projects.py report-json <args...>      write report.json for one build tree
+  projects.py emulate-tests <build dir> <emulator>...
+                                         run ctest's x86-64 test programs under the emulator
 """
 
 import argparse
@@ -29,7 +31,13 @@ REQUIRED = ("url", "tag", "build", "cxx_std", "test")
 BUILDS = ("cmake",)
 MODES = ("llc", "hod", "strict")
 FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
+# What a build is for (oss-build.sh --target): aarch64 native, x86_64
+# cross-built and its tests run under qemu (WP-191).
+TARGETS = ("aarch64", "x86_64")
 VMEM_MAX_KB = 6000000
+# The test step's cap may go higher, for a test that reserves address
+# space it never touches (mold reserves 8 GiB per arena, up to ten).
+TEST_VMEM_MAX_KB = 100000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
@@ -58,11 +66,15 @@ def load(path=TOML):
         p.setdefault("notes", "")
         p.setdefault("deps", [])
         p.setdefault("install_configure", [])
+        p.setdefault("drop_flags", [])
         p.setdefault("checkout", name)
         p.setdefault("test_timeout", 1800)
         p.setdefault("vmem_kb", 3000000)
         if not (isinstance(p["vmem_kb"], int) and 0 < p["vmem_kb"] <= VMEM_MAX_KB):
             raise SystemExit(f"{path}: [{name}] vmem_kb must be an integer in 1..{VMEM_MAX_KB}")
+        p.setdefault("test_vmem_kb", p["vmem_kb"])
+        if not (isinstance(p["test_vmem_kb"], int) and 0 < p["test_vmem_kb"] <= TEST_VMEM_MAX_KB):
+            raise SystemExit(f"{path}: [{name}] test_vmem_kb must be an integer in 1..{TEST_VMEM_MAX_KB}")
         if not (isinstance(p["test_timeout"], int) and p["test_timeout"] > 0):
             raise SystemExit(f"{path}: [{name}] test_timeout must be a positive integer")
     for name, p in data.items():
@@ -140,7 +152,7 @@ def read_coverage(path):
                 census = []
                 if len(fs) >= 11 and fs[10] != "-":
                     census = [c.replace("\\,", ",") for c in re.split(r"(?<!\\),", fs[10])]
-                out.append({"outcome": fs[0], "reason": fs[1], "output": fs[4], "us": int(fs[6]) if fs[6].isdigit() else 0, "census": census})
+                out.append({"outcome": fs[0], "reason": fs[1], "output": fs[4], "bytes": int(fs[3]) if fs[3].isdigit() else -1, "us": int(fs[6]) if fs[6].isdigit() else 0, "census": census})
     except FileNotFoundError:
         pass
     return out
@@ -186,9 +198,10 @@ def census(build_dir):
             if name and name != "-":
                 census_counts[name] = census_counts.get(name, 0) + 1
     for name, n in census_counts.items():
-        refusals.setdefault(name, {"modules": 0, "first": 0, "functions": {}, "examples": []})["modules"] = max(
-            n, refusals[name]["modules"]
-        )
+        # A reason found only by the census (never a module's first) has
+        # no entry yet: make it before reading it.
+        e = refusals.setdefault(name, {"modules": 0, "first": 0, "functions": {}, "examples": []})
+        e["modules"] = max(n, e["modules"])
     for e in refusals.values():
         e["functions"] = dict(sorted(e["functions"].items(), key=lambda kv: -kv[1])[:10])
     return {
@@ -224,6 +237,91 @@ def test_results(log_path):
     return last, None, per
 
 
+# One ctest test whose command is a path (CTestTestfile.cmake, as CMake
+# writes it): `add_test([=[name]=] "/path/prog" ...)`.
+ADD_TEST_RE = re.compile(r'^(\s*add_test\((?:\[(=*)\[.*?\]\2\]|"[^"]*"|\S+)\s+)"([^"]+)"')
+
+
+def is_x86_64_elf(path):
+    """An ELF file for x86-64 (e_machine 62)."""
+    try:
+        with open(path, "rb") as f:
+            h = f.read(20)
+    except OSError:
+        return False
+    return len(h) == 20 and h[:4] == b"\x7fELF" and h[5] == 1 and int.from_bytes(h[18:20], "little") == 62
+
+
+def cmd_emulate_tests(a):
+    """A cross build's tests (WP-191): CMake puts the crosscompiling
+    emulator before a test whose COMMAND names a target, but not before a
+    path (`$<TARGET_FILE:t>`, as googletest's own tests are declared).
+    Every CTestTestfile.cmake under the build dir gets the emulator before
+    each test command that is an x86-64 program; a second run changes
+    nothing."""
+    emu = " ".join('"' + x.replace('"', '\\"') + '"' for x in a.emulator)
+    n = 0
+    for root, _dirs, files in os.walk(a.build_dir):
+        if "CTestTestfile.cmake" not in files:
+            continue
+        path = os.path.join(root, "CTestTestfile.cmake")
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        out = []
+        for line in lines:
+            m = ADD_TEST_RE.match(line)
+            # A test of add_test's old signature (`add_test(name prog)`,
+            # simdjson's) names its program relative to its directory.
+            prog = m and os.path.join(root, m.group(3))
+            if m and is_x86_64_elf(prog):
+                line = f'{m.group(1)}{emu} "{prog}"{line[m.end():]}'
+                n += 1
+            elif m:
+                # A script test running the program itself (doctest's
+                # `cmake -DCOMMAND=<prog> <args> -P exec_test.cmake`,
+                # glog's `-DLOGCLEANUP=<prog>`): the emulator goes first,
+                # space-separated where the script splits a command line
+                # itself (arguments follow the program, or doctest's
+                # COMMAND), else as list items for
+                # `execute_process(COMMAND ${VAR})`.
+                def under(c):
+                    nonlocal n
+                    if not is_x86_64_elf(c.group(3)):
+                        return c.group(0)
+                    n += 1
+                    sep = " " if c.group(2) == "COMMAND" or line[c.end():c.end() + 1] == " " else ";"
+                    return f'{c.group(1)}{sep.join(a.emulator)}{sep}{c.group(3)}'
+                line = SCRIPT_COMMAND_RE.sub(under, line)
+            out.append(line)
+        if out != lines:
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(out)
+    # ctest's pre- and post-test commands (CTestCustom.cmake, CLI11's
+    # `informational`): one command line in a string, run as it stands.
+    custom = os.path.join(a.build_dir, "CTestCustom.cmake")
+    if os.path.isfile(custom):
+        with open(custom, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        def under(m):
+            nonlocal n
+            if not is_x86_64_elf(m.group(2)):
+                return m.group(0)
+            n += 1
+            return f'{m.group(1)}"{" ".join(a.emulator)} {m.group(2)}"'
+        new = CUSTOM_TEST_RE.sub(under, text)
+        if new != text:
+            with open(custom, "w", encoding="utf-8") as f:
+                f.write(new)
+    print(f"projects.py: {n} test commands put under {a.emulator[0]}")
+
+
+# `"-D<VAR>=/path/prog[ args]"`, an argument of a `cmake -P` test.
+SCRIPT_COMMAND_RE = re.compile(r'("-D(\w+)=)([^" ;]+)')
+
+# `set(CTEST_CUSTOM_PRE_TEST "/path/prog")` (or POST_TEST) in CTestCustom.cmake.
+CUSTOM_TEST_RE = re.compile(r'(set\(\s*CTEST_CUSTOM_(?:PRE|POST)_TEST\s+)"([^" ]+)"')
+
+
 def cmd_report_json(a):
     recs = read_jsonl(os.path.join(a.build_dir, "compile.jsonl"))
     s = summarize(recs)
@@ -238,8 +336,10 @@ def cmd_report_json(a):
         "flavour": a.flavour,
         "flags": FLAVOURS[a.flavour],
         "host": platform.machine(),
+        "target": a.target,
         "compiler_path": a.compiler_path,
         "hod_path": a.hod_path,
+        "kiln": a.kiln,
         "url": p["url"],
         "tag": p["tag"],
         "cxx_std": p["cxx_std"],
@@ -269,12 +369,17 @@ def main():
     l.add_argument("--json", action="store_true")
     s = sub.add_parser("shell")
     s.add_argument("project")
+    e = sub.add_parser("emulate-tests")
+    e.add_argument("build_dir")
+    e.add_argument("emulator", nargs=argparse.REMAINDER)
     r = sub.add_parser("report-json")
     r.add_argument("--project", required=True)
     r.add_argument("--mode", choices=MODES, required=True)
     r.add_argument("--flavour", choices=sorted(FLAVOURS), required=True)
+    r.add_argument("--target", choices=TARGETS, default="aarch64")
     r.add_argument("--compiler-path", required=True)
     r.add_argument("--hod-path", default="")
+    r.add_argument("--kiln", default="")
     r.add_argument("--build-dir", required=True)
     r.add_argument("--configure-rc", type=int, required=True)
     r.add_argument("--build-rc", type=int)
@@ -291,13 +396,16 @@ def main():
             sys.exit(f"projects.py: unknown project '{a.project}' (see {TOML})")
         p = data[a.project]
         q = shlex.quote
-        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb"):
+        for k in ("url", "tag", "build", "cxx_std", "test", "c", "c_compiler", "source_subdir", "checkout", "test_timeout", "vmem_kb", "test_vmem_kb"):
             print(f"P_{k.upper()}={q(str(p[k]))}")
         print(f"P_SUBMODULES={'1' if p['submodules'] else ''}")
         print("P_CONFIGURE=(" + " ".join(q(x) for x in p["configure"]) + ")")
         print("P_BUILD_TARGETS=(" + " ".join(q(x) for x in p["build_targets"]) + ")")
         print("P_DEPS=(" + " ".join(q(x) for x in p["deps"]) + ")")
         print("P_INSTALL_CONFIGURE=(" + " ".join(q(x) for x in p["install_configure"]) + ")")
+        print("P_DROP_FLAGS=(" + " ".join(q(x) for x in p["drop_flags"]) + ")")
+    elif a.cmd == "emulate-tests":
+        cmd_emulate_tests(a)
     elif a.cmd == "report-json":
         cmd_report_json(a)
 
