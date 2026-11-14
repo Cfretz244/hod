@@ -100,6 +100,9 @@ eval "$CFG"
 
 CXX="${KILN_OSS_CXX:-$BROOT/target-kiln/release/kiln++}"
 [ -x "$CXX" ] || { echo "oss-build: no kiln++ at $CXX (set KILN_OSS_CXX)" >&2; exit 2; }
+# The kiln commit the row is built with (its report's `kiln`): $HOD_OSS_KILN,
+# else the workspace's kiln checkout, which target-kiln is built from.
+KILN_ID="${HOD_OSS_KILN:-$(git -C "$(dirname "$BROOT")/kiln" rev-parse --short=9 HEAD 2>/dev/null)}"
 CXX="$(cd "$(dirname "$CXX")" && pwd)/$(basename "$CXX")"
 HOD="${HOD_OSS_HOD:-$CARGO_TARGET_DIR/release/hod}"
 if [ "$MODE" != llc ]; then
@@ -241,7 +244,7 @@ fi
 WALL=$(python3 -c "print($(date +%s.%N) - $T0)")
 
 python3 "$HERE/projects.py" report-json --project "$PROJECT" --mode "$MODE" --flavour "$FLAVOUR" \
-  --compiler-path "$CXX" --hod-path "${HOD:-}" --build-dir "$BUILD" --configure-rc "$CONF_RC" \
+  --compiler-path "$CXX" --hod-path "${HOD:-}" --kiln "$KILN_ID" --build-dir "$BUILD" --configure-rc "$CONF_RC" \
   ${BUILD_RC:+--build-rc "$BUILD_RC"} ${TEST_RC:+--test-rc "$TEST_RC"} --wall "$WALL"
 
 [ -z "$PRUNE" ] || prune "$BUILD"

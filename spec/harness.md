@@ -4024,7 +4024,10 @@ root.
 **Pages.** `oss-report.py status` prints `docs/status/oss.md`: a row per
 project and flavour (TUs, objects, built by hod, fell back, not offered,
 the hybrid and strict builds, passed/total tests per mode, the tests that
-do worse or better than the control), then the refusal census of the
+do worse or better than the control, the hod binary of the hod and
+strict builds, by file name (a frozen copy is `hod-<commit>`), and the
+kiln commit of the row's builds, each report's `kiln`: `$HOD_OSS_KILN`,
+else the workspace's kiln checkout), then the refusal census of the
 hybrid builds (per reason: `first`, `census`, the builds, the most
 frequent functions) and the objects kiln did not offer, by trigger.
 

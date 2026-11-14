@@ -240,6 +240,7 @@ def cmd_report_json(a):
         "host": platform.machine(),
         "compiler_path": a.compiler_path,
         "hod_path": a.hod_path,
+        "kiln": a.kiln,
         "url": p["url"],
         "tag": p["tag"],
         "cxx_std": p["cxx_std"],
@@ -275,6 +276,7 @@ def main():
     r.add_argument("--flavour", choices=sorted(FLAVOURS), required=True)
     r.add_argument("--compiler-path", required=True)
     r.add_argument("--hod-path", default="")
+    r.add_argument("--kiln", default="")
     r.add_argument("--build-dir", required=True)
     r.add_argument("--configure-rc", type=int, required=True)
     r.add_argument("--build-rc", type=int)

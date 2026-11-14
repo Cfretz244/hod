@@ -128,14 +128,20 @@ def hod_cell(*rs):
     return ", ".join(f"`{n}`" for n in names) or "-"
 
 
+def kiln_cell(*rs):
+    """The kiln commits of the row's builds (the control's included)."""
+    names = sorted({r.get("kiln") or "" for r in rs if r} - {""})
+    return ", ".join(f"`{n}`" for n in names) or "-"
+
+
 def status_rows(reps, notes=None):
     """The table; a test worse than the control's that passed every
     recorded rerun (and at least two) is not counted worse: the cell says
     `same (rerun)` with a numbered note, appended to `notes`."""
     notes = [] if notes is None else notes
     out = [
-        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod | kiln |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for p in order(reps):
         for fl in FLAVOURS:
@@ -174,7 +180,7 @@ def status_rows(reps, notes=None):
             out.append(
                 f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
-                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} |"
+                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} | {kiln_cell(l, h, s)} |"
             )
     return out
 
