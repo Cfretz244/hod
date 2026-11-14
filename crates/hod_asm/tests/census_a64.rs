@@ -67,7 +67,12 @@ const CENSUS: &[Row] = &[
     row("hint #0x7;", "abseil addresses.h (4 calls in kiln-built modules)", 1, Ok),
     row("xpaclri", "abseil addresses.h (the commented alternative)", 1, Ok),
     // Prefetch (§16).
-    row("PRFM PLDL1KEEP, [x8,1024]", "rocksdb crc32c_arm64.h (16 calls in the kiln-built module)", 4, Ok),
+    row(
+        "PRFM PLDL1KEEP, [x8,1024]",
+        "rocksdb crc32c_arm64.h (16 calls in the kiln-built module)",
+        4,
+        Ok,
+    ),
     row("prfm pldl1keep, [x8]", "eigen NEON PacketMath.h, zstd compiler.h (Q operand)", 3, Ok),
     row("prfm pldl2keep, [x8]", "zstd compiler.h (Q operand)", 2, Ok),
     // A computed branch into the template.
@@ -104,19 +109,64 @@ const CENSUS: &[Row] = &[
         Ok,
     ),
     // Stays refused.
-    row(".p2align 5", "zstd lazy/decompress (cmake, mold copies): .p2align 3..6", 34, No("asm:directive/p2align")),
-    row("fmla v8.4s, v9.4s, v10.s[0]", "eigen NEON GeneralBlockPanelKernel.h", 8, No("asm:mnemonic/fmla")),
-    row("fcvtzs v8.4s, v9.4s", "highway arm_neon-inl.h (and .2d, .4h, .8h)", 5, No("asm:operand/vector")),
+    row(
+        ".p2align 5",
+        "zstd lazy/decompress (cmake, mold copies): .p2align 3..6",
+        34,
+        No("asm:directive/p2align"),
+    ),
+    row(
+        "fmla v8.4s, v9.4s, v10.s[0]",
+        "eigen NEON GeneralBlockPanelKernel.h",
+        8,
+        No("asm:mnemonic/fmla"),
+    ),
+    row(
+        "fcvtzs v8.4s, v9.4s",
+        "highway arm_neon-inl.h (and .2d, .4h, .8h)",
+        5,
+        No("asm:operand/vector"),
+    ),
     row("fcvtzu v8.4s, v9.4s", "highway arm_neon-inl.h", 5, No("asm:operand/vector")),
     row("fcmeq v8.8h, v9.8h, v9.8h", "highway arm_neon-inl.h", 5, No("asm:mnemonic/fcmeq")),
     row("fcvtns v8.4s, v9.4s", "opencv intrin_neon.hpp", 1, No("asm:operand/vector")),
-    row("fcvtzs d8, d9", "highway arm_neon-inl.h (scalar SIMD form)", 1, No("asm:operand/register")),
-    row("fcvtzu d8, d9", "highway arm_neon-inl.h (scalar SIMD form)", 1, No("asm:operand/register")),
-    row("fcmeq d8, d9, d9", "highway arm_neon-inl.h (scalar SIMD form)", 1, No("asm:mnemonic/fcmeq")),
+    row(
+        "fcvtzs d8, d9",
+        "highway arm_neon-inl.h (scalar SIMD form)",
+        1,
+        No("asm:operand/register"),
+    ),
+    row(
+        "fcvtzu d8, d9",
+        "highway arm_neon-inl.h (scalar SIMD form)",
+        1,
+        No("asm:operand/register"),
+    ),
+    row(
+        "fcmeq d8, d9, d9",
+        "highway arm_neon-inl.h (scalar SIMD form)",
+        1,
+        No("asm:mnemonic/fcmeq"),
+    ),
     row("umlal v8.2d, v9.2s, v10.2s", "xxhash.h (zstd copies)", 3, No("asm:mnemonic/umlal")),
-    row("pmull v8.1q, v9.1d, v10.1d", "abseil crc32_x86_arm_combined_simd.h (and grpc's copy)", 2, No("asm:mnemonic/pmull")),
-    row("pmull2 v8.1q, v9.2d, v10.2d", "abseil crc32_x86_arm_combined_simd.h (and grpc's copy)", 2, No("asm:mnemonic/pmull2")),
-    row(".arch_extension  crypto", "abseil randen_hwaes.cc (grpc's bloaty copy)", 1, No("asm:directive/arch_extension")),
+    row(
+        "pmull v8.1q, v9.1d, v10.1d",
+        "abseil crc32_x86_arm_combined_simd.h (and grpc's copy)",
+        2,
+        No("asm:mnemonic/pmull"),
+    ),
+    row(
+        "pmull2 v8.1q, v9.2d, v10.2d",
+        "abseil crc32_x86_arm_combined_simd.h (and grpc's copy)",
+        2,
+        No("asm:mnemonic/pmull2"),
+    ),
+    row(
+        ".arch_extension  crypto",
+        "abseil randen_hwaes.cc (grpc's bloaty copy)",
+        1,
+        No("asm:directive/arch_extension"),
+    ),
     row("cntb x8", "highway targets.cc (SVE)", 1, No("asm:mnemonic/cntb")),
     row(".inst 0xd4200000", "psnip debug-trap (opencv)", 1, No("asm:directive/inst")),
 ];
@@ -214,6 +264,10 @@ fn accepted_census_bodies_are_llvm_mc_words() {
             ours.len(),
             theirs.len()
         );
-        println!("census_a64: {} bodies, {} words equal llvm-mc-{major}'s", spans.len(), ours.len());
+        println!(
+            "census_a64: {} bodies, {} words equal llvm-mc-{major}'s",
+            spans.len(),
+            ours.len()
+        );
     }
 }
