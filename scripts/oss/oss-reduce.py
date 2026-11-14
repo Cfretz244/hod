@@ -30,6 +30,7 @@ import sys
 
 sys.dont_write_bytecode = True
 LLVM = os.environ.get("HOD_OSS_LLVM_BIN", "/usr/lib/llvm-22/bin")
+MAX_REDUCE_BYTES = 16 * 1024 * 1024
 DIAG_RE = re.compile(r"in function '((?:[^'\\]|\\.)*)'")
 
 # The interestingness test llvm-reduce runs: hod refuses the file with
@@ -69,7 +70,14 @@ def function_of(d):
                     return m.group(1) if m else None
     except OSError:
         pass
-    return None
+    # A census reason (never the module's first): the README names the
+    # functions that hold it (oss-report.py collect); take the first.
+    try:
+        with open(os.path.join(d, "README.md"), encoding="utf-8", errors="replace") as f:
+            m = re.search(r" in `([^`, ]+)", f.readline())
+            return m.group(1) if m else None
+    except OSError:
+        return None
 
 
 def interesting(test, hod, reason, scratch, path):
@@ -88,6 +96,10 @@ def reduce_one(d, reason, hod, scratch, timeout):
             start = cut
     if not interesting(test, hod, reason, scratch, start):
         return None, "hod no longer refuses the kept module with this reason"
+    # llvm-reduce takes hours over a whole module of tens of MB (highway's
+    # x86-64 tests, WP-200): such a module is kept unreduced.
+    if os.path.getsize(start) > MAX_REDUCE_BYTES:
+        return None, f"not reduced: {os.path.getsize(start)} bytes, no single function to extract"
     out = os.path.join(scratch, "min.ll")
     # llvm-reduce passes the candidate as the test's last argument.
     cmd = [f"{LLVM}/llvm-reduce", "-j", "1", f"--test={sys.executable}", f"--test-arg={test}", f"--test-arg={hod}",
