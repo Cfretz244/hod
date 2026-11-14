@@ -492,7 +492,10 @@ pub fn asm<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     };
     let asm = cx.module.asm(id);
     if !hod_ir::asm_template_is_empty(hod_ir::Arch::X86_64, asm.template) {
-        // WP-212 (`spec/asm.md` §15): a `callbr` with a template too.
+        // WP-187: a `callbr` with a template stays refused.
+        if inst.opcode() == Opcode::CallBr {
+            return unsupported(INLINE_ASM);
+        }
         return template::call(cx, inst);
     }
     if site.bundle_count() != 0 {
