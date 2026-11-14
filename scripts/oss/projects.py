@@ -266,6 +266,17 @@ def cmd_emulate_tests(a):
             if m and is_x86_64_elf(m.group(3)):
                 line = f'{m.group(1)}{emu} "{m.group(3)}"{line[m.end():]}'
                 n += 1
+            elif m:
+                # A script test running the program itself (doctest's
+                # `cmake -DCOMMAND=<prog> <args> -P exec_test.cmake`,
+                # which splits COMMAND at spaces).
+                def under(c):
+                    nonlocal n
+                    if not is_x86_64_elf(c.group(2)):
+                        return c.group(0)
+                    n += 1
+                    return f'{c.group(1)}{" ".join(a.emulator)} {c.group(2)}'
+                line = SCRIPT_COMMAND_RE.sub(under, line)
             out.append(line)
         if out != lines:
             with open(path, "w", encoding="utf-8") as f:
@@ -288,6 +299,9 @@ def cmd_emulate_tests(a):
                 f.write(new)
     print(f"projects.py: {n} test commands put under {a.emulator[0]}")
 
+
+# `"-DCOMMAND=/path/prog args"`, an argument of a `cmake -P` test.
+SCRIPT_COMMAND_RE = re.compile(r'("-DCOMMAND=)([^" ]+)')
 
 # `set(CTEST_CUSTOM_PRE_TEST "/path/prog")` (or POST_TEST) in CTestCustom.cmake.
 CUSTOM_TEST_RE = re.compile(r'(set\(\s*CTEST_CUSTOM_(?:PRE|POST)_TEST\s+)"([^" ]+)"')
