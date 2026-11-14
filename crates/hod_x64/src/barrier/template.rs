@@ -61,7 +61,10 @@
 //! or fixed register; a tied input's output register; an immediate code
 //! (or `X`) for a constant integer in its range; memory (`m`, `o`) when the
 //! operand is not a direct output or an output an input is tied to;
-//! else a register.
+//! else a register. An output is tied as LLVM records it once the
+//! alternative is selected (`spec/asm.md` §19): one with alternatives
+//! only by an input with alternatives. An input tied to an output in
+//! memory is that memory, its value not read.
 
 use hod_asm::x64::{self as asm, Arg};
 use hod_asm::{Refusal, reason, template};
@@ -132,6 +135,7 @@ const IMM_M: u32 = 1 << 14; // M: 0..3
 const IMM_N: u32 = 1 << 15; // N: 0..255
 const IMM_O: u32 = 1 << 16; // O: 0..127
 const SYM: u32 = 1 << 17; // Ws (^Ws), s: a symbol plus a constant offset
+const V512: u32 = 1 << 18; // v (with `X`): what `v` weighs besides `x`'s
 
 /// The immediate codes.
 const IMMS: [u32; 10] = [IMM_ANY, IMM_E, IMM_Z, IMM_I, IMM_J, IMM_K, IMM_L, IMM_M, IMM_N, IMM_O];
@@ -228,7 +232,8 @@ impl ConstraintSyntax for X64Syntax {
             b'r' | b'l' | b'q' => R,
             b'Q' => ABCD,
             b'R' => LEGACY,
-            b'x' | b'v' => X,
+            b'x' => X,
+            b'v' => X | V512,
             b'm' | b'o' => M,
             b'X' => XX,
             b'i' | b'n' => IMM_ANY,
@@ -330,17 +335,21 @@ fn const_int(cx: &FnCx<'_, X64>, value: Value) -> Option<i64> {
 
 /// LLVM's weight of one code for an operand
 /// (`X86TargetLowering::getSingleConstraintMatchWeight`; `barrier` has
-/// the reading): for an integer every code weighs 0 but `x` (1 for 128
-/// bits) and the ranged immediates (3 when the constant fits); for
-/// another operand the generic weights (`m` 2, `i` 3 for a constant
-/// integer, the register codes invalid).
+/// the reading): for an integer every code weighs 0 but `x`, `v` and the
+/// ranged immediates (3 when the constant fits); for another operand the
+/// generic weights (`m` 2, `i` 3 for a constant integer, the register
+/// codes invalid). `x` weighs 1 for a value of 128 bits, or of 256 with
+/// AVX; `v` also for 512 with AVX-512; an indirect operand is weighed by
+/// its pointer (`spec/asm.md` §19).
 fn code_weight(cx: &FnCx<'_, X64>, operand: Option<Value>, code: u32) -> Option<i32> {
     let Some(value) = operand else { return Some(0) };
     let ty = value_ty(cx, value);
     let integer = matches!(cx.types().kind(ty), TypeKind::Int(_));
-    let wide = cx.types().size_in_bits_of(ty) == 128;
+    let bits = primitive_bits(cx, ty);
+    let features = cx.target.features.abi;
     match code {
-        X => wide.then_some(1),
+        X => (bits == 128 || (bits == 256 && features.avx)).then_some(1),
+        V512 => (bits == 512 && features.avx512).then_some(1),
         IMM_E | IMM_Z | IMM_I | IMM_J | IMM_K | IMM_L | IMM_M | IMM_N | IMM_O => {
             const_int(cx, value).filter(|&v| imm_fits(code, v)).map(|_| 3)
         }
@@ -352,9 +361,44 @@ fn code_weight(cx: &FnCx<'_, X64>, operand: Option<Value>, code: u32) -> Option<
     }
 }
 
-/// The alternative `llc` takes (`Constraints::choose`).
-fn choose(cx: &FnCx<'_, X64>, ops: &Ops, args: &[Value]) -> usize {
-    ops.choose(args, |operand, codes| {
+/// LLVM's `Type::getPrimitiveSizeInBits`: the bits of an integer, a
+/// floating-point type or a vector; 0 for a pointer or an aggregate.
+pub(super) fn primitive_bits(cx: &FnCx<'_, X64>, ty: TypeId) -> u64 {
+    match cx.types().kind(ty) {
+        TypeKind::Int(_)
+        | TypeKind::Half
+        | TypeKind::BFloat
+        | TypeKind::Float
+        | TypeKind::Double
+        | TypeKind::X86Fp80
+        | TypeKind::Fp128
+        | TypeKind::Vector { .. } => cx.types().size_in_bits_of(ty),
+        _ => 0,
+    }
+}
+
+/// The alternative `llc` takes (`Constraints::choose`) and LLVM's ties
+/// (`spec/asm.md` §19). `tys` are the operands' types
+/// ([`operand_types`]).
+fn choose(
+    cx: &FnCx<'_, X64>,
+    ops: &Ops,
+    args: &[Value],
+    tys: &[TypeId; MAX_OPS],
+) -> CgResult<(usize, constraints::Ties)> {
+    let ties = ops.ties().map_err(|e| match e {
+        constraints::AltError::Parse => refused(reason::constraint("tied")),
+        constraints::AltError::Count => CgError::unsupported(super::ALTERNATIVE),
+    })?;
+    if ties.count > 1 {
+        let vector = ops.ops().iter().filter_map(|op| {
+            let codes = op.alts[..usize::from(op.nalts)].iter().fold(0, |c, a| c | a.codes);
+            op.arg.filter(|_| codes & X != 0).map(|a| args[usize::from(a)])
+        });
+        let pairs = ties.pairs().map(|(o, i)| (tys[o], tys[usize::from(i)]));
+        super::check_alternatives(cx, vector, pairs)?;
+    }
+    let chosen = ops.choose(args, |operand, codes| {
         let mut w = None;
         let mut bits = codes;
         while bits != 0 {
@@ -363,7 +407,8 @@ fn choose(cx: &FnCx<'_, X64>, ops: &Ops, args: &[Value]) -> usize {
             w = w.max(code_weight(cx, operand, code));
         }
         w
-    })
+    });
+    Ok((chosen, ties))
 }
 
 /// The general registers in the order they are chosen.
@@ -398,6 +443,9 @@ struct Plan {
     values: [Option<FrameRef>; MAX_OPS],
     /// Every register the template may write.
     written: u64,
+    /// The inputs tied to an output in memory, whose values are not read
+    /// (§19), as bits by operand.
+    unread: u32,
 }
 
 fn has(set: u64, r: PReg) -> bool {
@@ -576,21 +624,22 @@ fn symbol_place(cx: &FnCx<'_, X64>, value: Option<Value>) -> CgResult<Place> {
 fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
     let site = inst.call().expect("checked by the caller");
     let args = site.args();
-    let chosen = choose(cx, ops, args);
     let tys = operand_types(cx, inst, site, ops)?;
+    let (chosen, ties) = choose(cx, ops, args, &tys)?;
     let mut plan = Plan {
         places: [None; MAX_OPS],
         tys,
         slots: [None; MAX_OPS],
         values: [None; MAX_OPS],
         written: ops.clobbers,
+        unread: 0,
     };
+    // §19: the outputs LLVM records as tied once the alternative is
+    // selected (an output with alternatives loses the tie of an input
+    // without them, and may then take its memory code).
     let mut tied_by = [false; MAX_OPS];
-    for op in ops.ops() {
-        let alt = op.alt(chosen);
-        if op.kind == Kind::Input && alt.codes & TIED != 0 {
-            tied_by[usize::from(alt.tied)] = true;
-        }
+    for (i, op) in ops.ops().iter().enumerate() {
+        tied_by[i] = op.kind == Kind::Output && ties.matching(i, chosen).is_some();
     }
     let mut wants = [None::<bool>; MAX_OPS];
     for (i, op) in ops.ops().iter().enumerate() {
@@ -649,7 +698,12 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
                     }
                     Some(Place::Reg(r))
                 }
-                Some(Place::Mem(r)) => Some(Place::Mem(r)),
+                // §19: an input tied to an output in memory is that
+                // memory; `llc` does not read its value.
+                Some(Place::Mem(r)) => {
+                    plan.unread |= 1 << i;
+                    Some(Place::Mem(r))
+                }
                 _ => return Err(refused(reason::constraint("tied"))),
             };
         }
@@ -673,7 +727,7 @@ fn decide(cx: &FnCx<'_, X64>, inst: Inst<'_>, ops: &Ops) -> CgResult<Plan> {
             }
             Some(Place::Mem(r)) => {
                 plan.written |= 1 << r.index();
-                if !op.indirect && op.kind == Kind::Input {
+                if !op.indirect && op.kind == Kind::Input && plan.unread & (1 << i) == 0 {
                     let value = args[usize::from(op.arg.expect("an input has an operand"))];
                     if cx.class_of(value) == Class::Mem
                         || (cx.class_of(value) == Class::Fpr && xmm_bytes(cx, ty).is_none())
@@ -933,7 +987,9 @@ fn emit<'a>(
     for i in 0..ops.len {
         let op = ops.list[i];
         let Some(a) = op.arg else { continue };
-        if !matches!(plan.places[i], Some(Place::Reg(_) | Place::Mem(_))) {
+        if !matches!(plan.places[i], Some(Place::Reg(_) | Place::Mem(_)))
+            || plan.unread & (1 << i) != 0
+        {
             continue;
         }
         let value = args[usize::from(a)];

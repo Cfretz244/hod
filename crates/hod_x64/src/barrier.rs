@@ -47,8 +47,13 @@
 //! every general code of an integer operand weighs the same (0,
 //! `CW_SpecificReg`), so integers keep the first alternative; a pointer
 //! or floating-point operand takes the generic weights (`m` 2, `r`
-//! invalid). Codes of one alternative (`imr`) are LLVM's
-//! `ComputeConstraintToUse`: a register class when the output is tied.
+//! invalid; `x` weighs 1 for 128 bits, or 256 with AVX; an indirect
+//! operand is weighed by its pointer). Codes of one alternative (`imr`)
+//! are LLVM's `ComputeConstraintToUse`: a register class when the output
+//! is tied, memory otherwise. Whether an output is tied is LLVM's
+//! bookkeeping (`spec/asm.md` §19): an output with alternatives is tied
+//! only by an input with alternatives, so in `=*imr|x,0` (clang's and
+//! kiln's `"+g,x"`) the output is memory and the input is not stored.
 
 use hod_cg::{CgResult, Class, FnCx};
 use hod_ir::{Const, Inst, MemFlags, Opcode, TypeId, TypeKind, Value, ValueKind};
@@ -81,10 +86,42 @@ pub const OPERAND: &str = "x64:inline-asm-operand";
 pub const BUNDLE: &str = "x64:inline-asm-bundle";
 /// A `callbr` whose template assembles to something.
 pub const INLINE_ASM: &str = "x64:inline-asm";
+/// A choice among alternatives (`r|m`) hod did not measure
+/// (`spec/asm.md` §19): an operand with more than one alternative but
+/// fewer than another operand; a vector operand of 256 bits weighed by
+/// `x` or `v` while AVX is assumed rather than known, or of 512 bits
+/// while AVX-512's conventions are open; a tie some alternative puts in
+/// effect between operands of different types.
+pub const ALTERNATIVE: &str = "x64:inline-asm-alternative";
 
 /// Every name this module refuses with.
 pub const UNSUPPORTED: &[&str] =
-    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, INLINE_ASM];
+    &[OUTPUT, OUTPUTS, CONSTRAINT, CLOBBER, OPERAND, BUNDLE, INLINE_ASM, ALTERNATIVE];
+
+/// What makes a choice among alternatives one hod did not measure
+/// ([`ALTERNATIVE`]): `vector` are the operands an `x` or `v` code
+/// weighs, `tied` the (output, input) types of each tie some alternative
+/// puts in effect (`Ties::pairs`). Called only when some operand has
+/// alternatives.
+///
+/// # Errors
+/// [`ALTERNATIVE`].
+pub(crate) fn check_alternatives(
+    cx: &FnCx<'_, X64>,
+    mut vector: impl Iterator<Item = Value>,
+    mut tied: impl Iterator<Item = (TypeId, TypeId)>,
+) -> CgResult<()> {
+    let features = cx.target.features.abi;
+    let open = |value: Value| match template::primitive_bits(cx, value_ty(cx, value)) {
+        256 => features.assumed,
+        512 => features.avx512 && !features.avx512_known,
+        _ => false,
+    };
+    if vector.any(open) || tied.any(|(output, input)| output != input) {
+        return unsupported(ALTERNATIVE);
+    }
+    Ok(())
+}
 
 /// The most operands (constraints that are not clobbers) and
 /// alternatives kept.
@@ -315,9 +352,12 @@ fn code_weight(cx: &FnCx<'_, X64>, operand: Option<Value>, code: u16) -> Option<
     let kind = cx.types().kind(ty);
     let integer = matches!(kind, TypeKind::Int(_));
     match code {
-        XMM => (matches!(kind, TypeKind::Int(_) | TypeKind::Fp128 | TypeKind::Vector { .. })
-            && cx.types().size_in_bits_of(ty) == 128)
-            .then_some(1),
+        // §19: 128 bits, or 256 with AVX (an indirect operand is weighed
+        // by its pointer: never).
+        XMM => {
+            let bits = template::primitive_bits(cx, ty);
+            (bits == 128 || (bits == 256 && cx.target.features.abi.avx)).then_some(1)
+        }
         SMALL => {
             let small = match value.kind() {
                 ValueKind::Const(id) => {
@@ -367,6 +407,50 @@ enum Effect {
     },
 }
 
+/// LLVM's ties of `ops` (`hod_cg::asm_constraints::Ties`, `spec/asm.md`
+/// §19), and the refusals of a choice hod did not measure.
+fn ties(
+    cx: &FnCx<'_, X64>,
+    site: hod_ir::CallSite<'_>,
+    result: TypeId,
+    ops: &Ops,
+) -> CgResult<hod_cg::asm_constraints::Ties> {
+    use hod_cg::asm_constraints::{AltError, TieShape, Ties};
+    let mut shapes = [TieShape::default(); MAX_OPS];
+    for (shape, op) in shapes.iter_mut().zip(&ops.list[..ops.len]) {
+        shape.output = op.kind == Kind::Output;
+        shape.nalts = op.nalts;
+        for (k, alt) in op.alts[..usize::from(op.nalts)].iter().enumerate() {
+            shape.tied[k] = (alt.codes & TIED != 0).then_some(alt.tied);
+        }
+    }
+    let ties = Ties::of(&shapes[..ops.len]).map_err(|e| {
+        hod_cg::CgError::unsupported(match e {
+            AltError::Parse => CONSTRAINT,
+            AltError::Count => ALTERNATIVE,
+        })
+    })?;
+    if ties.count > 1 {
+        let args = site.args();
+        let ty_of = |op: &Op| match (op.indirect, op.arg) {
+            (true, Some(a)) => site.arg_attrs(usize::from(a)).mem_type().unwrap_or(TypeId::VOID),
+            (false, Some(a)) => value_ty(cx, args[usize::from(a)]),
+            (_, None) => TypeId::VOID,
+        };
+        let vector = ops.list[..ops.len].iter().filter_map(|op| {
+            let codes = op.alts[..usize::from(op.nalts)].iter().fold(0, |c, a| c | a.codes);
+            op.arg.filter(|_| codes & XMM != 0).map(|a| args[usize::from(a)])
+        });
+        let pairs = ties.pairs().map(|(o, i)| {
+            let out = &ops.list[o];
+            let out_ty = if out.indirect { ty_of(out) } else { result };
+            (out_ty, ty_of(&ops.list[usize::from(i)]))
+        });
+        check_alternatives(cx, vector, pairs)?;
+    }
+    Ok(ties)
+}
+
 /// The alternative LLVM takes: the first of the greatest total weight,
 /// or the first when every one is invalid.
 fn choose(cx: &FnCx<'_, X64>, ops: &Ops, args: &[Value]) -> usize {
@@ -402,9 +486,11 @@ fn effect<'a>(
 ) -> CgResult<Effect> {
     let args = site.args();
     let value_of = |op: &Op| op.arg.map(|a| args[usize::from(a)]);
+    let ties = ties(cx, site, inst.ty(), ops)?;
     let chosen = choose(cx, ops, args);
     let alt_of = |op: &Op| op.alts[if chosen < usize::from(op.nalts) { chosen } else { 0 }];
-    // The input tied to each output, under that alternative.
+    // The input tied to each output by its digit, under that alternative
+    // (it is placed where the output is).
     let mut tied_to: [Option<u8>; MAX_OPS] = [None; MAX_OPS];
     for (index, op) in ops.list[..ops.len].iter().enumerate() {
         let alt = alt_of(op);
@@ -431,12 +517,16 @@ fn effect<'a>(
         let register = alt.codes & (R | XMM | SPEC | XX | CLASS) != 0;
         let memory = alt.codes & M != 0;
         let input = tied_to[index].map(|i| &ops.list[usize::from(i)]);
+        // §19: whether LLVM records the output as tied once the
+        // alternative is selected; an untied one takes its memory code.
+        let kept = ties.matching(index, chosen).is_some();
         let this = if op.indirect {
-            // `llc` takes memory for an output of memory codes only, and
-            // a register for a tied one with a register code.
+            // `llc` takes memory for an output of memory codes that is not
+            // tied or has no register code, and a register otherwise; an
+            // input in the output's register is stored through it.
             let ptr = value_of(op).expect("an indirect output has an operand");
             match input {
-                _ if memory && !register => Effect::None,
+                _ if memory && (!register || !kept) => Effect::None,
                 Some(input) if register => {
                     let value = value_of(input).expect("an input has an operand");
                     if input.indirect {
@@ -455,7 +545,7 @@ fn effect<'a>(
                 _ => return unsupported(OUTPUT),
             }
         } else {
-            let Some(input) = input.filter(|_| register && !memory) else {
+            let Some(input) = input.filter(|_| register && (!memory || kept)) else {
                 return unsupported(OUTPUT);
             };
             let value = value_of(input).expect("an input has an operand");

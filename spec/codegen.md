@@ -4516,10 +4516,12 @@ scalable types stay refused as before.
 
 Evidence: `spec/landed/codegen/WP-205.md`.
 
-#### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208)
+#### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208, WP-220, WP-224)
 
 Design: `docs/design/0007-avx512.md`. Evidence:
-`spec/landed/codegen/WP-208.md`; tests `crates/hod_x64/tests/x86_avx512.rs`.
+`spec/landed/codegen/WP-208.md`, `spec/landed/codegen/WP-220.md`,
+`spec/landed/codegen/WP-224.md`; tests
+`crates/hod_x64/tests/x86_avx512.rs`.
 
 1. **The masked memory intrinsics** (generic; clang 19 and 22 write
    them for the masked loads and stores, expand loads and compress
@@ -4644,6 +4646,94 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    (`vzeroupper_with_zmm_where_llc_writes_it`). With
    `HOD_X64_AVX512_RUNNER` the grid also runs, hod against `llc` both
    ways.
+4. **VBMI** (WP-220; `crates/hod_x64/src/x86/avx512.rs`, matrix rows
+   `never(X64_ONLY)` / `on(X86_SSE)`, note `AVX-512 (WP-220)`):
+   `avx512.permvar.qi` (`vpermb`, the index first as `permvar` in (2)),
+   `avx512.vpermi2var.qi` (`vpermt2b` into `a`) and
+   `avx512.pmultishift.qb` (`vpmultishiftqb`), at 128, 256 and 512 bits,
+   under `avx512vbmi` (which needs `avx512bw`; `features::Avx512::Vbmi`),
+   with the gates, operands and refusals of (2). `avx512vbmi2` alone does
+   not enable them.
+5. **GFNI at 512 bits** (WP-220; same file and rows):
+   `vgf2p8affineqb.512` (its immediate an `i8`) and `vgf2p8mulb.512`,
+   EVEX, under `gfni` with `avx512f` (`features::Avx512::Gfni`: the last
+   `gfni` item and `avx512f` both on, `sse2` not turned off after). The
+   128- and 256-bit forms stay §5.6.33's. The encoder follows `llvm-mc`
+   22 and the SDM (Full tuple, `N` 8) for a broadcast operand's
+   `disp8` of `vgf2p8affineqb`; `llvm-mc` 19 scales it by 1. hod's
+   lowering writes no broadcast operand, so no object depends on it.
+6. **VAES** (WP-220): `aesni.aes{enc,enclast,dec,declast}.512`, EVEX
+   (`avx512.rs`, `features::Avx512::Vaes`: `vaes` with `avx512f`, not
+   after `-aes`, `-avx2` or what turns AVX off), and the same four names
+   at `.256` in their VEX form (`crates/hod_x64/src/x86/ext.rs`,
+   `Need::Vaes`, note `VAES (WP-220)`), which `llc` writes also under
+   AVX-512.
+7. **VPCLMULQDQ** (WP-220): `pclmulqdq.512`, EVEX (`avx512.rs`,
+   `features::Avx512::Vpclmulqdq`: `vpclmulqdq` with `avx512f`, not
+   after `-pclmul` or what turns AVX off; the immediate an `i8`), and
+   `pclmulqdq.256` in its VEX form (`ext.rs`, `Need::Vpclmulqdq`, note
+   `VPCLMULQDQ (WP-220)`).
+8. **BF16** (WP-220; `avx512.rs`): `avx512bf16.cvtne2ps2bf16` at 128,
+   256 and 512 bits (`vcvtne2ps2bf16`), `avx512bf16.cvtneps2bf16.512` and
+   `vcvtneps2bf16128`/`256` (`vcvtneps2bf16`, EVEX), under `avx512bf16`
+   (which needs `avx512bw`), `avx512vl` too below 512 bits. The rows take
+   a vector of `bfloat` (and of `half`) as one of 16-bit lanes.
+   `vcvtneps2bf16128`/`256` under AVX-NE-CONVERT alone (whose VEX form
+   `llc` prefers when it is present) are refused by their names; a
+   `mask.compress` of `bfloat` or `half` lanes is
+   `x64:x86-intrinsic-signature`.
+9. **FP16** (WP-220; `avx512.rs`): the 39 `avx512fp16.*` names of the
+   census at 128, 256 and 512 bits: `fpclass.ph` (`vfpclassph` into
+   `k0`; its result moves with `kmovd` for 32 lanes), `mask.getexp.ph`,
+   `mask.rcp.ph`, `mask.rsqrt.ph`, `mask.rndscale.ph`, `mask.vcvtpd2ph`,
+   `mask.vcvtph2pd` (which reads a quarter of its source),
+   `mask.vcvtph2w`, `mask.vcvttph2w`, `mask.vcvttph2uw`, `max.ph`,
+   `min.ph` (`{sae}` at 512 bits as in (2)) and `vfmaddsub.ph`
+   (`vfmaddsub213ph` into `b`; `{er}` at 512 bits), in maps 5 and 6.
+   Under `avx512fp16` (which needs BW, DQ and VL), refused by name
+   otherwise. Only the intrinsics: plain `half` IR and its conventions
+   are unchanged.
+10. **The masked gathers and scatters** (WP-224;
+    `crates/hod_x64/src/x86/avx512/vsib.rs`): the 48 names
+    `mask.gather.{dpd,dps,qpd,qps,dpq,dpi,qpq,qpi}.512`,
+    `mask.gather3{div,siv}{2,4,8}.*` (16), `mask.scatter.*.512` (8) and
+    `mask.scatter{div,siv}{2,4,8}.*` (16), the census's 16 among them:
+    `v[p]gather{d,q}{d,q,ps,pd}` (66.0F38 90 to 93) and
+    `v[p]scatter{d,q}{d,q,ps,pd}` (A0 to A3), EVEX with a VSIB operand
+    (`hod_mc_x64::evex::egather`/`escatter`): the index register's bit
+    3 in `X`, its bit 4 in `V'` (`zmm16` to `zmm31`), `vvvv` 1111, a SIB
+    byte always, `disp8*N` with N the element's bytes. The length is the
+    wider operand's (a `d` index with 64-bit elements is half as long, a
+    `q` index with 32-bit elements moves half a register of data). The
+    opmask is never `k0` and has no `{z}`; a gather's destination is
+    never its index register (both checked preconditions: the processor
+    raises #UD, `llvm-mc` only warns). The intrinsic's lanes are the
+    fewer of its data's and its indices'; a gather of fewer lanes clears
+    the rest of its register.
+    Lowering: the mask is moved into `k1` before each instruction (from
+    its register, or a constant through `r11d`), as the instruction
+    clears its opmask and a mask used again must be a copy; the indices
+    go to `zmm17`, a gather's pass-through to `zmm16` (`vpxord` for a
+    zero or undefined one), a scatter's data to `zmm18`; the base is the
+    pointer's register with displacement 0 and the intrinsic's scale.
+    The scale must be a constant 1, 2, 4 or 8, else
+    `x64:x86-intrinsic-signature`. Under `avx512f`, `avx512vl` too below
+    512 bits, and not with `evex512` off at 512 bits, refused by the
+    intrinsic's own name otherwise (`llc` 19 and 22 also widen the 128-
+    and 256-bit forms under `avx512f` alone; hod does not).
+
+   Evidence for (4) to (10) is (2)'s: the encoder against `llvm-mc` 19
+   and 22 (L1), the dataflow comparison against `llc -O0` 19 and 22,
+   plain and under every stress option, with its mutation checks, and
+   the refusal rows (`spec/landed/codegen/WP-220.md`,
+   `spec/landed/codegen/WP-224.md`). For (10) the comparison follows
+   memory reached through a vector of indices: each gathered lane is a
+   node over the base, the index, the scale, the displacement, the
+   element and index sizes and (under a mask bit that is not constant)
+   the bit and the pass-through; each scattered lane an ordered event
+   alike; and the opmask is cleared. The 256-bit VAES
+   forms also execute under `qemu-x86_64 -cpu max` (`x86_ext`); QEMU's
+   model has neither GFNI nor VPCLMULQDQ.
 
    **Evidence by name.**
 
@@ -4652,6 +4742,10 @@ Design: `docs/design/0007-avx512.md`. Evidence:
    | `llvm.masked.load`, `.store`, `.expandload`, `.compressstore` (1) | yes (`qemu-x86_64`) | |
    | the 174 `llvm.x86.avx512.*` names of (2), F, VL, BW, DQ and the VBMI2 compresses | | yes, until an AVX-512 host runs the command above |
    | `zmm` arguments and results, masks by value (3) | | yes (conventions against `llc`'s MIR; the bytes of `zmm` and `ymm`-pair moves by dataflow), until an AVX-512 host runs `abi::zmm_grid` with `HOD_X64_AVX512_RUNNER` |
+   | the 61 EVEX names of (4) to (9): VBMI 9, GFNI 2, VAES 4, VPCLMULQDQ 1, BF16 6, FP16 39 | | yes, until an AVX-512 host runs the command above |
+   | `aesni.aes*.256` (6) | yes (`qemu-x86_64 -cpu max`, `x86_ext`) | |
+   | `pclmulqdq.256` (7) | | yes (QEMU's model lacks VPCLMULQDQ) |
+   | the 48 gathers and scatters of (10) | | yes, until an AVX-512 host runs `vsib_names_agree_with_llc_on_hardware` with `HOD_X64_AVX512_RUNNER` |
 
 #### 5.6.36 The large code model (WP-209)
 

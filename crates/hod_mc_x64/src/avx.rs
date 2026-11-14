@@ -1,5 +1,5 @@
 //! VEX-encoded instructions (AVX, AVX2, FMA, F16C, and the VEX forms of
-//! GFNI) on `xmm` (128 bits, `VEX.L` 0) and `ymm` (256 bits, `VEX.L` 1)
+//! GFNI, AES/VAES and PCLMULQDQ/VPCLMULQDQ) on `xmm` (128 bits, `VEX.L` 0) and `ymm` (256 bits, `VEX.L` 1)
 //! operands: what the x86 target intrinsics past SSSE3 need (WP-202,
 //! `spec/mc-x64.md` "VEX").
 //!
@@ -126,6 +126,12 @@ vex_family! {
         Psllvd = (2, 1, false, 0x47, XY, "vpsllvd"),
         Psllvq = (2, 1, true, 0x47, XY, "vpsllvq"),
         Gf2p8mulb = (2, 1, false, 0xcf, XY, "vgf2p8mulb"),
+        /// One AES round on each 128-bit lane (256 bits: the VAES
+        /// extension, WP-220).
+        Aesenc = (2, 1, false, 0xdc, XY, "vaesenc"),
+        Aesenclast = (2, 1, false, 0xdd, XY, "vaesenclast"),
+        Aesdec = (2, 1, false, 0xde, XY, "vaesdec"),
+        Aesdeclast = (2, 1, false, 0xdf, XY, "vaesdeclast"),
         Packsswb = (1, 1, false, 0x63, XY, "vpacksswb"),
         Packuswb = (1, 1, false, 0x67, XY, "vpackuswb"),
         Packssdw = (1, 1, false, 0x6b, XY, "vpackssdw"),

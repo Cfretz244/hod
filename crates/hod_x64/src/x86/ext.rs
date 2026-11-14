@@ -89,6 +89,11 @@ pub enum Need {
     Gfni,
     /// `gfni` and `avx`: the 256-bit GFNI forms.
     GfniAvx,
+    /// `vaes` (which implies AES and AVX2): the 256-bit AES forms
+    /// (WP-220).
+    Vaes,
+    /// `vpclmulqdq` (which implies PCLMUL and AVX): the 256-bit form.
+    Vpclmulqdq,
 }
 
 /// Whether item `name` (without its sign) turned off turns SSE2 off.
@@ -121,6 +126,8 @@ impl Need {
             Need::Fma => name == b"fma" || avx512(name),
             Need::F16c => name == b"f16c" || avx512(name),
             Need::Gfni | Need::GfniAvx => name == b"gfni",
+            Need::Vaes => name == b"vaes",
+            Need::Vpclmulqdq => name == b"vpclmulqdq",
         }
     }
 
@@ -138,6 +145,12 @@ impl Need {
             Need::Pclmul => name == b"pclmul" || no_sse2(name),
             Need::Sha => name == b"sha" || no_sse2(name),
             Need::Gfni | Need::GfniAvx => name == b"gfni" || no_sse2(name),
+            Need::Vaes => {
+                matches!(name, b"vaes" | b"aes" | b"avx2") || super::disables(name, AVX_RANK)
+            }
+            Need::Vpclmulqdq => {
+                matches!(name, b"vpclmulqdq" | b"pclmul") || super::disables(name, AVX_RANK)
+            }
         }
     }
 }
@@ -1086,6 +1099,27 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
         I::X86Vgf2p8mulb256 => {
             ("intrinsic:llvm.x86.vgf2p8mulb.256", Y, &[Y, Y], Need::GfniAvx, v3(V3::Gf2p8mulb))
         }
+        // VAES and VPCLMULQDQ at 256 bits (WP-220): VEX, as `llc` writes
+        // them also with AVX-512.
+        I::X86AesniAesenc256 => {
+            ("intrinsic:llvm.x86.aesni.aesenc.256", Y, &[Y, Y], Need::Vaes, v3(V3::Aesenc))
+        }
+        I::X86AesniAesenclast256 => {
+            ("intrinsic:llvm.x86.aesni.aesenclast.256", Y, &[Y, Y], Need::Vaes, v3(V3::Aesenclast))
+        }
+        I::X86AesniAesdec256 => {
+            ("intrinsic:llvm.x86.aesni.aesdec.256", Y, &[Y, Y], Need::Vaes, v3(V3::Aesdec))
+        }
+        I::X86AesniAesdeclast256 => {
+            ("intrinsic:llvm.x86.aesni.aesdeclast.256", Y, &[Y, Y], Need::Vaes, v3(V3::Aesdeclast))
+        }
+        I::X86Pclmulqdq256 => (
+            "intrinsic:llvm.x86.pclmulqdq.256",
+            Y,
+            &[Y, Y, I8],
+            Need::Vpclmulqdq,
+            Op::V3Imm(V3Imm::Pclmulqdq),
+        ),
         I::X86Avx2GatherDD => (
             "intrinsic:llvm.x86.avx2.gather.d.d",
             X,

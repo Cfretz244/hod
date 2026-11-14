@@ -2,7 +2,9 @@
 //! `docs/design/0007-avx512.md`): the `llvm.x86.avx512.*` names clang 19
 //! and 22 emit at `-O0` for the F, VL, BW and DQ functions of the
 //! AVX-512 headers that are not plain IR (the census of design 0007
-//! §5.1), and the VBMI2 compresses that share F's overloaded name.
+//! §5.1), and the VBMI2 compresses that share F's overloaded name; since
+//! WP-220 also the VBMI, BF16 and FP16 names and the EVEX (512-bit) forms
+//! of GFNI, VAES and VPCLMULQDQ.
 //!
 //! **Owner: WP-208.** Tests: `tests/x86_avx512.rs`. Spec: §5.6.35.
 //!
@@ -36,11 +38,13 @@
 //!   width less one for an arithmetic one; a variable count goes through
 //!   `xmm15` (`movd`) to the shift by a vector count;
 //! - `fpclass` writes `k0` and its result (`<N x i1>`, class `Gpr`) is
-//!   `kmovw`'s zero-extension.
+//!   the zero-extension of `kmovw` (`kmovd` for more than 16 lanes).
 //!
 //! The upper halves of `zmm0`..`zmm15` are not cleared afterwards
 //! (`vzeroupper`): they hold no value of hod's, and a later legacy SSE
 //! instruction is only slower.
+//!
+//! The gathers and scatters (WP-224) are in [`vsib`].
 
 use hod_cg::{CgResult, Class, FnCx};
 use hod_ir::{FnStr, Inst, Intrinsic, SymbolKind, TypeId, TypeKind, Value, ValueKind};
@@ -54,6 +58,8 @@ use crate::common::{R11, XMM15, deferred_first, frame_inst, gp, put, unsupported
 use crate::features::{Avx512, evex512_off};
 use crate::intrinsic::const_int;
 use crate::target::X64;
+
+pub mod vsib;
 
 /// Where an EVEX operand order differs from the intrinsic's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -101,7 +107,7 @@ type Row = (&'static str, Avx512, &'static str, Op);
 
 #[allow(clippy::too_many_lines, reason = "one arm per name")]
 fn row(which: Intrinsic<'_>) -> Option<Row> {
-    use Avx512::{Bw, Dq, F};
+    use Avx512::{Bf16, Bw, Dq, F, Fp16, Gfni, Vaes, Vbmi, Vpclmulqdq};
     use Intrinsic as I;
     Some(match which {
         I::X86Avx512MaskGetexpPs512 => {
@@ -671,6 +677,266 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
         I::X86Avx512MaskCvttps2uqq512 => {
             ("intrinsic:llvm.x86.avx512.mask.cvttps2uqq.512", Dq, "vpms", Op::E2(E2::Cvttps2uqq))
         }
+        // VBMI (WP-220).
+        I::X86Avx512PermvarQi128 => {
+            ("intrinsic:llvm.x86.avx512.permvar.qi.128", Vbmi, "vv", Op::E3(E3::Permb, Form::Swap))
+        }
+        I::X86Avx512PermvarQi256 => {
+            ("intrinsic:llvm.x86.avx512.permvar.qi.256", Vbmi, "vv", Op::E3(E3::Permb, Form::Swap))
+        }
+        I::X86Avx512PermvarQi512 => {
+            ("intrinsic:llvm.x86.avx512.permvar.qi.512", Vbmi, "vv", Op::E3(E3::Permb, Form::Swap))
+        }
+        I::X86Avx512Vpermi2varQi128 => (
+            "intrinsic:llvm.x86.avx512.vpermi2var.qi.128",
+            Vbmi,
+            "vvv",
+            Op::E3(E3::Permt2b, PERMT2),
+        ),
+        I::X86Avx512Vpermi2varQi256 => (
+            "intrinsic:llvm.x86.avx512.vpermi2var.qi.256",
+            Vbmi,
+            "vvv",
+            Op::E3(E3::Permt2b, PERMT2),
+        ),
+        I::X86Avx512Vpermi2varQi512 => (
+            "intrinsic:llvm.x86.avx512.vpermi2var.qi.512",
+            Vbmi,
+            "vvv",
+            Op::E3(E3::Permt2b, PERMT2),
+        ),
+        I::X86Avx512PmultishiftQb128 => (
+            "intrinsic:llvm.x86.avx512.pmultishift.qb.128",
+            Vbmi,
+            "vv",
+            Op::E3(E3::Pmultishiftqb, Form::Plain),
+        ),
+        I::X86Avx512PmultishiftQb256 => (
+            "intrinsic:llvm.x86.avx512.pmultishift.qb.256",
+            Vbmi,
+            "vv",
+            Op::E3(E3::Pmultishiftqb, Form::Plain),
+        ),
+        I::X86Avx512PmultishiftQb512 => (
+            "intrinsic:llvm.x86.avx512.pmultishift.qb.512",
+            Vbmi,
+            "vv",
+            Op::E3(E3::Pmultishiftqb, Form::Plain),
+        ),
+        // GFNI, VAES and VPCLMULQDQ at 512 bits (WP-220).
+        I::X86Vgf2p8affineqb512 => (
+            "intrinsic:llvm.x86.vgf2p8affineqb.512",
+            Gfni,
+            "vvi",
+            Op::E3Imm(E3Imm::Gf2p8affineqb, Form::Plain),
+        ),
+        I::X86Vgf2p8mulb512 => {
+            ("intrinsic:llvm.x86.vgf2p8mulb.512", Gfni, "vv", Op::E3(E3::Gf2p8mulb, Form::Plain))
+        }
+        I::X86AesniAesenc512 => {
+            ("intrinsic:llvm.x86.aesni.aesenc.512", Vaes, "vv", Op::E3(E3::Aesenc, Form::Plain))
+        }
+        I::X86AesniAesenclast512 => (
+            "intrinsic:llvm.x86.aesni.aesenclast.512",
+            Vaes,
+            "vv",
+            Op::E3(E3::Aesenclast, Form::Plain),
+        ),
+        I::X86AesniAesdec512 => {
+            ("intrinsic:llvm.x86.aesni.aesdec.512", Vaes, "vv", Op::E3(E3::Aesdec, Form::Plain))
+        }
+        I::X86AesniAesdeclast512 => (
+            "intrinsic:llvm.x86.aesni.aesdeclast.512",
+            Vaes,
+            "vv",
+            Op::E3(E3::Aesdeclast, Form::Plain),
+        ),
+        I::X86Pclmulqdq512 => (
+            "intrinsic:llvm.x86.pclmulqdq.512",
+            Vpclmulqdq,
+            "vvi",
+            Op::E3Imm(E3Imm::Pclmulqdq, Form::Plain),
+        ),
+        // BF16 (WP-220). `vcvtneps2bf16` at 128 and 256 bits is also
+        // AVX-NE-CONVERT's (VEX): that feature alone is not taken.
+        I::X86Avx512bf16Cvtne2ps2bf16128 => (
+            "intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.128",
+            Bf16,
+            "vv",
+            Op::E3(E3::Cvtne2ps2bf16, Form::Plain),
+        ),
+        I::X86Avx512bf16Cvtne2ps2bf16256 => (
+            "intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.256",
+            Bf16,
+            "vv",
+            Op::E3(E3::Cvtne2ps2bf16, Form::Plain),
+        ),
+        I::X86Avx512bf16Cvtne2ps2bf16512 => (
+            "intrinsic:llvm.x86.avx512bf16.cvtne2ps2bf16.512",
+            Bf16,
+            "vv",
+            Op::E3(E3::Cvtne2ps2bf16, Form::Plain),
+        ),
+        I::X86Avx512bf16Cvtneps2bf16512 => {
+            ("intrinsic:llvm.x86.avx512bf16.cvtneps2bf16.512", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
+        }
+        I::X86Vcvtneps2bf16128 => {
+            ("intrinsic:llvm.x86.vcvtneps2bf16128", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
+        }
+        I::X86Vcvtneps2bf16256 => {
+            ("intrinsic:llvm.x86.vcvtneps2bf16256", Bf16, "v", Op::E2(E2::Cvtneps2bf16))
+        }
+        // FP16 (WP-220): the names of the census only.
+        I::X86Avx512fp16FpclassPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.fpclass.ph.128", Fp16, "vi", Op::Cmp(ECmp::Fpclassph))
+        }
+        I::X86Avx512fp16FpclassPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.fpclass.ph.256", Fp16, "vi", Op::Cmp(ECmp::Fpclassph))
+        }
+        I::X86Avx512fp16FpclassPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.fpclass.ph.512", Fp16, "vi", Op::Cmp(ECmp::Fpclassph))
+        }
+        I::X86Avx512fp16MaskGetexpPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.128", Fp16, "vpm", Op::E2(E2::Getexpph))
+        }
+        I::X86Avx512fp16MaskGetexpPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.256", Fp16, "vpm", Op::E2(E2::Getexpph))
+        }
+        I::X86Avx512fp16MaskGetexpPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.getexp.ph.512", Fp16, "vpms", Op::E2(E2::Getexpph))
+        }
+        I::X86Avx512fp16MaskRcpPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.128", Fp16, "vpm", Op::E2(E2::Rcpph))
+        }
+        I::X86Avx512fp16MaskRcpPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.256", Fp16, "vpm", Op::E2(E2::Rcpph))
+        }
+        I::X86Avx512fp16MaskRcpPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rcp.ph.512", Fp16, "vpm", Op::E2(E2::Rcpph))
+        }
+        I::X86Avx512fp16MaskRndscalePh128 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.128",
+            Fp16,
+            "vipm",
+            Op::E2Imm(E2Imm::Rndscaleph),
+        ),
+        I::X86Avx512fp16MaskRndscalePh256 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.256",
+            Fp16,
+            "vipm",
+            Op::E2Imm(E2Imm::Rndscaleph),
+        ),
+        I::X86Avx512fp16MaskRndscalePh512 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.rndscale.ph.512",
+            Fp16,
+            "vipms",
+            Op::E2Imm(E2Imm::Rndscaleph),
+        ),
+        I::X86Avx512fp16MaskRsqrtPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.128", Fp16, "vpm", Op::E2(E2::Rsqrtph))
+        }
+        I::X86Avx512fp16MaskRsqrtPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.256", Fp16, "vpm", Op::E2(E2::Rsqrtph))
+        }
+        I::X86Avx512fp16MaskRsqrtPh512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.rsqrt.ph.512", Fp16, "vpm", Op::E2(E2::Rsqrtph))
+        }
+        I::X86Avx512fp16MaskVcvtpd2ph128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.128", Fp16, "vpm", Op::E2(E2::Cvtpd2ph))
+        }
+        I::X86Avx512fp16MaskVcvtpd2ph256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.256", Fp16, "vpm", Op::E2(E2::Cvtpd2ph))
+        }
+        I::X86Avx512fp16MaskVcvtpd2ph512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtpd2ph.512", Fp16, "vpme", Op::E2(E2::Cvtpd2ph))
+        }
+        I::X86Avx512fp16MaskVcvtph2pd128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.128", Fp16, "vpm", Op::E2(E2::Cvtph2pd))
+        }
+        I::X86Avx512fp16MaskVcvtph2pd256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.256", Fp16, "vpm", Op::E2(E2::Cvtph2pd))
+        }
+        I::X86Avx512fp16MaskVcvtph2pd512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2pd.512", Fp16, "vpms", Op::E2(E2::Cvtph2pd))
+        }
+        I::X86Avx512fp16MaskVcvtph2w128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.128", Fp16, "vpm", Op::E2(E2::Cvtph2w))
+        }
+        I::X86Avx512fp16MaskVcvtph2w256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.256", Fp16, "vpm", Op::E2(E2::Cvtph2w))
+        }
+        I::X86Avx512fp16MaskVcvtph2w512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvtph2w.512", Fp16, "vpme", Op::E2(E2::Cvtph2w))
+        }
+        I::X86Avx512fp16MaskVcvttph2uw128 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.128",
+            Fp16,
+            "vpm",
+            Op::E2(E2::Cvttph2uw),
+        ),
+        I::X86Avx512fp16MaskVcvttph2uw256 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.256",
+            Fp16,
+            "vpm",
+            Op::E2(E2::Cvttph2uw),
+        ),
+        I::X86Avx512fp16MaskVcvttph2uw512 => (
+            "intrinsic:llvm.x86.avx512fp16.mask.vcvttph2uw.512",
+            Fp16,
+            "vpms",
+            Op::E2(E2::Cvttph2uw),
+        ),
+        I::X86Avx512fp16MaskVcvttph2w128 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.128", Fp16, "vpm", Op::E2(E2::Cvttph2w))
+        }
+        I::X86Avx512fp16MaskVcvttph2w256 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.256", Fp16, "vpm", Op::E2(E2::Cvttph2w))
+        }
+        I::X86Avx512fp16MaskVcvttph2w512 => {
+            ("intrinsic:llvm.x86.avx512fp16.mask.vcvttph2w.512", Fp16, "vpms", Op::E2(E2::Cvttph2w))
+        }
+        I::X86Avx512fp16MaxPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.max.ph.128", Fp16, "vv", Op::E3(E3::Maxph, Form::Plain))
+        }
+        I::X86Avx512fp16MaxPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.max.ph.256", Fp16, "vv", Op::E3(E3::Maxph, Form::Plain))
+        }
+        I::X86Avx512fp16MaxPh512 => (
+            "intrinsic:llvm.x86.avx512fp16.max.ph.512",
+            Fp16,
+            "vvs",
+            Op::E3(E3::Maxph, Form::Plain),
+        ),
+        I::X86Avx512fp16MinPh128 => {
+            ("intrinsic:llvm.x86.avx512fp16.min.ph.128", Fp16, "vv", Op::E3(E3::Minph, Form::Plain))
+        }
+        I::X86Avx512fp16MinPh256 => {
+            ("intrinsic:llvm.x86.avx512fp16.min.ph.256", Fp16, "vv", Op::E3(E3::Minph, Form::Plain))
+        }
+        I::X86Avx512fp16MinPh512 => (
+            "intrinsic:llvm.x86.avx512fp16.min.ph.512",
+            Fp16,
+            "vvs",
+            Op::E3(E3::Minph, Form::Plain),
+        ),
+        I::X86Avx512fp16VfmaddsubPh128 => (
+            "intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.128",
+            Fp16,
+            "vvv",
+            Op::E3(E3::Vfmaddsub213ph, FMA213),
+        ),
+        I::X86Avx512fp16VfmaddsubPh256 => (
+            "intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.256",
+            Fp16,
+            "vvv",
+            Op::E3(E3::Vfmaddsub213ph, FMA213),
+        ),
+        I::X86Avx512fp16VfmaddsubPh512 => (
+            "intrinsic:llvm.x86.avx512fp16.vfmaddsub.ph.512",
+            Fp16,
+            "vvve",
+            Op::E3(E3::Vfmaddsub213ph, FMA213),
+        ),
         _ => return None,
     })
 }
@@ -678,7 +944,7 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
 /// The stable name `which` is refused with in a function whose features
 /// do not enable it, if it is one of this module's.
 pub fn refusal(which: Intrinsic<'_>) -> Option<&'static str> {
-    row(which).map(|row| row.0)
+    row(which).map(|row| row.0).or_else(|| vsib::refusal(which))
 }
 
 /// A call of `which` with `args`, if `which` is an intrinsic of this
@@ -689,7 +955,7 @@ pub fn intrinsic<'a>(
     which: Intrinsic<'a>,
     args: &'a [Value],
 ) -> Option<CgResult<()>> {
-    let row = row(which)?;
+    let Some(row) = row(which) else { return vsib::intrinsic(cx, inst, which, args) };
     Some(lower(cx, inst, args, row))
 }
 
@@ -714,6 +980,8 @@ fn vector(cx: &FnCx<'_, X64>, ty: TypeId) -> Option<(u32, u32, u32)> {
         TypeKind::Int(bits @ (8 | 16 | 32 | 64)) => bits,
         TypeKind::Float => 32,
         TypeKind::Double => 64,
+        // The BF16 and FP16 rows' (WP-220).
+        TypeKind::Half | TypeKind::BFloat => 16,
         _ => return None,
     };
     let bytes = bits * len / 8;
@@ -828,6 +1096,10 @@ fn lower<'a>(
                         _ => crate::mask::mask_lanes(cx.types(), ty).is_some(),
                     }
             }
+            // The immediates of `vgf2p8affineqb` and `vpclmulqdq` are `i8`.
+            b'i' if matches!(op, Op::E3Imm(E3Imm::Gf2p8affineqb | E3Imm::Pclmulqdq, _)) => {
+                matches!(cx.types().kind(ty), TypeKind::Int(8))
+            }
             _ => matches!(cx.types().kind(ty), TypeKind::Int(32)),
         };
         if !ok {
@@ -835,6 +1107,17 @@ fn lower<'a>(
         }
     }
     let Some((lanes, bits, src_bytes)) = first else { return unsupported(SIGNATURE) };
+    // A compress of `half` or `bfloat` lanes is not one the census or the
+    // tests have: not taken.
+    if op == Op::Compress
+        && matches!(
+            cx.types().kind(ret_ty),
+            TypeKind::Vector { elem, .. }
+                if matches!(cx.types().kind(elem), TypeKind::Half | TypeKind::BFloat)
+        )
+    {
+        return unsupported(SIGNATURE);
+    }
     let ret_bytes = match (op, ret) {
         (Op::Cmp(_), None) if crate::mask::mask_lanes(cx.types(), ret_ty) == Some(lanes) => 0,
         (Op::Cmp(_), _) | (_, None) => return unsupported(SIGNATURE),
@@ -1024,7 +1307,9 @@ fn lower<'a>(
         Op::Cmp(cmp) => {
             put(cx, mc::ecmp_kri(cmp, vl, mc::K::K0, mc::K::K0, v[0], imm));
             let rd = cx.def_reg(inst)?;
-            put(cx, mc::kmov_rk(Size::W, gp(rd), mc::K::K0));
+            // `vfpclassph` of 32 lanes: `kmovd`.
+            let size = if lanes > 16 { Size::D } else { Size::W };
+            put(cx, mc::kmov_rk(size, gp(rd), mc::K::K0));
             return cx.finish(inst, rd);
         }
     }

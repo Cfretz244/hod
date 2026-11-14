@@ -1,5 +1,7 @@
-//! EVEX-encoded instructions (AVX-512 F, VL, BW, DQ, VBMI, VBMI2) and the
-//! opmask instructions (WP-208, `spec/mc-x64.md` "EVEX"; design 0007).
+//! EVEX-encoded instructions (AVX-512 F, VL, BW, DQ, VBMI, VBMI2; since
+//! WP-220 also FP16 in maps 5 and 6, BF16, and the EVEX forms of GFNI,
+//! VAES and VPCLMULQDQ) and the opmask instructions (WP-208,
+//! `spec/mc-x64.md` "EVEX"; design 0007).
 //!
 //! A vector register is a [`Zmm`] (its number, `0..=31`) and a vector
 //! length [`Vl`]: `Zmm(3)` at [`Vl::X`] is `xmm3`. An opmask register is a
@@ -18,6 +20,8 @@
 //! - [`EStore`]: `op dst{k}, src` with the destination in `ModRM.rm`
 //!   (the narrowing moves, the compresses);
 //! - [`EMov`]: the moves `vmovdqu8`..`64`, `vmovups`, `vmovupd`;
+//! - [`EGather`], [`EScatter`] (WP-224): the gathers and scatters, with
+//!   an [`EVsib`] operand (a vector index of the EVEX space);
 //! - the opmask instructions, which are VEX-encoded: [`kmov_kk`] and the
 //!   other moves, [`K3`], [`K2`], [`KShift`].
 //!
@@ -29,7 +33,7 @@
 
 use crate::Fixup;
 use crate::inst::{Inst, Rm, VexOp, imm, vex};
-use crate::reg::{Base, Mem, Reg, Size, Xmm};
+use crate::reg::{Base, Mem, Reg, Scale, Size, Xmm};
 
 /// A vector register of the EVEX space, `0..=31`: `xmm`, `ymm` or `zmm`
 /// by the instruction's [`Vl`].
@@ -403,10 +407,28 @@ evex_family! {
         Paddq = (1, 1, true, 0xd4, XYZ, Full, 8, 0, "vpaddq"),
         Pandd = (1, 1, false, 0xdb, XYZ, Full, 4, 0, "vpandd"),
         Pandq = (1, 1, true, 0xdb, XYZ, Full, 8, 0, "vpandq"),
+        /// WP-224: `vpxord z, z, z` clears a gather's destination.
+        Pxord = (1, 1, false, 0xef, XYZ, Full, 4, 0, "vpxord"),
         /// The scalar approximations: the low element from `b`, the
         /// others `a`'s; 128 bits only.
         Rcp14sd = (2, 1, true, 0x4d, XO, Elem(8), 0, 0, "vrcp14sd"),
         Rsqrt14sd = (2, 1, true, 0x4f, XO, Elem(8), 0, 0, "vrsqrt14sd"),
+        /// GFNI (WP-220): the products in GF(2^8) of the bytes.
+        Gf2p8mulb = (2, 1, false, 0xcf, XYZ, Full, 0, 0, "vgf2p8mulb"),
+        /// VAES (WP-220): one AES round on each 128-bit lane, `b` the
+        /// round key; no masking (`W` is ignored, written 0 as LLVM).
+        Aesenc = (2, 1, false, 0xdc, XYZ, Full, 0, NOMASK, "vaesenc"),
+        Aesenclast = (2, 1, false, 0xdd, XYZ, Full, 0, NOMASK, "vaesenclast"),
+        Aesdec = (2, 1, false, 0xde, XYZ, Full, 0, NOMASK, "vaesdec"),
+        Aesdeclast = (2, 1, false, 0xdf, XYZ, Full, 0, NOMASK, "vaesdeclast"),
+        /// AVX-512 BF16 (WP-220): `b`'s `float`s rounded to `bfloat` in the
+        /// low half of the result, `a`'s in the high half.
+        Cvtne2ps2bf16 = (2, 3, false, 0x72, XYZ, Full, 4, 0, "vcvtne2ps2bf16"),
+        /// AVX-512 FP16 (WP-220, map 5 and 6): `half` lanes, a broadcast
+        /// of 2 bytes.
+        Minph = (5, 0, false, 0x5d, XYZ, Full, 2, SAE, "vminph"),
+        Maxph = (5, 0, false, 0x5f, XYZ, Full, 2, SAE, "vmaxph"),
+        Vfmaddsub213ph = (6, 1, false, 0xa6, XYZ, Full, 2, ER, "vfmaddsub213ph"),
     }
 }
 
@@ -417,6 +439,12 @@ evex_family! {
         /// The truth table `imm8` of `dst`, `a`, `b` (`dst` is read).
         Pternlogd = (3, 1, false, 0x25, XYZ, Full, 4, 0, "vpternlogd"),
         Pternlogq = (3, 1, true, 0x25, XYZ, Full, 8, 0, "vpternlogq"),
+        /// GFNI (WP-220): the affine transform of each byte by the 8x8
+        /// bit matrix in the `b` quadword of its lane, plus `imm8`.
+        Gf2p8affineqb = (3, 1, true, 0xce, XYZ, Full, 8, 0, "vgf2p8affineqb"),
+        /// VPCLMULQDQ (WP-220): the carry-less product of the quadwords
+        /// `imm8` picks in each 128-bit lane; no masking.
+        Pclmulqdq = (3, 1, false, 0x44, XYZ, Full, 0, NOMASK, "vpclmulqdq"),
     }
 }
 
@@ -447,6 +475,20 @@ evex_family! {
         /// Widening: the source is half the length.
         Cvttps2qq = (1, 1, false, 0x7a, XYZ, Half, 4, SAE, "vcvttps2qq"),
         Cvttps2uqq = (1, 1, false, 0x78, XYZ, Half, 4, SAE, "vcvttps2uqq"),
+        /// AVX-512 BF16 (WP-220), narrowing: `float` to `bfloat`.
+        Cvtneps2bf16 = (2, 2, false, 0x72, XYZ, Full, 4, 0, "vcvtneps2bf16"),
+        /// AVX-512 FP16 (WP-220): `half` lanes.
+        Rcpph = (6, 1, false, 0x4c, XYZ, Full, 2, 0, "vrcpph"),
+        Rsqrtph = (6, 1, false, 0x4e, XYZ, Full, 2, 0, "vrsqrtph"),
+        Getexpph = (6, 1, false, 0x42, XYZ, Full, 2, SAE, "vgetexpph"),
+        Cvtph2w = (5, 1, false, 0x7d, XYZ, Full, 2, ER, "vcvtph2w"),
+        Cvttph2w = (5, 1, false, 0x7c, XYZ, Full, 2, SAE, "vcvttph2w"),
+        Cvttph2uw = (5, 0, false, 0x7c, XYZ, Full, 2, SAE, "vcvttph2uw"),
+        /// Narrowing to a quarter: `double` to `half` (an `xmm` at every
+        /// length).
+        Cvtpd2ph = (5, 1, true, 0x5a, XYZ, Full, 8, ER, "vcvtpd2ph"),
+        /// Widening from a quarter: `half` to `double`.
+        Cvtph2pd = (5, 0, false, 0x5a, XYZ, Quarter, 2, SAE, "vcvtph2pd"),
     }
 }
 
@@ -455,6 +497,8 @@ evex_family! {
     E2Imm {
         Rndscaleps = (3, 1, false, 0x08, XYZ, Full, 4, SAE, "vrndscaleps"),
         Rndscalepd = (3, 1, true, 0x09, XYZ, Full, 8, SAE, "vrndscalepd"),
+        /// AVX-512 FP16 (WP-220).
+        Rndscaleph = (3, 0, false, 0x08, XYZ, Full, 2, SAE, "vrndscaleph"),
         Permq = (3, 1, true, 0x00, YZ, Full, 8, 0, "vpermq"),
         Permpd = (3, 1, true, 0x01, YZ, Full, 8, 0, "vpermpd"),
     }
@@ -484,6 +528,8 @@ evex_family! {
     ECmp {
         Fpclassps = (3, 1, false, 0x66, XYZ, Full, 4, 0, "vfpclassps"),
         Fpclasspd = (3, 1, true, 0x66, XYZ, Full, 8, 0, "vfpclasspd"),
+        /// AVX-512 FP16 (WP-220).
+        Fpclassph = (3, 0, false, 0x66, XYZ, Full, 2, 0, "vfpclassph"),
     }
 }
 
@@ -530,6 +576,150 @@ impl EMov {
         let op = self.fields().opcode;
         if op == 0x6f { 0x7f } else { 0x11 }
     }
+}
+
+evex_family! {
+    /// The AVX-512 gathers `op dst{k}, vsib` (WP-224, `EVEX.66.0F38`,
+    /// tuple T1S): each element of `dst` whose bit of `k` is set loaded
+    /// from `base + index[i]*scale + disp`, the others kept; `k` cleared
+    /// as the elements complete (all of it at the end). The mask is
+    /// mandatory (not `k0`), merging only. The [`Vl`] is the wider of the
+    /// index and the destination: see [`EGather::index_vl`] and
+    /// [`EGather::data_vl`].
+    EGather {
+        Pgatherdd = (2, 1, false, 0x90, XYZ, Elem(4), 0, 0, "vpgatherdd"),
+        Pgatherdq = (2, 1, true, 0x90, XYZ, Elem(8), 0, 0, "vpgatherdq"),
+        Pgatherqd = (2, 1, false, 0x91, XYZ, Elem(4), 0, 0, "vpgatherqd"),
+        Pgatherqq = (2, 1, true, 0x91, XYZ, Elem(8), 0, 0, "vpgatherqq"),
+        Gatherdps = (2, 1, false, 0x92, XYZ, Elem(4), 0, 0, "vgatherdps"),
+        Gatherdpd = (2, 1, true, 0x92, XYZ, Elem(8), 0, 0, "vgatherdpd"),
+        Gatherqps = (2, 1, false, 0x93, XYZ, Elem(4), 0, 0, "vgatherqps"),
+        Gatherqpd = (2, 1, true, 0x93, XYZ, Elem(8), 0, 0, "vgatherqpd"),
+    }
+}
+
+evex_family! {
+    /// The AVX-512 scatters `op vsib{k}, src` (WP-224, `EVEX.66.0F38`,
+    /// tuple T1S): each element of `src` whose bit of `k` is set stored to
+    /// `base + index[i]*scale + disp`, from the lowest element up; `k`
+    /// cleared. The mask is mandatory (not `k0`). The [`Vl`] is the wider
+    /// of the index and the source, as for [`EGather`].
+    EScatter {
+        Pscatterdd = (2, 1, false, 0xa0, XYZ, Elem(4), 0, 0, "vpscatterdd"),
+        Pscatterdq = (2, 1, true, 0xa0, XYZ, Elem(8), 0, 0, "vpscatterdq"),
+        Pscatterqd = (2, 1, false, 0xa1, XYZ, Elem(4), 0, 0, "vpscatterqd"),
+        Pscatterqq = (2, 1, true, 0xa1, XYZ, Elem(8), 0, 0, "vpscatterqq"),
+        Scatterdps = (2, 1, false, 0xa2, XYZ, Elem(4), 0, 0, "vscatterdps"),
+        Scatterdpd = (2, 1, true, 0xa2, XYZ, Elem(8), 0, 0, "vscatterdpd"),
+        Scatterqps = (2, 1, false, 0xa3, XYZ, Elem(4), 0, 0, "vscatterqps"),
+        Scatterqpd = (2, 1, true, 0xa3, XYZ, Elem(8), 0, 0, "vscatterqpd"),
+    }
+}
+
+/// The lengths of the index and of the data of a gather or scatter of
+/// opcode `op` (`90`..`93`, `A0`..`A3`), `W` `w`, at length `vl`: a
+/// `d` index with 64-bit elements is half the length, as is the data of
+/// a `q` index with 32-bit elements.
+const fn vsib_lengths(opcode: u8, w: bool, vl: Vl) -> (Vl, Vl) {
+    let q_index = opcode & 1 == 1;
+    match (q_index, w) {
+        (false, true) => (half_vl(vl), vl),
+        (true, false) => (vl, half_vl(vl)),
+        _ => (vl, vl),
+    }
+}
+
+const fn half_vl(vl: Vl) -> Vl {
+    match vl {
+        Vl::Z => Vl::Y,
+        _ => Vl::X,
+    }
+}
+
+impl EGather {
+    /// The length of the index register at length `vl`.
+    pub const fn index_vl(self, vl: Vl) -> Vl {
+        let f = self.fields();
+        vsib_lengths(f.opcode, f.w, vl).0
+    }
+
+    /// The length of the destination at length `vl`.
+    pub const fn data_vl(self, vl: Vl) -> Vl {
+        let f = self.fields();
+        vsib_lengths(f.opcode, f.w, vl).1
+    }
+
+    /// The bytes of an element (4 or 8).
+    pub const fn elem_bytes(self) -> u8 {
+        if self.fields().w { 8 } else { 4 }
+    }
+}
+
+impl EScatter {
+    /// The length of the index register at length `vl`.
+    pub const fn index_vl(self, vl: Vl) -> Vl {
+        let f = self.fields();
+        vsib_lengths(f.opcode, f.w, vl).0
+    }
+
+    /// The length of the source at length `vl`.
+    pub const fn data_vl(self, vl: Vl) -> Vl {
+        let f = self.fields();
+        vsib_lengths(f.opcode, f.w, vl).1
+    }
+
+    /// The bytes of an element (4 or 8).
+    pub const fn elem_bytes(self) -> u8 {
+        if self.fields().w { 8 } else { 4 }
+    }
+}
+
+/// An EVEX VSIB memory operand `[base + index*scale + disp]` (WP-224):
+/// `index` a vector register of the EVEX space (`zmm0`..`zmm31`; bit 4 in
+/// `EVEX.V'`, bit 3 in `EVEX.X`), each of its elements a signed offset.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EVsib {
+    pub base: Reg,
+    pub index: Zmm,
+    pub scale: Scale,
+    pub disp: i32,
+}
+
+/// An EVEX instruction with a VSIB operand: `reg` in `ModRM.reg`
+/// (`R'R`), the index in `V'X` and `SIB.index`, the base in `B` and
+/// `SIB.base`, `vvvv` unused (`1111`), merging by `k`. Always a `SIB`
+/// byte; the displacement `disp8*N` (`N` the element's bytes) when it
+/// compresses, `disp8` 0 for a base whose low bits are 101 (`rbp`,
+/// `r13`), else `disp32`.
+const fn evex_vsib(f: Fields, vl: Vl, k: K, reg: u8, m: EVsib) -> Inst {
+    let mut out = Inst::EMPTY;
+    let r_hi = reg >> 3 & 1;
+    let r_top = reg >> 4 & 1;
+    let x_hi = m.index.0 >> 3 & 1;
+    let v_top = m.index.0 >> 4 & 1;
+    let b_hi = m.base.high();
+    out.push(0x62);
+    out.push((r_hi ^ 1) << 7 | (x_hi ^ 1) << 6 | (b_hi ^ 1) << 5 | (r_top ^ 1) << 4 | f.map);
+    out.push(if f.w { 0x80 } else { 0 } | 0b1111 << 3 | 4 | f.pp);
+    out.push(vl.ll() << 5 | (v_top ^ 1) << 3 | k.code());
+    out.push(f.opcode);
+    let n = f.n(vl, false);
+    let disp = m.disp;
+    let md = if disp == 0 && m.base.low() != 0b101 {
+        0b00
+    } else if disp % n == 0 && disp / n >= -128 && disp / n <= 127 {
+        0b01
+    } else {
+        0b10
+    };
+    out.push(md << 6 | (reg & 7) << 3 | 0b100);
+    out.push((m.scale as u8) << 6 | (m.index.0 & 7) << 3 | m.base.low());
+    match md {
+        0b01 => out.push((disp / n) as u8),
+        0b10 => out.push_imm(disp as u32 as u64, 4),
+        _ => {}
+    }
+    out
 }
 
 /// The register-or-memory operand of an EVEX instruction.
@@ -811,6 +1001,19 @@ checked! {
     pub fn evcvtps2ph_rri / try_evcvtps2ph_rri(vl: Vl, masking: Masking, dst: Zmm, src: Zmm, imm8: u8)
     requires masking.valid();
     { imm(evex(CVTPS2PH, 0x1d, rr(vl, masking, src.0, 0, dst.0)), imm8 as i64, 1) }
+
+    /// `op dst{k}, vsib` of the [`EGather`] family (WP-224). The mask is
+    /// not `k0`, and the destination is not the index (the processor
+    /// faults, `#UD`): the precondition.
+    pub fn egather / try_egather(op: EGather, vl: Vl, k: K, dst: Zmm, m: EVsib)
+    requires op.allows(vl) && k.code() != 0 && dst.0 != m.index.0;
+    { evex_vsib(op.fields(), vl, k, dst.0, m) }
+
+    /// `op vsib{k}, src` of the [`EScatter`] family (WP-224). The mask is
+    /// not `k0`: the precondition.
+    pub fn escatter / try_escatter(op: EScatter, vl: Vl, k: K, m: EVsib, src: Zmm)
+    requires op.allows(vl) && k.code() != 0;
+    { evex_vsib(op.fields(), vl, k, src.0, m) }
 }
 
 /// `VCVTPS2PH`'s fields: half-vector memory.
@@ -1162,6 +1365,50 @@ mod tests {
         assert_eq!(kmov_kr(Size::Q, K::K1, Reg::Rax).bytes(), [0xc4, 0xe1, 0xfb, 0x92, 0xc8]);
         assert_eq!(kmov_kk(Size::B, K::K1, K::K2).bytes(), [0xc5, 0xf9, 0x90, 0xca]);
         assert_eq!(k2_kk(K2::Ortest, Size::W, K::K1, K::K2).bytes(), [0xc5, 0xf8, 0x98, 0xca]);
+        // `vgf2p8affineqb zmm31, zmm8, qword ptr [r12 - 64]{1to8}, 7`:
+        // `llvm-mc` 22 scales the broadcast's `disp8` by 8 (the SDM's Full
+        // tuple), 19 by 1 (`c0`); hod follows 22.
+        assert_eq!(
+            e3_rrbi(
+                E3Imm::Gf2p8affineqb,
+                Vl::Z,
+                Masking::NONE,
+                z(31),
+                z(8),
+                Mem::base(Reg::R12, -64),
+                7
+            )
+            .bytes(),
+            [0x62, 0x43, 0xbd, 0x58, 0xce, 0x7c, 0x24, 0xf8, 0x07]
+        );
+        // WP-224: the VSIB operand (`V'` the index's bit 4, `disp8*N` by
+        // the element), measured with `llvm-mc` 19 and 22.
+        let vsib = |base, i, scale, disp| EVsib { base, index: z(i), scale, disp };
+        assert_eq!(
+            egather(EGather::Pgatherdd, Vl::Z, K::K7, z(16), vsib(Reg::R13, 31, Scale::S8, 64))
+                .bytes(),
+            [0x62, 0x82, 0x7d, 0x47, 0x90, 0x44, 0xfd, 0x10]
+        );
+        assert_eq!(
+            egather(EGather::Pgatherdd, Vl::Z, K::K7, z(16), vsib(Reg::R13, 31, Scale::S8, 6))
+                .bytes(),
+            [0x62, 0x82, 0x7d, 0x47, 0x90, 0x84, 0xfd, 0x06, 0, 0, 0]
+        );
+        assert_eq!(
+            egather(EGather::Pgatherdq, Vl::Z, K::K7, z(16), vsib(Reg::Rsp, 17, Scale::S1, 1016))
+                .bytes(),
+            [0x62, 0xe2, 0xfd, 0x47, 0x90, 0x44, 0x0c, 0x7f]
+        );
+        assert_eq!(
+            escatter(EScatter::Scatterqpd, Vl::Z, K::K3, vsib(Reg::R12, 9, Scale::S2, -8), z(30))
+                .bytes(),
+            [0x62, 0x02, 0xfd, 0x4b, 0xa3, 0x74, 0x4c, 0xff]
+        );
+        assert_eq!(
+            escatter(EScatter::Pscatterqd, Vl::Y, K::K3, vsib(Reg::R12, 9, Scale::S2, 0), z(30))
+                .bytes(),
+            [0x62, 0x02, 0x7d, 0x2b, 0xa1, 0x34, 0x4c]
+        );
     }
 
     #[test]
@@ -1174,6 +1421,11 @@ mod tests {
         assert!(r(Round::Rn).is_none());
         assert!(r(Round::Sae).is_some());
         assert!(try_k3_kkk(K3::Unpck, Size::B, K::K1, K::K2, K::K3).is_none());
+        let vsib = |i| EVsib { base: Reg::Rax, index: z(i), scale: Scale::S4, disp: 0 };
+        assert!(try_egather(EGather::Pgatherdd, Vl::Z, K::K0, z(0), vsib(1)).is_none());
+        assert!(try_egather(EGather::Pgatherdd, Vl::Z, K::K1, z(1), vsib(1)).is_none());
+        assert!(try_escatter(EScatter::Pscatterdd, Vl::Z, K::K0, vsib(1), z(0)).is_none());
+        assert!(try_escatter(EScatter::Pscatterdd, Vl::Z, K::K1, vsib(1), z(1)).is_some());
         assert!(Zmm::new(32).is_none());
         assert!(K::new(8).is_none());
     }

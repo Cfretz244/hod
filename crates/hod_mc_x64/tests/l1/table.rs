@@ -656,6 +656,9 @@ pub const CONSTRUCTORS: &[(&str, &[&str])] = &[
     ("estore_mr", &["v*"]),
     ("evcvtps2ph_rri", &["vcvtps2ph*"]),
     ("evcvtps2ph_mri", &["vcvtps2ph*"]),
+    // WP-224: the EVEX gathers and scatters.
+    ("egather", &["v*"]),
+    ("escatter", &["v*"]),
     ("emov_rr", &["vmov*"]),
     ("emov_rm", &["vmov*"]),
     ("emov_mr", &["vmov*"]),
