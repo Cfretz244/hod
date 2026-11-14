@@ -88,24 +88,59 @@ pub struct Tools {
 }
 
 /// WP-203: a `target-cpu` and `target-features` pair (from WP-201's
-/// census), and what hod makes of them (`spec/abi-x64.md` §1.3).
-#[derive(Clone, Debug)]
+/// census), and what hod makes of them (`spec/abi-x64.md` §1.3); WP-208:
+/// with the `tune-cpu` and `min-legal-vector-width` that decide whether
+/// 512-bit vectors are legal under AVX-512.
+#[derive(Clone, Debug, Default)]
 pub struct Machine {
     pub cpu: String,
     pub features: String,
+    pub tune: Option<String>,
+    pub min_legal: Option<u32>,
 }
 
 impl Machine {
+    /// `cpu` with `features`, without `tune-cpu` and
+    /// `min-legal-vector-width`.
+    pub fn new(cpu: &str, features: &str) -> Machine {
+        Machine { cpu: cpu.into(), features: features.into(), ..Machine::default() }
+    }
+
     /// The features `abi::assign` is given.
     pub fn abi(&self) -> Features {
-        hod_x64::features::of_function(Some(&self.cpu), Some(&self.features)).abi
+        let width = self.min_legal.map(|w| w.to_string());
+        hod_x64::features::of_function_with(
+            Some(&self.cpu),
+            self.tune.as_deref(),
+            Some(&self.features),
+            width.as_deref(),
+        )
+        .abi
     }
 
     /// The LLVM attribute group of the functions on the LLVM side.
     pub fn attributes(&self) -> String {
+        let mut extra = String::new();
+        if let Some(tune) = &self.tune {
+            write!(extra, " \"tune-cpu\"=\"{tune}\"").unwrap();
+        }
+        if let Some(width) = self.min_legal {
+            write!(extra, " \"min-legal-vector-width\"=\"{width}\"").unwrap();
+        }
         format!(
-            "attributes #0 = {{ \"target-cpu\"=\"{}\" \"target-features\"=\"{}\" }}\n",
+            "attributes #0 = {{ \"target-cpu\"=\"{}\" \"target-features\"=\"{}\"{extra} }}\n",
             self.cpu, self.features
+        )
+    }
+
+    /// A short label.
+    pub fn label(&self) -> String {
+        format!(
+            "{} {}{}{}",
+            self.cpu,
+            &self.features[..self.features.len().min(40)],
+            self.tune.as_ref().map_or(String::new(), |t| format!(" tune={t}")),
+            self.min_legal.map_or(String::new(), |w| format!(" min-legal={w}"))
         )
     }
 }

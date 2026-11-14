@@ -106,6 +106,9 @@ fn instruction_forms() {
         (Op::Restore { reg: 30 }, &[0xc0 | 0x1e]),
         (Op::Restore { reg: 63 }, &[0xff]),
         (Op::Restore { reg: 64 }, &[0x06, 64]),
+        // §4.3 (WP-212): what an inline-assembly body remembers.
+        (Op::RememberState, &[0x0a]),
+        (Op::RestoreState, &[0x0b]),
     ];
     for &(o, bytes) in cases {
         assert_eq!(op(a, o).as_deref(), Some(bytes), "{o:?}");

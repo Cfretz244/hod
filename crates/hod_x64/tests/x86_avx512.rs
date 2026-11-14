@@ -855,6 +855,18 @@ mod dataflow {
     /// of the test read (both compilers' code reads the same lanes, but
     /// may leave different garbage above them).
     pub fn run(graph: &mut Graph, listing: &[String], bytes: usize, mask_lanes: u32) -> Vec<Sym> {
+        run_with_ret(graph, listing, bytes, mask_lanes, 0).0
+    }
+
+    /// [`run`], and (WP-208) the 64 bytes of each of the first `ret_regs`
+    /// vector registers at the `ret`.
+    pub fn run_with_ret(
+        graph: &mut Graph,
+        listing: &[String],
+        bytes: usize,
+        mask_lanes: u32,
+        ret_regs: usize,
+    ) -> (Vec<Sym>, Vec<Vec<Sym>>) {
         let mut s = State {
             gpr: std::array::from_fn(|r| {
                 std::array::from_fn(|b| Sym::of(Src::Entry(r as u8), b as i64))
@@ -883,7 +895,8 @@ mod dataflow {
                 break;
             }
         }
-        (0..bytes as i64).map(|at| s.load_byte(0, at)).collect()
+        let out = (0..bytes as i64).map(|at| s.load_byte(0, at)).collect();
+        (out, s.vec[..ret_regs].iter().map(|v| v.to_vec()).collect())
     }
 
     impl State {
@@ -1134,6 +1147,18 @@ mod dataflow {
                 self.write(&ops[0], &v, vex);
                 return true;
             }
+            // A scalar store: the low element (WP-208: an element of a
+            // vector passed element by element).
+            if unmasked
+                && matches!(m, "movss" | "movsd" | "vmovss" | "vmovsd")
+                && ops.len() == 2
+                && matches!(ops[0], Opnd::Mem { .. })
+            {
+                let mut v = self.read(&ops[1]);
+                v.truncate(if m.ends_with("ss") { 4 } else { 8 });
+                self.write(&ops[0], &v, false);
+                return true;
+            }
             let scalar_load = matches!(m, "movss" | "movsd" | "vmovss" | "vmovsd")
                 && ops.len() == 2
                 && matches!(ops[1], Opnd::Mem { .. });
@@ -1152,6 +1177,63 @@ mod dataflow {
                 // their VEX forms the whole register.
                 v.resize(dw, Sym::constant(0));
                 self.write(&ops[0], &v, vex || !matches!(ops[0], Opnd::Vec(..)));
+                return true;
+            }
+            // A lane taken out of a vector or put into one (WP-208: how
+            // `llc` stores the top of a `zmm`), unmasked: bytes moved.
+            if unmasked
+                && (m.starts_with("vextract") || m.starts_with("vinsert"))
+                && !m.ends_with("ps")
+                && let Some(Opnd::Imm(at)) = ops.last()
+            {
+                let at = usize::try_from(*at).expect("a lane");
+                if m.starts_with("vextract") {
+                    let w = Self::width(&ops[0]);
+                    let v = self.read(&ops[1])[at * w..(at + 1) * w].to_vec();
+                    self.write(&ops[0], &v, vex);
+                } else {
+                    let mut v = self.read(&ops[1]);
+                    let piece = self.read(&ops[2]);
+                    let w = piece.len();
+                    v[at * w..(at + 1) * w].copy_from_slice(&piece);
+                    self.write(&ops[0], &v, vex);
+                }
+                return true;
+            }
+            // The shuffles `llc` assembles a `<12 x float>` with: an
+            // element inserted (`vinsertps`, its count_s, count_d and
+            // zero mask), quadwords blended, an element broadcast.
+            if unmasked && ops.len() == 4 && m == "vinsertps" {
+                let Opnd::Imm(imm) = ops[3] else { panic!("`{text}`") };
+                let mut v = self.read(&ops[1]);
+                v.truncate(16);
+                let src = self.read(&ops[2]);
+                let from =
+                    if matches!(ops[2], Opnd::Mem { .. }) { 0 } else { (imm >> 6) as usize & 3 };
+                let to = (imm >> 4) as usize & 3;
+                v[to * 4..to * 4 + 4].copy_from_slice(&src[from * 4..from * 4 + 4]);
+                for e in 0..4 {
+                    if imm >> e & 1 == 1 {
+                        v[e * 4..e * 4 + 4].fill(Sym::constant(0));
+                    }
+                }
+                self.write(&ops[0], &v, vex);
+                return true;
+            }
+            if unmasked && ops.len() == 4 && m == "vblendpd" {
+                let Opnd::Imm(imm) = ops[3] else { panic!("`{text}`") };
+                let (a, b) = (self.read(&ops[1]), self.read(&ops[2]));
+                let w = Self::width(&ops[0]);
+                let v: Vec<Sym> =
+                    (0..w).map(|i| if imm >> (i / 8) & 1 == 1 { b[i] } else { a[i] }).collect();
+                self.write(&ops[0], &v, vex);
+                return true;
+            }
+            if unmasked && ops.len() == 2 && m == "vbroadcastss" {
+                let src = self.read(&ops[1]);
+                let w = Self::width(&ops[0]);
+                let v: Vec<Sym> = (0..w).map(|i| src[i % 4]).collect();
+                self.write(&ops[0], &v, vex);
                 return true;
             }
             // Everything else is a node.
@@ -1890,6 +1972,194 @@ fn avx512_names_agree_with_llc_by_dataflow() {
         wrong.len(),
         wrong[..wrong.len().min(12)].join("\n")
     );
+}
+
+/// WP-208 (`spec/abi-x64.md` §1.3, §4.3, §5.1): functions that receive
+/// 512-bit vectors (in `zmm`, two `ymm`, or on the stack past the eighth
+/// register, widened to 64 bytes, in a class of one) and store them to
+/// `%out`, and functions that return them: the bytes stored and the
+/// vector registers at the `ret`, as trees over the inputs. `(name,
+/// signature and body, bytes stored, bytes of each returned register)`.
+const ZMM_FLOWS: [(&str, &str, usize, &[usize]); 9] = [
+    (
+        "a0",
+        "void @a0(ptr %out, <16 x float> %v) #0 {\n  store <16 x float> %v, ptr %out, align 1\n",
+        64,
+        &[],
+    ),
+    (
+        "a1",
+        "void @a1(ptr %out, <8 x double> %v0, <8 x double> %v1, <8 x double> %v2, <8 x double> %v3, \
+         <8 x double> %v4, <8 x double> %v5, <8 x double> %v6, <8 x double> %v7, <8 x double> %v8) #0 {\n  \
+         store <8 x double> %v8, ptr %out, align 1\n  %o = getelementptr i8, ptr %out, i64 64\n  \
+         store <8 x double> %v1, ptr %o, align 1\n",
+        128,
+        &[],
+    ),
+    (
+        "a2",
+        "void @a2(ptr %out, <12 x float> %v) #0 {\n  store <12 x float> %v, ptr %out, align 1\n",
+        48,
+        &[],
+    ),
+    (
+        "a3",
+        "void @a3(ptr %out, i32 %k, <16 x float> %v0, <16 x float> %v1, <16 x float> %v2, \
+         <16 x float> %v3, <16 x float> %v4, <16 x float> %v5, <16 x float> %v6, <16 x float> %v7, \
+         <6 x double> %w, <32 x i16> %x) #0 {\n  store <6 x double> %w, ptr %out, align 1\n  \
+         %o = getelementptr i8, ptr %out, i64 48\n  store <32 x i16> %x, ptr %o, align 1\n",
+        112,
+        &[],
+    ),
+    (
+        "a4",
+        "void @a4(ptr %out, { <16 x float> } %s, <64 x i8> %b) #0 {\n  \
+         %v = extractvalue { <16 x float> } %s, 0\n  store <16 x float> %v, ptr %out, align 1\n  \
+         %o = getelementptr i8, ptr %out, i64 64\n  store <64 x i8> %b, ptr %o, align 1\n",
+        128,
+        &[],
+    ),
+    (
+        "r0",
+        "<16 x float> @r0(ptr %out, ptr %a) #0 {\n  %v = load <16 x float>, ptr %a, align 1\n  ret <16 x float> %v\n}\n",
+        0,
+        &[64],
+    ),
+    (
+        "r1",
+        "<12 x float> @r1(ptr %out, ptr %a) #0 {\n  %v = load <12 x float>, ptr %a, align 1\n  ret <12 x float> %v\n}\n",
+        0,
+        &[48],
+    ),
+    (
+        "r2",
+        "{ <16 x float>, <4 x float> } @r2(ptr %out, ptr %a) #0 {\n  \
+         %v = load { <16 x float>, <4 x float> }, ptr %a, align 1\n  ret { <16 x float>, <4 x float> } %v\n}\n",
+        0,
+        &[64, 16],
+    ),
+    (
+        "r3",
+        "<32 x float> @r3(ptr %out, ptr %a) #0 {\n  %v = load <32 x float>, ptr %a, align 1\n  ret <32 x float> %v\n}\n",
+        0,
+        &[64, 64],
+    ),
+];
+
+/// The machines of [`zmm_flows_agree_with_llc_by_dataflow`]: 512-bit
+/// vectors legal (one `zmm` per 64 bytes) and not (two `ymm`).
+const ZMM_FLOW_MACHINES: [&str; 2] = [
+    "\"target-features\"=\"+avx512f\"",
+    "\"target-features\"=\"+avx512f,+avx512vl,+prefer-256-bit\" \"min-legal-vector-width\"=\"0\"",
+];
+
+/// The module of [`ZMM_FLOWS`] under `attrs`.
+fn zmm_flow_module(attrs: &str) -> String {
+    let mut text = ll_header();
+    for (_, body, _, rets) in ZMM_FLOWS {
+        text.push_str("define ");
+        text.push_str(body);
+        if rets.is_empty() {
+            text.push_str("  ret void\n}\n");
+        }
+    }
+    writeln!(text, "attributes #0 = {{ {attrs} }}").unwrap();
+    text
+}
+
+/// §5.6.35, `spec/abi-x64.md` §11 (WP-208): where nothing can run, hod's
+/// code for each function of [`ZMM_FLOWS`] (plainly and under every
+/// stress option) stores and returns, byte for byte, what `llc` 22's and
+/// 19's does: the same bytes of the same incoming registers and stack
+/// slots, under each machine of [`ZMM_FLOW_MACHINES`]. The returned
+/// registers are compared over the value's bytes in each; with two `ymm`
+/// a 64-byte register's value is its two halves.
+#[test]
+fn zmm_flows_agree_with_llc_by_dataflow() {
+    let scratch = Scratch::new("x64-zmm-dataflow");
+    if hod_testutil::tool("llvm-objdump").is_none() {
+        return;
+    }
+    let mut compared = 0;
+    for (m, attrs) in ZMM_FLOW_MACHINES.iter().enumerate() {
+        let text = zmm_flow_module(attrs);
+        let narrow = m == 1;
+        let mut legs: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for major in [22, 19] {
+            if let Some(object) = llc(&scratch, major, &format!("zllc{major}-{m}"), &text) {
+                legs.push((format!("llc {major}"), object));
+            }
+        }
+        if legs.is_empty() {
+            return;
+        }
+        let (module, bodies) = parse(&text);
+        for (mode, stress) in [("plain", Stress::default()), ("stress", Stress::ALL)] {
+            let object = hod_x64::compile_to_object(&module, &bodies, &pic(stress))
+                .unwrap_or_else(|e| panic!("{attrs}: {e}"));
+            legs.push((
+                format!("hod {mode}"),
+                scratch.write(&format!("zhod-{mode}-{m}.o"), object),
+            ));
+        }
+        let mut graph = dataflow::Graph::default();
+        let mut all = Vec::new();
+        for (leg, object) in &legs {
+            let listings = listings(object);
+            let mut flows = Vec::new();
+            for (name, _, bytes, rets) in ZMM_FLOWS {
+                // With two `ymm` per 64 bytes, a register's value is in
+                // twice as many registers, 32 bytes each.
+                // Without `zmm` a `<12 x float>` result goes element by
+                // element, which is memory: the bytes `rdi` points at.
+                let (bytes, regs): (usize, Vec<usize>) = if narrow && name == "r1" {
+                    (48, Vec::new())
+                } else if narrow {
+                    let halves = |&r: &usize| if r > 32 { vec![32, r - 32] } else { vec![r] };
+                    (bytes, rets.iter().flat_map(halves).collect())
+                } else {
+                    (bytes, rets.to_vec())
+                };
+                let (out, ret) =
+                    dataflow::run_with_ret(&mut graph, &listings[name], bytes, 0, regs.len());
+                let ret: Vec<Vec<dataflow::Sym>> =
+                    ret.iter().zip(&regs).map(|(v, &n)| v[..n].to_vec()).collect();
+                flows.push((out, ret));
+            }
+            all.push((leg.clone(), flows));
+        }
+        let references = &all[..all.len() - 2];
+        for (leg, got) in &all[all.len() - 2..] {
+            for (k, flow) in got.iter().enumerate() {
+                let name = ZMM_FLOWS[k].0;
+                assert!(
+                    references.iter().any(|(_, r)| &r[k] == flow),
+                    "{attrs}: {leg} `{name}`:\n  hod: {} returning {}\n  {}: {} returning {}",
+                    graph.show(&flow.0),
+                    flow.1.iter().map(|r| graph.show(r)).collect::<Vec<_>>().join(", "),
+                    references[0].0,
+                    graph.show(&references[0].1[k].0),
+                    references[0].1[k]
+                        .1
+                        .iter()
+                        .map(|r| graph.show(r))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                // Nothing of the result is garbage or memory nobody wrote.
+                assert!(
+                    flow.0.iter().chain(flow.1.iter().flatten()).all(|s| matches!(
+                        s.src,
+                        dataflow::Src::Entry(_) | dataflow::Src::Leaf(_) | dataflow::Src::Undef(5)
+                    )),
+                    "{attrs}: {leg} `{name}`: {}",
+                    graph.show(&flow.0)
+                );
+                compared += 1;
+            }
+        }
+    }
+    eprintln!("zmm dataflow: {compared} flows equal to llc's");
 }
 
 /// The comparison bites (design 0007 §4.2): `llc` 22's listings with

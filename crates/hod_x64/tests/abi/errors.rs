@@ -117,9 +117,9 @@ fn every_name() {
         .struct_type(&[TypeId::X86_FP80, TypeId::FLOAT, TypeId::FLOAT, TypeId::FLOAT], false)
         .expect("a type");
     let v3f64 = t.vector(TypeId::DOUBLE, 3).expect("a type");
-    let avx = Features { avx: true, avx512: false, assumed: false };
-    let avx512 = Features { avx: true, avx512: true, assumed: false };
-    let assumed = Features { avx: true, avx512: true, assumed: true };
+    let avx = Features { avx: true, ..Features::default() };
+    let avx512 = Features { avx: true, avx512: true, ..Features::default() };
+    let assumed = Features { avx: true, avx512: true, assumed: true, ..Features::default() };
 
     let c = CallConv::C;
     let cases: Vec<(&str, Option<&'static str>)> = vec![

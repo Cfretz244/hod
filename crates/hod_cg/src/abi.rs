@@ -310,7 +310,9 @@ pub enum PieceLoc {
 
 /// The elements of a vector leaf as lanes ([`PartKind::Lanes`]): `len`
 /// elements of `bits` bits, `lane` bytes per lane; with `each`, piece `i`
-/// carries element `i` alone, else the one piece carries them all.
+/// carries element `i` alone, else piece `i` carries the `size / lane`
+/// elements from `i * size / lane` (all of them when there is one
+/// piece).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct LaneLeaf {
     /// The bits of an element.
@@ -373,7 +375,11 @@ impl<C: Copy> Leaf<C> {
             Some(l) => PartKind::Lanes {
                 bits: l.bits,
                 lane: l.lane,
-                first: if l.each { piece as u8 } else { 0 },
+                first: if l.each {
+                    piece as u8
+                } else {
+                    (piece * self.size / u32::from(l.lane.max(1))) as u8
+                },
                 len: l.len,
             },
         }

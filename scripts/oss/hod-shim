@@ -18,7 +18,7 @@ the lane needs and hod does not give:
   with `<k>.json` (the line above) beside it, `<k>` a hash of the
   compiled source's path: one module per source (a project compiling one
   source into several targets keeps one), at most `$HOD_OSS_KEEP`
-  (default 3) per reason, the first runs winning;
+  (default 1) per reason, the first runs winning;
 - `HOD_OSS_STRICT=1`: a decline (status 2) becomes status 1, so kiln's
   `KILN_HOD_STRICT=1` makes it a compile error (kiln falls back silently
   from status 2 even then).
@@ -78,7 +78,7 @@ def save(rec, data):
     root = os.environ.get("HOD_OSS_DECLINED")
     if not root:
         return None
-    keep = int(os.environ.get("HOD_OSS_KEEP") or 3)
+    keep = int(os.environ.get("HOD_OSS_KEEP") or 1)
     name = re.sub(r"[^A-Za-z0-9:_.+-]", "_", rec["reason"] or "unknown")[:100]
     d = os.path.join(root, name)
     try:

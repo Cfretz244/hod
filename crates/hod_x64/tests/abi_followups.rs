@@ -297,8 +297,9 @@ fn own_signature_takes_the_function_features() {
     for attrs in ["\"target-features\"=\"+avx\"", "\"target-cpu\"=\"haswell\""] {
         assert!(assignment_in(&module(mask, attrs), b"f").is_ok());
     }
+    // WP-208: with AVX-512 a vector of `i1` is placed too (§4.3).
     let avx512 = "\"target-cpu\"=\"skylake-avx512\"";
-    assert_eq!(assignment_in(&module(mask, avx512), b"f"), Err(wide_vector));
+    assert!(assignment_in(&module(mask, avx512), b"f").is_ok());
     for assumed in ["\"target-cpu\"=\"some-future-cpu\"", "\"target-features\"=\"+amx-avx512\""] {
         assert_eq!(assignment_in(&module(wide, assumed), b"f"), Err(wide_vector), "{assumed}");
     }
@@ -306,8 +307,9 @@ fn own_signature_takes_the_function_features() {
 
 /// §1.3 through the whole compiler: with AVX (or a CPU that may have it) a
 /// signature with a 256-bit vector compiles (WP-203), one wider than 256
-/// bits too unless AVX-512 may be on; where AVX is only assumed it is
-/// refused; with AVX-512 a vector of `i1` is refused; a 128-bit vector is
+/// bits too, and (WP-208) with AVX-512 whose conventions are known a
+/// 512-bit vector and a vector of `i1`; where AVX is only assumed, or
+/// AVX-512's conventions are not known (`-evex512`), it is refused; a 128-bit vector is
 /// fine either way. The caller's features decide, whatever the callee
 /// declares. Without AVX, a wide vector (a `Mem` value) and a vector of
 /// `i1` compile.
@@ -321,7 +323,7 @@ fn avx_signatures_are_refused_by_the_function() {
         define <4 x i64> @f(<4 x i64> %v) #0 {\n  %r = call <4 x i64> @g(<4 x i64> %v)\n  \
         ret <4 x i64> %r\n}\nattributes #1 = { \"target-cpu\"=\"skylake-avx512\" }\n";
     let wide_vector = abi::WIDE_VECTOR_ABI;
-    let rows: [(&str, &str, &str); 19] = [
+    let rows: [(&str, &str, &str); 20] = [
         (wide, "nounwind", ""),
         (wide, "\"target-cpu\"=\"x86-64-v2\"", ""),
         (wide, "\"target-features\"=\"+avx\"", ""),
@@ -333,10 +335,11 @@ fn avx_signatures_are_refused_by_the_function() {
         (wide, "\"target-features\"=\"+avx10.1-256\"", wide_vector),
         (wide, "\"target-cpu\"=\"haswell\" \"target-features\"=\"-avx\"", ""),
         (wider, "\"target-cpu\"=\"haswell\"", ""),
-        (wider, "\"target-cpu\"=\"skylake-avx512\"", wide_vector),
+        (wider, "\"target-cpu\"=\"skylake-avx512\"", ""),
         (mask, "\"target-cpu\"=\"haswell\"", ""),
-        (mask, "\"target-cpu\"=\"skylake-avx512\"", wide_vector),
-        (mask, "\"target-cpu\"=\"haswell\" \"target-features\"=\"+avx512vl\"", wide_vector),
+        (mask, "\"target-cpu\"=\"skylake-avx512\"", ""),
+        (mask, "\"target-cpu\"=\"haswell\" \"target-features\"=\"+avx512vl\"", ""),
+        (wider, "\"target-features\"=\"+avx512f,-evex512\"", wide_vector),
         (mask, "\"target-cpu\"=\"x86-64-v4\" \"target-features\"=\"-avx512f\"", ""),
         (narrow, "\"target-cpu\"=\"skylake-avx512\"", ""),
         // The callee's features do not count: the caller's do.

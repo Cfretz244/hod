@@ -129,7 +129,11 @@ fn instructions(
                 state.saved.push((reg, cfa_offset));
             }
             CfiOp::Restore { reg } => state.saved.retain(|&(r, _)| r != reg),
-            CfiOp::NegateRaState | CfiOp::BKeyFrame => {}
+            // The decoder restates a remembered state as rows of its own.
+            CfiOp::NegateRaState
+            | CfiOp::BKeyFrame
+            | CfiOp::RememberState
+            | CfiOp::RestoreState => {}
         }
         rows.push(CfiRow { offset, op });
     };

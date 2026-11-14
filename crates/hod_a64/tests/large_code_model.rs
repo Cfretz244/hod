@@ -349,6 +349,7 @@ fn link_and_check(
     let mut inputs = inputs.to_vec();
     inputs.push(Path::new("-lstdc++"));
     let ran = toolchain.link_and_run(&link.linker, flags, &inputs, output);
+    linking::check_loadable(output, toolchain.target);
     assert!(
         ran.success(),
         "{} {}: {:?}\n{}",

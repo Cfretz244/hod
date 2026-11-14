@@ -795,22 +795,39 @@ impl<'a, T: Target> FnCx<'a, T> {
     /// States the body's call-frame rules again at the current offset
     /// (§9.3), for code after the exit sequences that the body branches
     /// to: the net effect of the rows emitted before the epilogue was
-    /// bound, as one CFA rule and one rule per register saved.
+    /// bound, as one CFA rule and one rule per register saved. The rows
+    /// between a `RememberState` and its `RestoreState` (an inline
+    /// assembly body's, WP-212) have no effect after it.
     fn restate_body_cfi(&mut self) {
         if self.body_cfi == u32::MAX {
             return;
         }
         let (start, end) = (self.mark.cfi as usize, (self.mark.cfi + self.body_cfi) as usize);
-        let (mut reg, mut offset) = (None, None);
+        let mut ops: Vec<CfiOp> = Vec::with_capacity(end - start);
+        let mut remembered: Vec<usize> = Vec::new();
         for row in &self.out.cfi[start..end] {
             match row.op {
+                CfiOp::RememberState => remembered.push(ops.len()),
+                CfiOp::RestoreState => {
+                    if let Some(len) = remembered.pop() {
+                        ops.truncate(len);
+                    }
+                }
+                op => ops.push(op),
+            }
+        }
+        let (mut reg, mut offset) = (None, None);
+        for &op in &ops {
+            match op {
                 CfiOp::DefCfa { reg: r, offset: o } => (reg, offset) = (Some(r), Some(o)),
                 CfiOp::DefCfaOffset(o) => offset = Some(o),
                 CfiOp::DefCfaRegister(r) => reg = Some(r),
                 CfiOp::Offset { .. }
                 | CfiOp::Restore { .. }
                 | CfiOp::NegateRaState
-                | CfiOp::BKeyFrame => {}
+                | CfiOp::BKeyFrame
+                | CfiOp::RememberState
+                | CfiOp::RestoreState => {}
             }
         }
         // WP-185: the return address's signing state is a flip; it is
@@ -827,14 +844,13 @@ impl<'a, T: Target> FnCx<'a, T> {
             (Some(reg), None) => self.cfi(CfiOp::DefCfaRegister(reg)),
             (None, None) => {}
         }
-        for index in start..end {
-            let CfiOp::Offset { reg, .. } = self.out.cfi[index].op else { continue };
+        for (index, &op) in ops.iter().enumerate() {
+            let CfiOp::Offset { reg, .. } = op else { continue };
             // A register's rule is its last row's.
-            let later = self.out.cfi[index + 1..end].iter().any(|row| {
-                matches!(row.op, CfiOp::Offset { reg: r, .. } | CfiOp::Restore { reg: r } if r == reg)
+            let later = ops[index + 1..].iter().any(|&later| {
+                matches!(later, CfiOp::Offset { reg: r, .. } | CfiOp::Restore { reg: r } if r == reg)
             });
             if !later {
-                let op = self.out.cfi[index].op;
                 self.cfi(op);
             }
         }

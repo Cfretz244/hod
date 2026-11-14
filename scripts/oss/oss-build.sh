@@ -49,8 +49,9 @@
 # thread of qemu's), and the trees are <root>/x64-build/ and <root>/x64-install/ (the sources
 # are shared).
 #
-# Environment (source scripts/env.sh first: make draws from the shared
-# jobserver): KILN_OSS_CXX (kiln++; default
+# Environment (source scripts/env.sh first; make draws from the
+# real-project jobserver pool, HOD_OSS_JOBSERVER_FIFO, default
+# /run/hod/lanes.fifo, else the shared one): KILN_OSS_CXX (kiln++; default
 # <build root>/target-kiln/release/kiln++), KILN_OSS_CC (the kiln C driver;
 # default `kiln` beside kiln++), KILN_RESOURCE_DIR (default
 # <workspace>/kiln/resource when it exists), HOD_OSS_HOD (hod; default
@@ -63,6 +64,12 @@ usage() { sed -n '2,3p' "$0" | sed 's/^# //' >&2; exit 2; }
 : "${CARGO_TARGET_DIR:?oss-build: source scripts/env.sh first}"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
+# Project builds (make, cmake --install, ctest) draw from the real-project
+# pool, not the shared one that cargo and the gate use (spec/harness.md
+# "Job slots"): $HOD_OSS_JOBSERVER_FIFO, default /run/hod/lanes.fifo when it
+# exists; otherwise MAKEFLAGS stays as scripts/env.sh left it.
+LANE_FIFO="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
+[ -p "$LANE_FIFO" ] && export MAKEFLAGS="--jobserver-auth=fifo:$LANE_FIFO"
 
 PROJECT="" MODE="" FLAVOUR=O0 TARGET=aarch64 RUN_TEST=1 JOBS=4 INSTALL="" PRUNE="" PRUNE_ONLY=""
 while [ $# -gt 0 ]; do
@@ -189,6 +196,10 @@ again() {
 SRC="$OSS/src/$P_CHECKOUT"
 BUILD="$OSS/${TP}build/$PROJECT/$FLAVOUR-$MODE${INSTALL:+-dep}"
 mkdir -p "$OSS/src" "$BUILD"
+# Every build starts from an empty tree: a tree left by an earlier build
+# (kept, or cut off half-built) may hold objects of another compiler,
+# which make would not rebuild.
+find "$BUILD" -mindepth 1 -delete
 P_TEST="${P_TEST//@SRC@/$SRC}"
 export KILN_OSS_LOG="$BUILD/compile.jsonl"
 export KILN_OSS_VMEM_KB="${KILN_OSS_VMEM_KB:-$P_VMEM_KB}"
@@ -206,8 +217,10 @@ rm -f "$BUILD/report.json" "$BUILD/configure.log" "$BUILD/build.log" "$BUILD/tes
 [ ! -d "$BUILD/declined" ] || find "$BUILD/declined" -mindepth 1 -delete
 
 if [ -d "$SRC/.git" ]; then
+  # Compare commits: a commit can carry several tags (protobuf's v33.1 is
+  # also v4.33.1-objectivec), and describe names any one of them.
   have="$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || echo '?')"
-  [ "$have" = "$P_TAG" ] || echo "oss-build: warning: $SRC is at '$have', the toml pins '$P_TAG' (delete the checkout to refetch)" >&2
+  [ "$(git -C "$SRC" rev-parse -q --verify HEAD 2>/dev/null)" = "$(git -C "$SRC" rev-parse -q --verify "$P_TAG^{commit}" 2>/dev/null)" ] || echo "oss-build: warning: $SRC is at '$have', the toml pins '$P_TAG' (delete the checkout to refetch)" >&2
 else
   sub=()
   [ -n "$P_SUBMODULES" ] && sub=(--recurse-submodules --shallow-submodules)
@@ -217,7 +230,7 @@ else
 fi
 SRCDIR="$SRC${P_SOURCE_SUBDIR:+/$P_SOURCE_SUBDIR}"
 
-# make: inherit the shared jobserver from MAKEFLAGS; -j only without one.
+# make: inherit the jobserver from MAKEFLAGS (above); -j only without one.
 JFLAG=()
 case "${MAKEFLAGS:-}" in
   *--jobserver-auth=fifo:*)
@@ -268,8 +281,13 @@ if [ "$CONF_RC" = 0 ]; then
     # Per-tree test scratch, so the builds of one project never share it.
     TTMP="$BUILD/test-tmp"; mkdir -p "$TTMP" && find "$TTMP" -mindepth 1 -delete
     [ "$TARGET" = aarch64 ] || python3 "$HERE/projects.py" emulate-tests "$BUILD" "$X64_QEMU" -L "$X64_SYSROOT" > "$BUILD/emulate.log" 2>&1
+    # The cap is on address space, and glibc reserves 64 MB of it for each
+    # malloc arena (up to 8 per CPU): a test running many threads at once
+    # exhausts it on a many-CPU host without using the memory, sooner the
+    # slower its code. MALLOC_ARENA_MAX bounds the reservation, the same
+    # for every mode.
     (cd "$BUILD" && ulimit -v "$TEST_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
-      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
+      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-4}" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?
     echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)"
   fi

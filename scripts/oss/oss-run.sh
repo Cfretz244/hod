@@ -28,6 +28,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BROOT="${HOD_BUILD_ROOT:-$(dirname "$CARGO_TARGET_DIR")}"
 OSS="${HOD_OSS_ROOT:-$BROOT/oss}"
 FINDINGS="${HOD_OSS_FINDINGS:-$BROOT/findings/oss}"
+# The real-project jobserver pool for everything this run starts (as
+# oss-build.sh; spec/harness.md "Job slots").
+LANE_FIFO="${HOD_OSS_JOBSERVER_FIFO:-/run/hod/lanes.fifo}"
+[ -p "$LANE_FIFO" ] && export MAKEFLAGS="--jobserver-auth=fifo:$LANE_FIFO"
 FLAVOURS="O0 O0g" TARGET=aarch64 MODES="llc hod strict" STRICT="" KEEP="" PROJECTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,10 +62,18 @@ fell_back() {  # the hybrid report's fallbacks: declined + failed (not offered i
 }
 
 worse() {  # tests passing in the control ($1) and not in $2
+  # Per-test results are read again from each tree's test.log (a report
+  # written by an older parser may hold a wrong one).
   python3 -c "
-import json,sys
-a=json.load(open(sys.argv[1])).get('test_status') or {}; b=json.load(open(sys.argv[2])).get('test_status') or {}
-print(' '.join(sorted(t for t,s in a.items() if s=='Passed' and b.get(t)!='Passed')))" "$1" "$2" 2>/dev/null
+import json,os,sys
+sys.dont_write_bytecode=True; sys.path.insert(0,sys.argv[3])
+import projects
+def st(r):
+    log=os.path.join(os.path.dirname(r),'test.log')
+    if os.path.exists(log): return projects.test_results(log)[2]
+    return json.load(open(r)).get('test_status') or {}
+a=st(sys.argv[1]); b=st(sys.argv[2])
+print(' '.join(sorted(t for t,s in a.items() if s=='Passed' and b.get(t)!='Passed')))" "$1" "$2" "$HERE" 2>/dev/null
 }
 
 # Build one mode; a hod or strict tree whose tests do worse than the

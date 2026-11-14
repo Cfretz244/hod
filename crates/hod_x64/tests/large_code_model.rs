@@ -367,9 +367,15 @@ fn far_flags(label: &str, mode: Mode) -> Vec<String> {
     }
     let mut flags: Vec<String> =
         starts.iter().map(|(name, at)| format!("-Wl,--section-start={name}={at:#x}")).collect();
-    if label.starts_with("lld") {
+    if label.starts_with("lld") || label == "mold" && mode == Mode::Pie {
         // lld keeps the RELRO sections together, and the GOT apart from
-        // `.init_array` splits them.
+        // `.init_array` splits them. mold keeps `.tdata` and `.dynamic`
+        // low and RELRO through the far `.init_array` and `.got`: its
+        // `PT_GNU_RELRO` spans 8 GiB of unmapped gap, and glibc's loader
+        // refuses it natively ("cannot apply additional memory protection
+        // after relocation: Cannot allocate memory"; qemu-user does not),
+        // which `linking::check_loadable` asserts. GNU ld puts `.tdata`
+        // and `.dynamic` after `.init_array`, so its RELRO is contiguous.
         flags.push("-Wl,-z,norelro".to_owned());
     }
     flags
@@ -416,6 +422,7 @@ fn link_and_check(
     let mut inputs = inputs.to_vec();
     inputs.push(Path::new("-lstdc++"));
     let ran = toolchain.link_and_run(&link.linker, flags, &inputs, output);
+    linking::check_loadable(output, toolchain.target);
     assert!(
         ran.success(),
         "{} {}: {:?}\n{}",
