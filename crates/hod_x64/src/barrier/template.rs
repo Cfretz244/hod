@@ -68,7 +68,7 @@ use hod_asm::{Refusal, reason, template};
 use hod_cg::asm_constraints::{
     self as constraints, Clobber, ConstraintError, ConstraintSyntax, Kind, MAX_OPS, TIED,
 };
-use hod_cg::{CgError, CgResult, Class, FnCx, FrameRef, PReg, SymRef};
+use hod_cg::{CfiOp, CgError, CgResult, Class, FnCx, FrameRef, PReg, SymRef};
 use hod_ir::{Const, InlineAsm, Inst, Opcode, SymId, TypeId, TypeKind, Value, ValueKind};
 use hod_mc_x64 as mc;
 use hod_mc_x64::{Cond, Size};
@@ -739,8 +739,9 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
     // The text first: nothing is emitted for a template that refuses.
     let mut body = String::new();
     substitute(cx, inst, asm, &ops, &plan, &mut body)?;
-    let (mut code, mut refs) = (Vec::new(), Vec::new());
-    asm::assemble(&body, &mut code, &mut refs, &mut String::new()).map_err(refused)?;
+    let (mut code, mut refs, mut cfi) = (Vec::new(), Vec::new(), Vec::new());
+    asm::assemble_with_cfi(&body, &mut code, &mut refs, &mut cfi, &mut String::new())
+        .map_err(refused)?;
     let mut fields = Vec::with_capacity(refs.len());
     for r in &refs {
         // A symbol of the module, by its object name, as LLVM's
@@ -762,7 +763,7 @@ pub fn call<'a>(cx: &mut FnCx<'a, X64>, inst: Inst<'a>) -> CgResult<()> {
         };
         fields.push((r.offset, kind, sym, r.addend));
     }
-    emit(cx, inst, &ops, plan, stack, &code, &fields)
+    emit(cx, inst, &ops, plan, stack, &code, &fields, &cfi)
 }
 
 /// What a template does to the x87 stack (§14, LLVM's
@@ -880,6 +881,7 @@ fn reg_bytes(cx: &FnCx<'_, X64>, r: PReg, ty: TypeId) -> u32 {
 }
 
 #[allow(clippy::too_many_lines, reason = "the sequence of the module documentation, in order")]
+#[allow(clippy::too_many_arguments, reason = "the template's parts, assembled")]
 fn emit<'a>(
     cx: &mut FnCx<'a, X64>,
     inst: Inst<'a>,
@@ -888,6 +890,7 @@ fn emit<'a>(
     stack: X87Stack,
     code: &[u8],
     fields: &[Field],
+    cfi: &[asm::CfiRow],
 ) -> CgResult<()> {
     let site = inst.call().expect("checked by the caller");
     let args = site.args();
@@ -1025,6 +1028,20 @@ fn emit<'a>(
     cx.emit(code);
     for &(offset, kind, sym, addend) in fields {
         cx.reloc(start + offset, RelocKind::X64(kind), SymRef::Module(sym), addend);
+    }
+    // §15 (WP-212): the body's call-frame directives, rows of the
+    // function's unwind program where they stand.
+    for row in cfi {
+        let op = match row.op {
+            asm::Cfi::RememberState => CfiOp::RememberState,
+            asm::Cfi::RestoreState => CfiOp::RestoreState,
+            asm::Cfi::DefCfa { reg, offset } => CfiOp::DefCfa { reg, offset },
+            asm::Cfi::DefCfaOffset(offset) => CfiOp::DefCfaOffset(offset),
+            asm::Cfi::DefCfaRegister(reg) => CfiOp::DefCfaRegister(reg),
+            asm::Cfi::Offset { reg, cfa_offset } => CfiOp::Offset { reg, cfa_offset },
+            asm::Cfi::Restore(reg) => CfiOp::Restore { reg },
+        };
+        cx.cfi_at(start + row.offset, op)?;
     }
     // 5. Outputs: registers to slots, flags, indirect stores.
     for i in 0..ops.len {

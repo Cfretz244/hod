@@ -80,6 +80,14 @@ pub enum Op {
         /// The register.
         reg: u16,
     },
+    /// Pushes the rules of every register and of the CFA, to be popped
+    /// by [`Op::RestoreState`] (`DW_CFA_remember_state`, 0x0a): what an
+    /// inline-assembly body's `.cfi_remember_state` writes (`spec/eh.md`
+    /// §4.3, WP-212).
+    RememberState,
+    /// Pops the rules [`Op::RememberState`] pushed
+    /// (`DW_CFA_restore_state`, 0x0b): `.cfi_restore_state`.
+    RestoreState,
     /// AArch64: the return address's signing state flips
     /// (`DW_CFA_AARCH64_negate_ra_state`, 0x2d): after the instruction
     /// that signs it (`paciasp`, `pacibsp`) and after the one that
@@ -317,6 +325,8 @@ const DW_CFA_ADVANCE_LOC2: u8 = 0x03;
 const DW_CFA_ADVANCE_LOC4: u8 = 0x04;
 const DW_CFA_OFFSET_EXTENDED: u8 = 0x05;
 const DW_CFA_RESTORE_EXTENDED: u8 = 0x06;
+const DW_CFA_REMEMBER_STATE: u8 = 0x0a;
+const DW_CFA_RESTORE_STATE: u8 = 0x0b;
 const DW_CFA_DEF_CFA: u8 = 0x0c;
 const DW_CFA_DEF_CFA_REGISTER: u8 = 0x0d;
 const DW_CFA_DEF_CFA_OFFSET: u8 = 0x0e;
@@ -470,6 +480,8 @@ fn instruction<S: Sink>(out: &mut S, target: &CfiTarget, op: Op) -> Option<()> {
                 uleb(out, u64::from(reg));
             }
         }
+        Op::RememberState => out.byte(DW_CFA_REMEMBER_STATE),
+        Op::RestoreState => out.byte(DW_CFA_RESTORE_STATE),
         Op::NegateRaState => out.byte(DW_CFA_AARCH64_NEGATE_RA_STATE),
         Op::BKeyFrame => {}
     }

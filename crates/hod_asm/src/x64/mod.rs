@@ -451,9 +451,52 @@ fn data(size: usize, operands: &str, out: &mut Vec<u8>) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// A call-frame directive of an inline-assembly body (`spec/asm.md`
+/// §15): a row of the function's unwind program at the directive's
+/// place. Registers are DWARF numbers; offsets are bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cfi {
+    /// `.cfi_remember_state`.
+    RememberState,
+    /// `.cfi_restore_state`.
+    RestoreState,
+    /// `.cfi_def_cfa reg, offset`.
+    DefCfa {
+        /// The register.
+        reg: u16,
+        /// The offset, not negative.
+        offset: i32,
+    },
+    /// `.cfi_def_cfa_offset offset`.
+    DefCfaOffset(i32),
+    /// `.cfi_def_cfa_register reg`.
+    DefCfaRegister(u16),
+    /// `.cfi_offset reg, offset`: saved at the CFA plus `cfa_offset`, a
+    /// multiple of 8.
+    Offset {
+        /// The register.
+        reg: u16,
+        /// Where, from the CFA.
+        cfa_offset: i32,
+    },
+    /// `.cfi_restore reg`.
+    Restore(u16),
+}
+
+/// A call-frame directive and the offset in the code where it stands.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CfiRow {
+    /// The code offset.
+    pub offset: u32,
+    /// The directive.
+    pub op: Cfi,
+}
+
 /// Assembles an inline-assembly body (the template after operand
 /// substitution) into `code`, its symbol fields into `refs` (both
-/// cleared first). `scratch` is reused text space.
+/// cleared first). `scratch` is reused text space. A call-frame
+/// directive is refused (`asm:directive/cfi_*`); see
+/// [`assemble_with_cfi`].
 ///
 /// # Errors
 /// The `asm:*` refusals of the statement that is not accepted.
@@ -463,8 +506,37 @@ pub fn assemble(
     refs: &mut Vec<Ref>,
     scratch: &mut String,
 ) -> Result<(), Refusal> {
+    assemble_body(body, code, refs, None, scratch)
+}
+
+/// [`assemble`], with the call-frame directives of §15 read into `cfi`
+/// (cleared first) at their code offsets, in order.
+///
+/// # Errors
+/// The `asm:*` refusals of the statement that is not accepted; a
+/// call-frame directive outside §15 is `asm:directive/<name>`.
+pub fn assemble_with_cfi(
+    body: &str,
+    code: &mut Vec<u8>,
+    refs: &mut Vec<Ref>,
+    cfi: &mut Vec<CfiRow>,
+    scratch: &mut String,
+) -> Result<(), Refusal> {
+    cfi.clear();
+    assemble_body(body, code, refs, Some(cfi), scratch)
+}
+
+fn assemble_body(
+    body: &str,
+    code: &mut Vec<u8>,
+    refs: &mut Vec<Ref>,
+    mut cfi: Option<&mut Vec<CfiRow>>,
+    scratch: &mut String,
+) -> Result<(), Refusal> {
     code.clear();
     refs.clear();
+    // Each directive's item and what it says.
+    let mut pending_cfi: Vec<(usize, Cfi)> = Vec::new();
     let mut pending_refs: Vec<Pending> = Vec::new();
     clean(body, scratch)?;
     let mut bytes: Vec<u8> = Vec::new();
@@ -493,6 +565,11 @@ pub fn assemble(
                 let at = bytes.len();
                 pending_refs.push(reloc(rest, at)?);
                 items.push(Item::Bytes { at, len: 0 });
+                continue;
+            }
+            if cfi.is_some() && name.starts_with(".cfi_") {
+                pending_cfi.push((items.len(), cfi_directive(&name, rest)?));
+                items.push(Item::Bytes { at: bytes.len(), len: 0 });
                 continue;
             }
             let Some(size) = data_size(&name) else { return Err(reason::directive(&name)) };
@@ -531,7 +608,102 @@ pub fn assemble(
         return Err(Refusal(op_reason::FORM));
     }
     let offsets = lay_out(&mut items, &bytes, code)?;
+    if let Some(cfi) = cfi.as_deref_mut() {
+        for (item, op) in pending_cfi {
+            let offset = u32::try_from(offsets[item]).map_err(|_| Refusal(op_reason::RANGE))?;
+            cfi.push(CfiRow { offset, op });
+        }
+    }
     place_refs(&items, &offsets, pending_refs, refs)
+}
+
+/// The DWARF number of the register a call-frame directive names: a
+/// 64-bit general register, `rip` or an `xmm` register, with or without
+/// `%`, or the number itself (`spec/asm.md` §15).
+fn cfi_register(text: &str) -> Result<u16, Refusal> {
+    let text = trim(text);
+    if text.starts_with(|c: char| c.is_ascii_digit()) {
+        let mut c = Cursor::new(text);
+        let n = c.constant()?;
+        if !c.at_end() {
+            return Err(Refusal(op_reason::SYNTAX));
+        }
+        return u16::try_from(n).map_err(|_| Refusal(op_reason::REGISTER));
+    }
+    let name = text.strip_prefix('%').unwrap_or(text).to_ascii_lowercase();
+    // DWARF numbers of the general registers, by encoding.
+    const GPR: [u16; 16] = [0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15];
+    match operand::reg_name(&name) {
+        Some(operand::RegName::Gpr(g)) if g.size == Size::Q => Ok(GPR[usize::from(g.reg.code())]),
+        Some(operand::RegName::Rip) => Ok(16),
+        Some(operand::RegName::Xmm(x)) => Ok(17 + u16::from(x.code())),
+        _ => Err(Refusal(op_reason::REGISTER)),
+    }
+}
+
+/// A byte offset of a call-frame directive.
+fn cfi_offset(text: &str) -> Result<i64, Refusal> {
+    let mut c = Cursor::new(trim(text));
+    let v = c.constant()?;
+    if !c.at_end() {
+        return Err(Refusal(op_reason::SYNTAX));
+    }
+    Ok(v)
+}
+
+/// Call-frame directive `name` with operands `rest` (§15).
+///
+/// # Errors
+/// `asm:directive/<name>` for a directive outside §15; operand refusals.
+fn cfi_directive(name: &str, rest: &str) -> Result<Cfi, Refusal> {
+    let parts: Vec<&str> = if rest.is_empty() { Vec::new() } else { rest.split(',').collect() };
+    let count = |n: usize| {
+        if parts.len() == n { Ok(()) } else { Err(Refusal(op_reason::SYNTAX)) }
+    };
+    // A CFA offset `llc` writes unsigned.
+    let cfa = |text: &str| {
+        i32::try_from(cfi_offset(text)?)
+            .ok()
+            .filter(|&o| o >= 0)
+            .ok_or(Refusal(op_reason::RANGE))
+    };
+    Ok(match name {
+        ".cfi_remember_state" => {
+            count(0)?;
+            Cfi::RememberState
+        }
+        ".cfi_restore_state" => {
+            count(0)?;
+            Cfi::RestoreState
+        }
+        ".cfi_def_cfa" => {
+            count(2)?;
+            Cfi::DefCfa { reg: cfi_register(parts[0])?, offset: cfa(parts[1])? }
+        }
+        ".cfi_def_cfa_offset" => {
+            count(1)?;
+            Cfi::DefCfaOffset(cfa(parts[0])?)
+        }
+        ".cfi_def_cfa_register" => {
+            count(1)?;
+            Cfi::DefCfaRegister(cfi_register(parts[0])?)
+        }
+        ".cfi_offset" => {
+            count(2)?;
+            let reg = cfi_register(parts[0])?;
+            // The data alignment factor is -8.
+            let cfa_offset = i32::try_from(cfi_offset(parts[1])?)
+                .ok()
+                .filter(|o| o % 8 == 0)
+                .ok_or(Refusal(op_reason::RANGE))?;
+            Cfi::Offset { reg, cfa_offset }
+        }
+        ".cfi_restore" => {
+            count(1)?;
+            Cfi::Restore(cfi_register(parts[0])?)
+        }
+        _ => return Err(reason::directive(name)),
+    })
 }
 
 /// The near form of `jump` to symbol `sym` plus `constant`, appended to
@@ -965,5 +1137,58 @@ mod tests {
         assert_eq!(p(Arg::Gp(0, 4), Some(b'h')).err(), Some(reason::modifier("h")));
         assert!(p(Arg::Mem(0), Some(b'c')).is_err());
         assert!(p(Arg::Xmm(0), Some(b'k')).is_err());
+    }
+
+    /// §15: call-frame directives at their code offsets, the valgrind
+    /// shape among them; what stays refused by name.
+    #[test]
+    fn call_frame_directives() {
+        let read = |body: &str| {
+            let (mut code, mut refs, mut cfi) = (Vec::new(), Vec::new(), Vec::new());
+            assemble_with_cfi(body, &mut code, &mut refs, &mut cfi, &mut String::new())
+                .map(|()| (code.len(), cfi))
+        };
+        let (len, cfi) = read(
+            "movq %rbp, %r15\nmovq %rax, %rbp\n.cfi_remember_state\n.cfi_def_cfa rbp, 0\n\
+             call f\nmovq %r15, %rbp\n.cfi_restore_state",
+        )
+        .unwrap();
+        assert_eq!(len, 3 + 3 + 5 + 3);
+        assert_eq!(
+            cfi,
+            [
+                CfiRow { offset: 6, op: Cfi::RememberState },
+                CfiRow { offset: 6, op: Cfi::DefCfa { reg: 6, offset: 0 } },
+                CfiRow { offset: 14, op: Cfi::RestoreState },
+            ]
+        );
+        let one = |body: &str| read(body).map(|(_, cfi)| cfi[0].op);
+        assert_eq!(one(".cfi_def_cfa %rsp, 16"), Ok(Cfi::DefCfa { reg: 7, offset: 16 }));
+        assert_eq!(one(".cfi_def_cfa_offset 24"), Ok(Cfi::DefCfaOffset(24)));
+        assert_eq!(one(".cfi_def_cfa_register %r12"), Ok(Cfi::DefCfaRegister(12)));
+        assert_eq!(one(".cfi_offset %rbx, -24"), Ok(Cfi::Offset { reg: 3, cfa_offset: -24 }));
+        assert_eq!(one(".cfi_offset xmm3, -32"), Ok(Cfi::Offset { reg: 20, cfa_offset: -32 }));
+        assert_eq!(one(".cfi_offset 16, -8"), Ok(Cfi::Offset { reg: 16, cfa_offset: -8 }));
+        assert_eq!(one(".cfi_restore %rsi"), Ok(Cfi::Restore(4)));
+        assert_eq!(one(".cfi_restore %RDI"), Ok(Cfi::Restore(5)));
+        // A 1-byte jump over a label keeps the offsets laid out.
+        let (_, cfi) = read("jmp 1f\nnop\n1: .cfi_remember_state").unwrap();
+        assert_eq!(cfi[0].offset, 3);
+        let no = |body: &str| read(body).err().map(|r| r.0);
+        assert_eq!(no(".cfi_adjust_cfa_offset 8"), Some("asm:directive/cfi_adjust_cfa_offset"));
+        assert_eq!(no(".cfi_rel_offset %rbx, 0"), Some("asm:directive/cfi_rel_offset"));
+        assert_eq!(no(".cfi_escape 0x2e, 0"), Some("asm:directive/cfi_escape"));
+        assert_eq!(no(".cfi_startproc"), Some("asm:directive/cfi_startproc"));
+        assert_eq!(no(".cfi_offset %ebx, -16"), Some(op_reason::REGISTER));
+        assert_eq!(no(".cfi_offset %rbx, -12"), Some(op_reason::RANGE));
+        assert_eq!(no(".cfi_def_cfa %rbp, -8"), Some(op_reason::RANGE));
+        assert_eq!(no(".cfi_def_cfa %rbp"), Some(op_reason::SYNTAX));
+        assert_eq!(no(".cfi_remember_state 1"), Some(op_reason::SYNTAX));
+        // Without the call-frame reading, the directive is refused.
+        let (mut code, mut refs) = (Vec::new(), Vec::new());
+        assert_eq!(
+            assemble(".cfi_remember_state", &mut code, &mut refs, &mut String::new()),
+            Err(reason::directive(".cfi_remember_state"))
+        );
     }
 }
