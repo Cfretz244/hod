@@ -591,8 +591,10 @@ These are decisions the group packages (WP-035..041) build on.
   (else `a64:constant-relocation`; WP-072 writes every other relocation
   of a non-vector image, "Constant operands with addresses" below). Symbol addresses follow §7.4:
   `adrp`+`add` with the addend folded as `llc` folds it (WP-073), or
-  `adrp`+`ldr` from the GOT then the addend added; a code model other
-  than small is `a64:code-model`.
+  `adrp`+`ldr` from the GOT then the addend added. Under the large code
+  model outside PIC a direct symbol's address is `movz`/`movk` (§5.6.36
+  point 8); under PIC the large model is `module:code-model-large-pic`,
+  and a code model other than small and large is `a64:code-model`.
 - **Other reason names of the target**: `a64:atomic`,
   `a64:vector-element` (no longer emitted: WP-079 lowers the element
   operations), `a64:thread-local` (no longer returned: WP-073 lowers TLS),
@@ -2227,7 +2229,8 @@ words compared with `llvm-mc`'s; the refusals; features from
   address of a dso-local symbol is `lea r, [rip + x]` (`R_X86_64_PC32`,
   an addend below 16 MiB folded); of a preemptible one `mov r, [rip +
   x@GOTPCREL]` (`R_X86_64_REX_GOTPCRELX`, relaxable) then the addend
-  added with `lea`. A `Code Model` other than small is `x64:code-model`.
+  added with `lea`. Under the large code model every reference is 64-bit
+  (§5.6.36); medium and kernel are refused by name.
   A thread-local symbol is §5.6.11's. A variadic call
   sets `al` to the number of vector registers used.
 
@@ -3071,7 +3074,8 @@ external linkage in a shared object is reached through its local alias
   The x87 stack must be empty there, as at any call (WP-131).
 - **Refused**: as on AArch64, `tls:direct-operand` (a thread-local
   callee) and `tls:address-in-constant` by `hod_ir`'s classification;
-  a code model other than small is `x64:code-model`. `x64:todo:tls` is
+  a code model other than small and large is `x64:code-model` (under
+  the large model the sequences are these, §5.6.36). `x64:todo:tls` is
   no longer returned. The DWARF location of a thread-local variable
   (`DW_OP_const8u x@dtpoff; DW_OP_GNU_push_tls_address`,
   `R_X86_64_DTPOFF64`) stays refused by `hod_dwarf`
@@ -4367,6 +4371,109 @@ without them: the code of the x86-64 baseline is unchanged).
 
 Evidence: `spec/landed/codegen/WP-202.md`.
 
+#### 5.6.36 The large code model (WP-209)
+
+A module whose `Code Model` flag is 4, or `-code-model=large`, is built
+as `llc` 19 and 22 build it at `-O0`. On x86-64 no 32-bit field reaches
+a symbol, the GOT, another section or another function, so the code, the
+data and the GOT may be anywhere in the address space (points 1 to 6);
+AArch64 is point 8. The census of
+what `llc` writes, and of what kiln gives, is in
+`spec/landed/codegen/WP-209.md`.
+
+1. **Sections.** Functions are in `.ltext` (`.ltext.<name>` with
+   `-function-sections` or in a COMDAT group), `"axl"`; variables in
+   `.ldata`, `.lbss`, `.lrodata`, `.lrodata.str<n>.<align>`,
+   `.lrodata.cst<n>` and their `.<name>` forms, each with
+   `SHF_X86_64_LARGE` (`"l"`). Thread-local variables (`.tdata`,
+   `.tbss`) and read-only data with relocations under PIC
+   (`.data.rel.ro`) stay small, as `llc`'s. An explicit section is large
+   by its name in every code model: `.ltext` and `.ltext.*` for a
+   function, `.ldata`, `.lbss`, `.lrodata` and their `.*` for a
+   variable, as `llc`'s. The `Large Data Threshold` flag is ignored, as
+   `llc` ignores it: under the large model every variable is large. An
+   empty `.text` is still written; `common` symbols stay `SHN_COMMON`.
+2. **Addresses outside PIC.** `movabs r, sym + addend`
+   (`R_X86_64_64`) for every symbol, preemptible or not.
+3. **Addresses under PIC.** The GOT's address first, `lea r, [rip -
+   7]` (the `lea`'s own address) then `movabs t, _GLOBAL_OFFSET_TABLE_
+   - lea` (`R_X86_64_GOTPC64`, addend the immediate's distance from the
+   `lea`, 9) and `lea r, [r + t]`, as `llc` computes it at a function's
+   entry. Then a dso-local symbol is `movabs t, sym@GOTOFF + addend`
+   (`R_X86_64_GOTOFF64`) and `lea r, [r + t]`; a preemptible one, the
+   runtime's functions and `_GLOBAL_OFFSET_TABLE_` itself are `movabs
+   t, sym@GOT` (`R_X86_64_GOT64`) and `mov r, [r + t]`, then the addend
+   added. `t` is the general scratch register other than `r` (`r10`,
+   `r11`), saved around the sequence with `push`/`pop` (nothing lives
+   below `rsp`: hod has no red zone), and the flags are kept. hod
+   computes the GOT's address at every reference where `llc` keeps it
+   in a register for the function, so its objects have more
+   `R_X86_64_GOTPC64`; `R_X86_64_PLTOFF64`, `R_X86_64_GOTPCREL64` and
+   `R_X86_64_GOTPLT64` are never written, as `llc` writes none at `-O0`.
+4. **Calls.** A direct call or tail call is the callee's address in
+   `r11` (2 or 3), then `call r11` or `jmp r11` (`r11` carries no
+   argument; `x64:nest` is refused). The field naming the callee is a
+   callee's (`Reloc::branch`), so a call of an `available_externally`
+   `alwaysinline` function goes to its local copy (§9.7.2) as `call
+   rel32` does. The stack protector's `__stack_chk_fail`, the runtime's
+   functions (§7.3: `memcpy`, `__udivti3`, ...) and the noop coroutine
+   frame (`coro.noop`) are reached the same way.
+5. **What does not change.** Thread-local accesses are §5.6.11's
+   sequences (`TLSGD`, `TLSLD`, `GOTTPOFF`, `TPOFF32`, `DTPOFF32`, the
+   call of `__tls_get_addr@PLT`), as `llc` 19 and 22 write them under
+   the large model: initial exec and the dynamic models need the GOT
+   within 2 GiB of the code, local exec does not. Jump tables, block
+   addresses and constants are in the function's own data islands
+   (§5.6.6) with internal fixups, so they move with the code; `llc`'s
+   jump tables (`.rodata`) and constant pools (`.rodata.cst<n>`) have no
+   counterpart. DWARF is unchanged (its addresses were already 64-bit).
+6. **Unwind tables.** `.eh_frame`'s pointers are 8 bytes and
+   PC-relative (`spec/eh.md` §2.1, `X86_64_LARGE`: FDE `pcrel|sdata8`,
+   personality `indirect|pcrel|sdata8`, LSDA `pcrel|sdata8`,
+   `R_X86_64_PC64`), and the LSDA's type table takes the personality's
+   encoding (`LsdaOptions::large`). Outside PIC `llc` writes the
+   personality, the LSDA and the type table absolute; hod keeps the
+   PC-relative forms, as under the small model.
+7. **Refused by name.** The medium and kernel code models
+   (`module:code-model-medium`, `module:code-model-kernel`, `hod_ir`'s
+   classification): medium mixes 32-bit and 64-bit references by a
+   per-variable threshold and kernel is a different absolute model;
+   neither is a subset of the large model's sequences. A variable's own
+   `code_model` attribute is `global-code-model`. Inside the code
+   generator a model other than small and large is `x64:code-model`
+   (`a64:code-model` on AArch64).
+8. **AArch64.** Outside PIC, as `llc` 19 and 22 write it: a dso-local
+   symbol's address is `movz r, #:abs_g0_nc:sym; movk r,
+   #:abs_g1_nc:sym, lsl 16; movk #:abs_g2_nc:, lsl 32; movk #:abs_g3:,
+   lsl 48` (`R_AARCH64_MOVW_UABS_G0_NC`, `G1_NC`, `G2_NC`, `G3`, addend
+   0), then the addend added; a preemptible one is read from the GOT
+   with `adrp`+`ldr` as under the small model (so the GOT stays within
+   4 GiB of the code, as `llc`'s does); calls stay `bl`/`b`
+   (`R_AARCH64_CALL26`, `JUMP26`; the linker's veneers reach further);
+   the noop coroutine frame is the same `movz`/`movk`. Sections keep
+   their small-model names (AArch64 has no large sections). Thread-locals
+   of the local-exec model are unchanged; any other model is
+   `a64:code-model-large-tls`, as `llc` rejects it ("ELF TLS only
+   supported in small memory model or in local exec TLS model"). The
+   FDE's initial location and range are 8 bytes (`spec/eh.md` §2.1,
+   `AARCH64_LARGE`: `pcrel|sdata8`, `R_AARCH64_PREL64`); the personality
+   and LSDA pointers were 8 bytes already. Under PIC `llc` keeps
+   small-model code but writes 8-byte FDEs and rejects every thread-local
+   model but local exec, so it is neither hod's small PIC output nor
+   complete: hod refuses it, `module:code-model-large-pic` (the
+   classifier's row when the module's `PIC Level` is not 0, and the
+   target's name when only the relocation model says PIC).
+
+Evidence: `spec/landed/codegen/WP-209.md`;
+`hod_x64/tests/large_code_model.rs` (the program of
+`tests/data/large`, `llc`'s sections and relocation types, linked with
+the start files and in a layout with the code, the GOT and the data more
+than 4 GiB apart under GNU ld, lld and mold, plain and with `-g`);
+`hod_a64/tests/large_code_model.rs` (the same program outside PIC:
+`llc`'s relocation types in the code and the unwind tables, linked with
+the start files and with the code more than 4 GiB from `.data`, `.bss`
+and `.rodata`, under the same linkers, plain and with `-g`).
+
 ## 6. Control flow
 
 ### 6.1 Reachability
@@ -5043,7 +5150,7 @@ one arm of `intrinsic::intrinsic`:
 | `coro.resume(p)` / `coro.destroy(p)` | `ldr x, [p, #0]` / `[p, #8]` into a temporary, then the core's call sequence through it with `p` as the one argument, `fastcc` (the C convention for one pointer on AArch64): `FnCx::call_through`. As an `invoke` too: the normal edge's `phi` stores, the jump and the landing-pad stub are the ones of `FnCx::call` |
 | `coro.done(p)` | the resume pointer is null: `ldr x, [p]`, `cmp x, #0`, `cset w, eq` |
 | `coro.promise(p, align, from)` | `p + alignTo(16, align)`, or `p - alignTo(16, align)` when `from` is true: `add`/`sub` of a constant |
-| `coro.noop()` | the address of the object's noop frame: `adrp` + `add :lo12:` (small code model; `a64:code-model` otherwise) |
+| `coro.noop()` | the address of the object's noop frame: `adrp` + `add :lo12:` (small code model), `movz`/`movk` (large, §5.6.36 point 8) |
 
 `align` must be a constant power of two of at most 2^30 and `from` a
 constant (`a64:coro-promise` otherwise): LLVM computes the offset in
@@ -5270,7 +5377,7 @@ pointer). `coro.done`: `cmp qword [p], 0` + `sete`. `coro.promise`:
 `lea r, [p ± max(16, align)]`; an alignment that is not a constant power
 of two of at most 2^30, or a direction that is not a constant, is
 `x64:coro-promise`. `coro.noop`: `lea r, [rip + frame]`
-(`R_X86_64_PC32`), small code model only (`x64:code-model` otherwise);
+(`R_X86_64_PC32`), under the large code model §5.6.36's address;
 the noop frame's function is one `ret` (`NOOP_CORO_FN`).
 
 *The machine frame.* `rbx` is the frame base. A function with the
@@ -5465,6 +5572,11 @@ picks the psABI relocation. `SymRef` is `Module(SymId)` or
 `Runtime(RuntimeFn)` (§7.3). Code never refers to another function's
 blocks (§1) or islands, to its own section, or to anything `hod_eh` and
 `hod_dwarf` generate; those references are made by their writers.
+A relocation's `branch` is set (`FnCx::branch_reloc`) when its field
+names the callee of a call or tail call although its kind is not a
+branch relocation, the large code model's `movabs` of the callee
+(§5.6.36): module emission sends it to a local copy as it sends a branch
+(§9.7.2).
 
 ### 9.3 Frame description and CFI
 
@@ -5802,9 +5914,12 @@ code as a copy:
   function's (both refer to section symbols and offsets, not to the
   function's symbol);
 - `R_AARCH64_CALL26`/`JUMP26` (x86-64: `R_X86_64_PLT32`) relocations of
-  the object's code to the function go to the copy, resolved when every
-  chunk is placed; every other relocation (an address, data, an alias)
-  stays on the external symbol, which stays undefined.
+  the object's code to the function go to the copy, and so does the
+  field naming the callee of a call under x86-64's large code model
+  (`Reloc::branch`: `R_X86_64_64`, `GOTOFF64` or `GOT64`, §5.6.36),
+  resolved when every chunk is placed; every other relocation (an
+  address, data, an alias) stays on the external symbol, which stays
+  undefined.
 
 A function whose chunk is not given keeps `llc`'s layout exactly.
 
