@@ -128,6 +128,13 @@ const CENSUS: &[Row] = &[
     row("leaq 0(%rip),%rax;", "abseil symbolize_test.cc (2)", 2, Ok(0)),
     row("lea 0(%rip), %rax", "sanitizer_stacktrace.h", 1, Ok(0)),
     row("leaq LLVMRTDyldTLSSpace@tpoff, %rax", "llvm-rtdyld.cpp", 1, Ok(1)),
+    // `Ws` of a type's default instance (`${0:p}`, an `R_X86_64_NONE`).
+    row(
+        ".reloc ., BFD_RELOC_NONE, _ZN6proto231_Message_default_instance_E",
+        "protobuf port.h StrongReferenceToType (DownCastMessage)",
+        1,
+        Ok(1),
+    ),
     // x87 and SSE control.
     row("fwait", "libc FEnvImpl.h, llvm-exegesis, kiln-built modules (5)", 7, Ok(0)),
     row("fnstcw (%rax)", "glibc fpu_control.h, libc FEnvImpl.h, fp_mode.c", 3, Ok(0)),
@@ -157,6 +164,8 @@ const CENSUS: &[Row] = &[
     row("outb %al,%dx\noutb %al,$0x80", "glibc sys/io.h outb_p", 1, Ok(0)),
     row("outw %ax,%dx\noutb %al,$0x80", "glibc sys/io.h outw_p", 1, Ok(0)),
     row("outl %eax,%dx\noutb %al,$0x80", "glibc sys/io.h outl_p", 1, Ok(0)),
+    // A call to a symbol (WP-204, `spec/asm.md` §14): `R_X86_64_PLT32`.
+    row("call __bolt_fini_trampoline", "bolt instr.cpp, hugify.cpp (3)", 3, Ok(1)),
     // What stays refused.
     row("mov %cr3, %rax", "clang intrin.h __readcr3", 1, No("asm:operand/register")),
     row("mov %rax, %cr3", "clang intrin.h __writecr3", 1, No("asm:operand/register")),
@@ -175,12 +184,6 @@ const CENSUS: &[Row] = &[
         "bolt sys_x86_64.h",
         1,
         No("asm:operand/symbol"),
-    ),
-    row(
-        "call __bolt_fini_trampoline",
-        "bolt instr.cpp, hugify.cpp (3)",
-        3,
-        No("asm:mnemonic/call"),
     ),
     row(
         "1: .byte  0xC7; .byte 0xF8;\n.long  1f-1b-6\njmp   2f\n1:  movl  %eax,%ecx\n2:",
