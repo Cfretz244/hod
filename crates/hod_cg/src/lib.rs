@@ -83,7 +83,9 @@ pub use dbg_value::{DEBUG_DBG_VALUE_ARGLIST, DEBUG_DBG_VALUE_COROUTINE, ValueAt,
 pub use debug_calls::{DebugCallRow, DebugCallee};
 pub use driver::{MAX_FUNCTION_SIZE, compile_function};
 pub use emit::{COPY_SUFFIX, Emitted, ModuleEmitter, PlacedFunc, emit_module};
-pub use error::{CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE};
+pub use error::{
+    CgError, CgResult, LIMIT_FRAME_SIZE, LIMIT_FUNCTION_SIZE, MODULE_CODE_MODEL_LARGE_PIC,
+};
 pub use frame::{Frame, FrameRef, MAX_FRAME, SlotPlace};
 pub use guard::{GUARD_BYTES, GuardPlan, SSP_COROUTINE, SSP_TARGET};
 pub use key_rows::{DEBUG_KEY_INSTRUCTIONS_COROUTINE, DEBUG_KEY_INSTRUCTIONS_MIXED};

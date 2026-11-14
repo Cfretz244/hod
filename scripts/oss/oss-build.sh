@@ -197,6 +197,10 @@ again() {
 SRC="$OSS/src/$P_CHECKOUT"
 BUILD="$OSS/${TP}build/$PROJECT/$FLAVOUR-$MODE${INSTALL:+-dep}"
 mkdir -p "$OSS/src" "$BUILD"
+# Every build starts from an empty tree: a tree left by an earlier build
+# (kept, or cut off half-built) may hold objects of another compiler,
+# which make would not rebuild.
+find "$BUILD" -mindepth 1 -delete
 P_TEST="${P_TEST//@SRC@/$SRC}"
 export KILN_OSS_LOG="$BUILD/compile.jsonl"
 export KILN_OSS_VMEM_KB="${KILN_OSS_VMEM_KB:-$P_VMEM_KB}"
@@ -217,8 +221,10 @@ rm -f "$BUILD/report.json" "$BUILD/configure.log" "$BUILD/build.log" "$BUILD/tes
 [ ! -d "$BUILD/declined" ] || find "$BUILD/declined" -mindepth 1 -delete
 
 if [ -d "$SRC/.git" ]; then
+  # Compare commits: a commit can carry several tags (protobuf's v33.1 is
+  # also v4.33.1-objectivec), and describe names any one of them.
   have="$(git -C "$SRC" describe --tags --exact-match 2>/dev/null || echo '?')"
-  [ "$have" = "$P_TAG" ] || echo "oss-build: warning: $SRC is at '$have', the toml pins '$P_TAG' (delete the checkout to refetch)" >&2
+  [ "$(git -C "$SRC" rev-parse -q --verify HEAD 2>/dev/null)" = "$(git -C "$SRC" rev-parse -q --verify "$P_TAG^{commit}" 2>/dev/null)" ] || echo "oss-build: warning: $SRC is at '$have', the toml pins '$P_TAG' (delete the checkout to refetch)" >&2
 else
   sub=()
   [ -n "$P_SUBMODULES" ] && sub=(--recurse-submodules --shallow-submodules)
@@ -279,8 +285,13 @@ if [ "$CONF_RC" = 0 ]; then
     # Per-tree test scratch, so the builds of one project never share it.
     TTMP="$BUILD/test-tmp"; mkdir -p "$TTMP" && find "$TTMP" -mindepth 1 -delete
     [ "$TARGET" = aarch64 ] || python3 "$HERE/projects.py" emulate-tests "$BUILD" "$X64_QEMU" -L "$X64_SYSROOT" > "$BUILD/emulate.log" 2>&1
+    # The cap is on address space, and glibc reserves 64 MB of it for each
+    # malloc arena (up to 8 per CPU): a test running many threads at once
+    # exhausts it on a many-CPU host without using the memory, sooner the
+    # slower its code. MALLOC_ARENA_MAX bounds the reservation, the same
+    # for every mode.
     (cd "$BUILD" && ulimit -v "$TEST_VMEM_KB" && export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-4}" \
-      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
+      TMPDIR="$TTMP" TEST_TMPDIR="$TTMP" MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-4}" && timeout "$P_TEST_TIMEOUT" nice -n 10 bash -c "$P_TEST") > "$BUILD/test.log" 2>&1
     TEST_RC=$?
     echo "oss-build: test rc=$TEST_RC ($BUILD/test.log)"
   fi

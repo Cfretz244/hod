@@ -4,7 +4,9 @@
 //! GNU ld, lld and mold and run under several threads (under
 //! `qemu-x86_64` on another host); the linkers' relaxations read back
 //! from the linked code; the relocations compared with `llc`'s; objects
-//! of hod and `llc` mixed; the sequences byte for byte.
+//! of hod and `llc` mixed; the sequences byte for byte. The same with
+//! TLS descriptors (`-enable-tlsdesc`, WP-213, §5.6.37), plus a shared
+//! object loaded by `dlopen` whose two modules use the two dialects.
 
 #![allow(clippy::too_many_lines, clippy::too_many_arguments)]
 
@@ -18,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use hod_cg::{CgError, Options, RelocModel};
+use hod_cg::{CgError, Options, RelocModel, Stress};
 use hod_ir::{Body, Module};
 use hod_testutil::{Scratch, find_tool, run_with, tool};
 use linking::{Linker, Toolchain, exit_code};
@@ -104,14 +106,42 @@ enum Who {
     Llc(u32),
 }
 
+/// How the dynamic models are written (WP-213): `__tls_get_addr`, or
+/// TLS descriptors (`-enable-tlsdesc`); hod's stress mode (§12) or not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Dialect {
+    desc: bool,
+    stress: bool,
+}
+
+const GNU: Dialect = Dialect { desc: false, stress: false };
+const DESC: Dialect = Dialect { desc: true, stress: false };
+
 /// The object of `text` (header and `mode`'s flags added); `None` when
 /// that `llc` is not installed.
 fn object(dir: &Scratch, name: &str, text: &str, mode: Mode, who: Who) -> Option<PathBuf> {
+    object_in(dir, name, text, mode, who, GNU)
+}
+
+/// [`object`] in `dialect`.
+fn object_in(
+    dir: &Scratch,
+    name: &str,
+    text: &str,
+    mode: Mode,
+    who: Who,
+    dialect: Dialect,
+) -> Option<PathBuf> {
     let full = format!("{text}{}", mode.flags());
     match who {
         Who::Hod => {
             let (module, bodies) = parse(&full);
-            let bytes = hod_x64::compile_to_object(&module, &bodies, &mode.options())
+            let options = Options {
+                tls_descriptors: dialect.desc,
+                stress: if dialect.stress { Stress::ALL } else { Stress::default() },
+                ..mode.options()
+            };
+            let bytes = hod_x64::compile_to_object(&module, &bodies, &options)
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             Some(dir.write(&format!("{name}.o"), bytes))
         }
@@ -122,6 +152,7 @@ fn object(dir: &Scratch, name: &str, text: &str, mode: Mode, who: Who) -> Option
             let mut command = Command::new(llc);
             command
                 .args(["-O0", "-fast-isel=0", "-filetype=obj", mode.llc_model()])
+                .args(dialect.desc.then_some("-enable-tlsdesc"))
                 .arg(&input)
                 .arg("-o")
                 .arg(&output);
@@ -694,4 +725,249 @@ fn text_size_against_llc() {
             eprintln!("x64 tls {mode:?}: .text hod {a} llc22 {b} bytes: hod/llc {}%", a * 100 / b);
         }
     }
+}
+
+// ---- TLS descriptors (WP-213, §5.6.37) ----
+
+/// What linked code says about hod's descriptor sequences: each ends in
+/// `add rax, fs:[0]`, after the descriptor call kept, or after what the
+/// linker wrote over the `lea` and the call (a `mov` of an immediate:
+/// local exec; a load from the GOT: initial exec; then a 2-byte `nop`).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Descriptors {
+    kept: usize,
+    local_exec: usize,
+    initial_exec: usize,
+    other: usize,
+}
+
+fn descriptors(code: &[String]) -> Descriptors {
+    let mut d = Descriptors::default();
+    for (i, line) in code.iter().enumerate() {
+        if line != "addq %fs:0x0, %rax" || i < 2 {
+            continue;
+        }
+        let (first, second) = (code[i - 2].as_str(), code[i - 1].as_str());
+        if second == "callq *(%rax)"
+            && first.starts_with("leaq ")
+            && first.ends_with("(%rip), %rax")
+        {
+            d.kept += 1;
+        } else if second == "nop" && first.starts_with("movq $") && first.ends_with(", %rax") {
+            d.local_exec += 1;
+        } else if second == "nop" && first.starts_with("movq ") && first.ends_with("(%rip), %rax") {
+            d.initial_exec += 1;
+        } else {
+            d.other += 1;
+        }
+    }
+    d
+}
+
+/// The objects of the descriptor builds: as [`WHO`], every one in the
+/// descriptor dialect, hod under stress too, and the two mixtures of
+/// dialects (hod's descriptors with `llc`'s `__tls_get_addr`, and the
+/// reverse).
+/// Who builds a module, in which dialect.
+type Builder = (Who, Dialect);
+
+const WHO_DESC: [(&str, Builder, Builder); 7] = [
+    ("hod", (Who::Hod, DESC), (Who::Hod, DESC)),
+    ("hod-stress", (Who::Hod, STRESS), (Who::Hod, STRESS)),
+    ("llc19", (Who::Llc(19), DESC), (Who::Llc(19), DESC)),
+    ("llc22", (Who::Llc(22), DESC), (Who::Llc(22), DESC)),
+    ("hod-llcgnu", (Who::Hod, DESC), (Who::Llc(22), GNU)),
+    ("llcgnu-hod", (Who::Llc(22), GNU), (Who::Hod, DESC)),
+    ("hodgnu-llc", (Who::Hod, GNU), (Who::Llc(22), DESC)),
+];
+
+const STRESS: Dialect = Dialect { desc: true, stress: true };
+
+/// `spec/codegen.md` §5.6.37 (WP-213): the program of
+/// [`every_model_links_runs_and_relaxes`] with TLS descriptors, six ways
+/// of linking, three linkers, hod's objects (plain and under stress),
+/// `llc`'s (19 and 22) and the dialects mixed; the relaxations each linker
+/// applies to hod's descriptors; the relocations against `llc`'s; and
+/// where no dynamic model is left (the executable's modules), the object
+/// byte for byte the one without the option.
+#[test]
+fn descriptors_link_run_and_relax() {
+    let dir = Scratch::new("x64-tlsdesc");
+    let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
+    let lib = data("lib.ll");
+    let main = data("main.ll");
+    let dso_src = "__thread int dso_tls = 200;\n";
+    let dso_obj = toolchain.compile_c(&dir, "dso", dso_src, &["-fPIC"]);
+    let dso_static = toolchain.compile_c(&dir, "dso-static", dso_src, &["-fPIE"]);
+    let driver_src = data("driver.c");
+    let mut report = String::new();
+    let mut runs = 0;
+    for build in &BUILDS {
+        let driver =
+            toolchain.compile_c(&dir, &format!("driver-{}", build.tag), &driver_src, build.c_flags);
+        let dso = (if build.dso_shared { &dso_obj } else { &dso_static }, &dso_obj);
+        for (who, (lib_who, lib_d), (main_who, main_d)) in WHO_DESC {
+            if who.contains('-') && who != "hod-stress" && build.main.is_none() {
+                continue;
+            }
+            let name = format!("lib-{}-{who}", build.tag);
+            let Some(lib_obj) = object_in(&dir, &name, &lib, build.lib, lib_who, lib_d) else {
+                continue;
+            };
+            let main_obj = match build.main {
+                Some(mode) => {
+                    let name = format!("main-{}-{who}", build.tag);
+                    let Some(obj) = object_in(&dir, &name, &main, mode, main_who, main_d) else {
+                        continue;
+                    };
+                    Some(obj)
+                }
+                None => None,
+            };
+            // A module of an executable has no dynamic model: the option
+            // changes nothing.
+            if who == "hod" && build.lib != Mode::Shared {
+                let gnu = object(&dir, &format!("{name}-gnu"), &lib, build.lib, Who::Hod).unwrap();
+                let same = std::fs::read(&gnu).unwrap() == std::fs::read(&lib_obj).unwrap();
+                assert!(same, "{name}: -enable-tlsdesc changed an object without a dynamic model");
+            }
+            for linker in &toolchain.linkers {
+                let file = link_run(
+                    &toolchain,
+                    &dir,
+                    linker,
+                    build,
+                    who,
+                    (&lib_obj, main_obj.as_deref()),
+                    &driver,
+                    (dso.0.as_path(), dso.1.as_path()),
+                );
+                runs += 1;
+                let Some(code) = disassembly(&file, "lib_", false) else { continue };
+                let seq = sequences(&code);
+                let desc = descriptors(&code);
+                let _ = writeln!(report, "{} {who} {}: {desc:?} {seq:?}", build.tag, linker.name);
+                if !who.starts_with("hod") || who == "hodgnu-llc" {
+                    continue;
+                }
+                let tag = format!("{} {who} {}", build.tag, linker.name);
+                assert_eq!(desc.other, 0, "{tag}: {desc:?}");
+                assert_eq!(seq.dynamic_calls, 0, "{tag}: {seq:?}");
+                match build.tag {
+                    // The shared object keeps every descriptor call.
+                    "shared" => {
+                        assert_eq!(desc.kept, 49, "{tag}: {desc:?}");
+                        assert_eq!(desc.local_exec + desc.initial_exec, 0, "{tag}: {desc:?}");
+                    }
+                    // Into a PIE or a static link: none is left; the
+                    // executable's variables to local exec, the others'
+                    // to initial exec where the linker keeps a GOT entry.
+                    // bfd and lld take every one to local exec in a
+                    // static link; mold keeps another object's variables
+                    // in a GOT entry (initial exec).
+                    "relax" | "static" | "static-pie" => {
+                        assert_eq!(desc.kept, 0, "{tag}: {desc:?}");
+                        assert!(desc.local_exec >= 30, "{tag}: {desc:?}");
+                        assert_eq!(desc.local_exec + desc.initial_exec, 49, "{tag}: {desc:?}");
+                        let gnu = linker.name != "mold";
+                        if build.tag == "relax" {
+                            assert!(desc.initial_exec >= 5, "{tag}: {desc:?}");
+                        } else if gnu {
+                            assert_eq!(desc.initial_exec, 0, "{tag}: {desc:?}");
+                        }
+                    }
+                    // Executables of the static models: no descriptor.
+                    _ => assert_eq!(desc, Descriptors::default(), "{tag}"),
+                }
+            }
+        }
+        // The relocations: the models `llc` chose, symbol for symbol.
+        let ours = tls_relocations(&dir.join(format!("lib-{}-hod.o", build.tag)));
+        let theirs = tls_relocations(&dir.join(format!("lib-{}-llc22.o", build.tag)));
+        if let (Some(ours), Some(theirs)) = (ours, theirs) {
+            assert_eq!(
+                ours.keys().collect::<Vec<_>>(),
+                theirs.keys().collect::<Vec<_>>(),
+                "{}",
+                build.tag
+            );
+        }
+    }
+    eprintln!("x64 tlsdesc: {runs} programs linked and run\n{report}");
+}
+
+/// `spec/codegen.md` §5.6.37 (WP-213): a shared object loaded by
+/// `dlopen` (so its TLS is the loader's to place: in the static block's
+/// surplus when it is small, dynamically allocated per thread when it is
+/// not), whose module `dl.ll` reaches its variables through descriptors
+/// and whose module `peer.ll`, built in the other dialect or by another
+/// compiler, reaches a variable of `dl.ll`'s and its own. Every linker,
+/// five threads, the addresses against `dlsym`'s.
+#[test]
+fn descriptors_through_dlopen() {
+    let dir = Scratch::new("x64-tlsdesc-dl");
+    let Some(toolchain) = Toolchain::x86_64(&dir) else { return };
+    let peers: [(&str, Who, Dialect); 4] = [
+        ("hodgnu", Who::Hod, GNU),
+        ("hoddesc", Who::Hod, DESC),
+        ("llc22gnu", Who::Llc(22), GNU),
+        ("llc19desc", Who::Llc(19), DESC),
+    ];
+    let builders: [(&str, Who, Dialect); 3] =
+        [("hod", Who::Hod, DESC), ("hod-stress", Who::Hod, STRESS), ("llc22", Who::Llc(22), DESC)];
+    let mut runs = 0;
+    for size in [16_u64, 1 << 20] {
+        let text = data("dl.ll")
+            .replace("@@SIZE@@", &size.to_string())
+            .replace("@@LAST@@", &(size - 1).to_string());
+        for (who, dl_who, dl_d) in builders {
+            let name = format!("dl-{size}-{who}");
+            let Some(dl) = object_in(&dir, &name, &text, Mode::Shared, dl_who, dl_d) else {
+                continue;
+            };
+            for (peer_name, peer_who, peer_d) in peers {
+                if who != "hod" && peer_name != "hodgnu" {
+                    continue;
+                }
+                let name = format!("peer-{size}-{who}-{peer_name}");
+                let Some(peer) =
+                    object_in(&dir, &name, &data("peer.ll"), Mode::Shared, peer_who, peer_d)
+                else {
+                    continue;
+                };
+                for linker in &toolchain.linkers {
+                    let tag = format!("{size}-{who}-{peer_name}-{}", linker.name);
+                    let so = dir.join(format!("libdl-{tag}.so"));
+                    toolchain.link_ok(linker, &["-shared"], &[&dl, &peer], &so);
+                    let define = format!("-DLIB=\"{}\"", so.display());
+                    let driver_src = data("dl_driver.c");
+                    let driver = toolchain.compile_c(
+                        &dir,
+                        &format!("dl-driver-{tag}"),
+                        &driver_src,
+                        &["-fPIE", &define],
+                    );
+                    let exe = dir.join(format!("dl-{tag}"));
+                    let ran =
+                        toolchain.link_and_run(linker, &["-pie", "-pthread"], &[&driver], &exe);
+                    let out = ran.stdout_text();
+                    assert!(
+                        exit_code(&ran) == Some(0) && out.contains("checked"),
+                        "{tag}: exit {:?}\n{out}{}",
+                        exit_code(&ran),
+                        ran.stderr_text()
+                    );
+                    runs += 1;
+                    if who == "hod" {
+                        let Some(code) = disassembly(&so, "dl_", false) else { continue };
+                        let desc = descriptors(&code);
+                        // A shared object keeps every descriptor of dl.ll.
+                        let want = Descriptors { kept: 25, ..Descriptors::default() };
+                        assert_eq!(desc, want, "{tag}");
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("x64 tlsdesc dlopen: {runs} programs linked and run");
 }

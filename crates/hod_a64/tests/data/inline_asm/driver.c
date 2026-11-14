@@ -13,6 +13,7 @@ struct two { int64_t a, b; }; struct two two_outputs(int64_t, int64_t); int64_t 
 void indirect_r(int32_t*); int64_t call_helper(int64_t); int64_t uid_variant(int64_t); int64_t local_forward(int64_t);
 int64_t live_across(int64_t, int64_t, int64_t); int32_t goto_zero(int64_t); int32_t goto_phi(int64_t);
 int32_t invoke_asm(int32_t); int32_t goto_out(int32_t); int64_t goto_out2(int64_t);
+int64_t prefetch_sum(int64_t*, int64_t, int32_t); int64_t xpaclri_lr(int64_t);
 int hod_test_personality(void) { return 0; }
 int64_t asm_helper(int64_t x) { return x * 2 + 1; }
 static int fails;
@@ -54,6 +55,9 @@ int main(void) {
   CHECK(invoke_asm(40) == 42);
   CHECK(goto_out(1) == 2004); CHECK(goto_out(10) == 1013); CHECK(goto_out(30) == 3033);
   CHECK(goto_out2(0) == 501); CHECK(goto_out2(5) == 65);
+  int64_t arr[8] = {40, 1, 2, 3, 4, 5, 6, 7};
+  CHECK(prefetch_sum(arr, 2, -1) == 42); CHECK(prefetch_sum(arr, 7, 3) == 47);
+  CHECK(xpaclri_lr(42) == 42);
   printf("checked, %d failures\n", fails);
   return fails;
 }

@@ -853,7 +853,7 @@ fn the_other_forms_are_refused_by_name() {
 }
 
 /// A frame beyond what the prologue expresses is `limit:frame-size`; a
-/// code model other than small is `x64:code-model`.
+/// code model other than small and large is `x64:code-model`.
 #[test]
 fn the_limits_are_refused_by_name() {
     assert_eq!(
@@ -866,9 +866,14 @@ fn the_limits_are_refused_by_name() {
         "{}@g = global i64 0\ndefine i64 @f() {{\n %v = load i64, ptr @g\n ret i64 %v }}",
         header()
     ));
+    for model in [hod_ir::CodeModel::Medium, hod_ir::CodeModel::Kernel] {
+        let options = Options { code_model: Some(model), ..Options::default() };
+        assert_eq!(
+            chunk(&m, &bodies, &options).map(|_| ()),
+            Err(CgError::unsupported(hod_x64::common::CODE_MODEL)),
+            "{model:?}"
+        );
+    }
     let options = Options { code_model: Some(hod_ir::CodeModel::Large), ..Options::default() };
-    assert_eq!(
-        chunk(&m, &bodies, &options).map(|_| ()),
-        Err(CgError::unsupported(hod_x64::common::CODE_MODEL))
-    );
+    assert_eq!(chunk(&m, &bodies, &options).map(|_| ()), Ok(()));
 }

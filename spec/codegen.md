@@ -591,8 +591,10 @@ These are decisions the group packages (WP-035..041) build on.
   (else `a64:constant-relocation`; WP-072 writes every other relocation
   of a non-vector image, "Constant operands with addresses" below). Symbol addresses follow §7.4:
   `adrp`+`add` with the addend folded as `llc` folds it (WP-073), or
-  `adrp`+`ldr` from the GOT then the addend added; a code model other
-  than small is `a64:code-model`.
+  `adrp`+`ldr` from the GOT then the addend added. Under the large code
+  model outside PIC a direct symbol's address is `movz`/`movk` (§5.6.36
+  point 8); under PIC the large model is `module:code-model-large-pic`,
+  and a code model other than small and large is `a64:code-model`.
 - **Other reason names of the target**: `a64:atomic`,
   `a64:vector-element` (no longer emitted: WP-079 lowers the element
   operations), `a64:thread-local` (no longer returned: WP-073 lowers TLS),
@@ -2227,7 +2229,8 @@ words compared with `llvm-mc`'s; the refusals; features from
   address of a dso-local symbol is `lea r, [rip + x]` (`R_X86_64_PC32`,
   an addend below 16 MiB folded); of a preemptible one `mov r, [rip +
   x@GOTPCREL]` (`R_X86_64_REX_GOTPCRELX`, relaxable) then the addend
-  added with `lea`. A `Code Model` other than small is `x64:code-model`.
+  added with `lea`. Under the large code model every reference is 64-bit
+  (§5.6.36); medium and kernel are refused by name.
   A thread-local symbol is §5.6.11's. A variadic call
   sets `al` to the number of vector registers used.
 
@@ -3031,7 +3034,9 @@ on AArch64): a shared object (PIC without `PIE Level`) gets general
 dynamic for a preemptible variable and local dynamic for a `dso_local`
 one; an executable, PIE or not, initial exec and local exec; a model
 the variable asks for wins when it is more specific. x86-64 lowers
-local dynamic as itself (`llc` uses no TLS descriptors here). Every
+local dynamic as itself (`llc` uses no TLS descriptors here unless
+`-enable-tlsdesc` asks for them: §5.6.37, where the two dynamic models
+are written otherwise and the rest of this section holds). Every
 sequence is `llc -relocation-model=pic`'s, with its relocations and
 without an addend in them; an offset from the variable is added in code
 afterwards (`common::add_addend`), as on AArch64:
@@ -3075,7 +3080,8 @@ external linkage in a shared object is reached through its local alias
   The x87 stack must be empty there, as at any call (WP-131).
 - **Refused**: as on AArch64, `tls:direct-operand` (a thread-local
   callee) and `tls:address-in-constant` by `hod_ir`'s classification;
-  a code model other than small is `x64:code-model`. `x64:todo:tls` is
+  a code model other than small and large is `x64:code-model` (under
+  the large model the sequences are these, §5.6.36). `x64:todo:tls` is
   no longer returned. The DWARF location of a thread-local variable
   (`DW_OP_const8u x@dtpoff; DW_OP_GNU_push_tls_address`,
   `R_X86_64_DTPOFF64`) stays refused by `hod_dwarf`
@@ -3488,7 +3494,13 @@ code, so the instruction stays whole; prefixes (`66`, `F2`, `F3`, REX,
 `lock`) and the opcode come before the `ModRM` and are untouched. A
 recorded field whose preceding byte is not the `[rbp + disp32]` `ModRM`
 (`mod` 10, `rm` 101) keeps its `disp32`; no access emitted today has
-another shape. `Incoming(n)` and `Outgoing(n)` places, RIP-relative
+another shape. **An EVEX instruction's field keeps its `disp32`**
+(WP-208): its `disp8` is scaled by the instruction's `N` (`disp8*N`,
+`spec/mc-x64.md`), so the raw byte would address another place.
+`frame_inst` marks the field when the instruction's first byte is `62`
+(the EVEX escape: nothing else in 64-bit mode, and hod writes no prefix
+before it), and `bias_local_sites` only biases a marked field. Every
+other instruction's bytes are as before. `Incoming(n)` and `Outgoing(n)` places, RIP-relative
 operands, `SIB` forms and the coroutine stubs' own frame words are
 emitted at their final displacement and were already the shortest form
 (`hod_mc_x64` picks it); `FrameRef::Coro` is `[rbx + o]`, not a local.
@@ -4401,36 +4413,6 @@ without them: the code of the x86-64 baseline is unchanged).
 
 Evidence: `spec/landed/codegen/WP-202.md`, `spec/landed/codegen/WP-207.md`.
 
-#### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208)
-
-Design: `docs/design/0007-avx512.md`. Evidence:
-`spec/landed/codegen/WP-208.md`; tests `crates/hod_x64/tests/x86_avx512.rs`.
-
-1. **The masked memory intrinsics** (generic; clang 19 and 22 write
-   them for the masked loads and stores, expand loads and compress
-   stores of the AVX-512 headers): `llvm.masked.load`,
-   `llvm.masked.store`, `llvm.masked.expandload`,
-   `llvm.masked.compressstore` (`crates/hod_x64/src/vector.rs`,
-   `masked`; matrix rows `todo(LATER)` / `on(MASKED)`). Built on
-   x86-64 whatever the function's features, lane by lane as `llc`
-   scalarizes them without AVX-512: for each lane whose mask bit is
-   set, the lane's bytes copied through `r11` between memory and the
-   vector's image (the result's slot, or a scratch image of the
-   pass-through reloaded into the result's register for a vector of
-   class `Fpr`; the stored value's slot or image). `load`/`store` reach
-   lane `i` at `ptr + i * size`; `expandload`/`compressstore` the `k`-th
-   set lane at `ptr + k * size`. A lane whose bit is clear touches no
-   memory. A constant mask copies its set lanes (an undefined lane is
-   clear); a variable mask (class `Gpr`, §5.6.13) is tested lane by lane
-   by `bt` and `jae`, the packed forms' cursor in `rax`. Both
-   signatures are read: LLVM 19's (`i32` alignment operand of `load`
-   and `store`) and LLVM 22's (the pointer's `align` attribute); the
-   alignment is not needed, every access being one lane. Refused: a
-   mask of more than 64 lanes (`x64:mask-wide`), what §5.6.13 refuses
-   for the vector's lanes, and a call whose operands are not the
-   intrinsic's (`x64:vector-op`). AArch64 does not build them yet.
-   Execution evidence: on the emulator against `llc` 22 and 19.
-
 #### 5.6.34 The AArch64 intrinsic headers, built and refused (WP-205)
 
 What reaches the back end from every function and function-like macro of
@@ -4507,6 +4489,307 @@ fp8 functions write them), `rndr`/`rndrrs`, `gcspopm`/`gcsss`
 scalable types stay refused as before.
 
 Evidence: `spec/landed/codegen/WP-205.md`.
+
+#### 5.6.35 AVX-512 and the masked memory intrinsics (WP-208)
+
+Design: `docs/design/0007-avx512.md`. Evidence:
+`spec/landed/codegen/WP-208.md`; tests `crates/hod_x64/tests/x86_avx512.rs`.
+
+1. **The masked memory intrinsics** (generic; clang 19 and 22 write
+   them for the masked loads and stores, expand loads and compress
+   stores of the AVX-512 headers): `llvm.masked.load`,
+   `llvm.masked.store`, `llvm.masked.expandload`,
+   `llvm.masked.compressstore` (`crates/hod_x64/src/vector.rs`,
+   `masked`; matrix rows `todo(LATER)` / `on(MASKED)`). Built on
+   x86-64 whatever the function's features, lane by lane as `llc`
+   scalarizes them without AVX-512: for each lane whose mask bit is
+   set, the lane's bytes copied through `r11` between memory and the
+   vector's image (the result's slot, or a scratch image of the
+   pass-through reloaded into the result's register for a vector of
+   class `Fpr`; the stored value's slot or image). `load`/`store` reach
+   lane `i` at `ptr + i * size`; `expandload`/`compressstore` the `k`-th
+   set lane at `ptr + k * size`. A lane whose bit is clear touches no
+   memory. A constant mask copies its set lanes (an undefined lane is
+   clear); a variable mask (class `Gpr`, §5.6.13) is tested lane by lane
+   by `bt` and `jae`, the packed forms' cursor in `rax`. Both
+   signatures are read: LLVM 19's (`i32` alignment operand of `load`
+   and `store`) and LLVM 22's (the pointer's `align` attribute); the
+   alignment is not needed, every access being one lane. Refused: a
+   mask of more than 64 lanes (`x64:mask-wide`), what §5.6.13 refuses
+   for the vector's lanes, and a call whose operands are not the
+   intrinsic's (`x64:vector-op`). AArch64 does not build them yet.
+   Execution evidence: on the emulator against `llc` 22 and 19.
+2. **The AVX-512 F, VL, BW and DQ names** of the census (design 0007
+   §5.1: the `llvm.x86.avx512.*` names clang 19 and 22 write at `-O0`
+   for the header functions that are not plain IR) and the VBMI2
+   compresses, which share F's overloaded `llvm.x86.avx512.mask.compress`
+   (`crates/hod_x64/src/x86/avx512.rs`; matrix rows `never(X64_ONLY)` /
+   `on(X86_SSE)`, note `AVX-512 (WP-208)`). Each is accepted only in a
+   function whose `target-features` enable its family
+   (`features::Avx512`: `avx512f`, `avx512bw`, `avx512dq`,
+   `avx512vbmi2`; the last item that turns it on or off decides, a
+   feature that implies it counts, one it needs turned off turns it off,
+   an AVX10 name alone does not count), `avx512vl` too for a 128- or
+   256-bit form (but `rcp14.sd`/`rsqrt14.sd`), and not `-evex512` (the
+   last `evex512` item) for a 512-bit one; it is refused by its name
+   otherwise (`intrinsic:` and the name, without the type suffix for
+   `mask.compress`). With them hod writes the EVEX instruction `llc -O0`
+   selects:
+   - each distinct vector operand is copied into its own register from
+     `zmm17` up (`vmovdqu64`, from its `xmm` or its slot), the result is
+     computed into `zmm16` and copied to its `xmm` or its slot. A slot is
+     the `vmovdqu64`'s own operand `[rbp + disp32]` (§5.6.17: an EVEX
+     access to a local is never shortened to `disp8`). hod's pool holds no value in
+     `zmm16`..`zmm31` or an opmask register; all are caller-saved, and
+     `vzeroupper` is not written (no value of hod's lives in an upper
+     half);
+   - a mask goes to `k1` (`kmovw`; `kmovd`/`kmovq` for 32 and 64 lanes),
+     a constant one through `r11`; a constant whose lanes the instruction
+     reads are all set is no mask. The destination is first the
+     pass-through (merging), or is zeroed (`{z}`) when the pass-through
+     is `zeroinitializer`, `undef` or `poison` (`llc` merges into what the
+     register holds for some of them: a refinement of `undef`);
+   - the rounding operand: 4 none; `{sae}` 8 or 12 where the name has
+     `{sae}`; `{rn-sae}`..`{rz-sae}` 8..11 where it has `{er}`; another
+     value is refused (`x64:x86-intrinsic-signature`; `llc` does not
+     select it either). An immediate is its low byte;
+   - the operand order is the instruction's: `permvar`'s index first
+     (`vpermps dst, idx, a`), `vpermi2var` into `a` (`vpermt2*`),
+     `vfmaddsub` into `b` (`vfmaddsub213*`), `pternlog` into `a`;
+   - a shift by a constant count folds as `llc`: 0 is the source, a count
+     at or above the element width is zero for a logical shift (`pxor`,
+     or `r11` zero stored) and the width less one for an arithmetic one;
+     a variable count goes through `xmm15` (`movd`) to the shift by a
+     vector count;
+   - `fpclass` writes `k0`, its `<N x i1>` result (class `Gpr`) is
+     `kmovw`'s zero-extension; `mask.compress` with every lane set is the
+     source.
+
+   Refused as `x64:x86-intrinsic-signature`: a call whose operands are
+   not vectors of 16, 32 or 64 bytes of 8- to 64-bit lanes in the class
+   of their size, a pass-through of another type than the result, a
+   mask that is not an integer or `<N x i1>`, an immediate that is not a
+   constant, or a name's length (`.128`, `.256`, `.512`) that is not the
+   vectors'. As in §5.6.33 the element type itself is not checked. The
+   rows are x86-64 ones; AArch64 refuses them.
+
+   **Evidence.** For every name, every operand as usual and then one at
+   a time another way (constant masks -1, 5, every lane, 0; a zero and
+   an undefined pass-through; each rounding; immediates 0, 0xff, 0x1a5;
+   counts 0, 1, width - 1, width, 255, 256, -1 and a variable one): 802
+   functions, whose stored bytes, as a tree of instructions over the
+   inputs (a symbolic interpreter of `llvm-objdump` listings, which
+   normalizes constant masks, undefined merges, zero idioms and moves),
+   are under hod (plain and under every stress option) those of `llc -O0`
+   22's or 19's code (`llc` 22 folds some constant masks into blends and
+   shuffles where 19 and hod keep the masked instruction); the
+   interpreter catches ten kinds of deliberate change to `llc` 22's
+   listings; and the encoder agrees with LLVM's assembler and
+   disassembler (`spec/mc-x64.md`, EVEX). **No name has execution
+   evidence yet**: the execution test (`avx512_names_agree_with_llc_on_hardware`)
+   links hod's and `llc` 22's functions with a C driver into one static
+   program and runs it with the command `HOD_X64_AVX512_RUNNER` names
+   (the program appended; `native` runs it directly), comparing the
+   bytes on random inputs, small floats and doubles and special values,
+   skipping a function whose features the CPU lacks
+   (`__builtin_cpu_supports`) and failing when it skips all. Without the
+   variable it only links the program, **also under
+   `HOD_REQUIRE_TOOLS=1`**: no emulator on the hosts of this suite
+   executes AVX-512 (QEMU's user mode models none), so the variable is
+   the one way to run it, on an AVX-512 host:
+   `HOD_REQUIRE_TOOLS=1 HOD_X64_AVX512_RUNNER=native cargo test -p hod_x64 --test x86_avx512`.
+3. **512-bit vectors and vectors of `i1` by value** (`spec/abi-x64.md`
+   §1.3, §3.2, §4.3, §5.1, §8.7, §9.1): under AVX-512 whose conventions
+   hod knows, a vector of 33 to 64 bytes travels in one `zmm` when the
+   function's 512-bit vectors are legal (`llc`'s `useAVX512Regs`, from
+   `avx512vl`, the preferred width and `"min-legal-vector-width"`), else
+   in two `ymm`; a mask of 32 elements in the byte lanes of a `ymm`, of
+   64 in those of a `zmm` (or two `ymm`) with `avx512bw`, any other
+   length up to 64 byte by byte. The pieces move with `vmovdqu64`
+   (`vector::load_wide`, `store_wide`), the lanes through a slot of the
+   register's size (`vcall.rs`). Evidence: hod's convention of every
+   signature of a grid over eighteen AVX-512 machines equals `llc` 19's
+   and 22's, read from their MIR (`abi::zmm_grid`), as does that of
+   every function clang 19 and 22 write for seven `-march` sets
+   (`abi::clang_signatures_agree_with_their_llc`); hod's code for
+   functions receiving and returning `zmm` and `ymm` pairs moves the
+   bytes `llc`'s does (`zmm_flows_agree_with_llc_by_dataflow`);
+   `vzeroupper` as `llc` writes it
+   (`vzeroupper_with_zmm_where_llc_writes_it`). With
+   `HOD_X64_AVX512_RUNNER` the grid also runs, hod against `llc` both
+   ways.
+
+   **Evidence by name.**
+
+   | Names | Executed | Dataflow against `llc` only |
+   |---|---|---|
+   | `llvm.masked.load`, `.store`, `.expandload`, `.compressstore` (1) | yes (`qemu-x86_64`) | |
+   | the 174 `llvm.x86.avx512.*` names of (2), F, VL, BW, DQ and the VBMI2 compresses | | yes, until an AVX-512 host runs the command above |
+   | `zmm` arguments and results, masks by value (3) | | yes (conventions against `llc`'s MIR; the bytes of `zmm` and `ymm`-pair moves by dataflow), until an AVX-512 host runs `abi::zmm_grid` with `HOD_X64_AVX512_RUNNER` |
+
+#### 5.6.36 The large code model (WP-209)
+
+A module whose `Code Model` flag is 4, or `-code-model=large`, is built
+as `llc` 19 and 22 build it at `-O0`. On x86-64 no 32-bit field reaches
+a symbol, the GOT, another section or another function, so the code, the
+data and the GOT may be anywhere in the address space (points 1 to 6);
+AArch64 is point 8. The census of
+what `llc` writes, and of what kiln gives, is in
+`spec/landed/codegen/WP-209.md`.
+
+1. **Sections.** Functions are in `.ltext` (`.ltext.<name>` with
+   `-function-sections` or in a COMDAT group), `"axl"`; variables in
+   `.ldata`, `.lbss`, `.lrodata`, `.lrodata.str<n>.<align>`,
+   `.lrodata.cst<n>` and their `.<name>` forms, each with
+   `SHF_X86_64_LARGE` (`"l"`). Thread-local variables (`.tdata`,
+   `.tbss`) and read-only data with relocations under PIC
+   (`.data.rel.ro`) stay small, as `llc`'s. An explicit section is large
+   by its name in every code model: `.ltext` and `.ltext.*` for a
+   function, `.ldata`, `.lbss`, `.lrodata` and their `.*` for a
+   variable, as `llc`'s. The `Large Data Threshold` flag is ignored, as
+   `llc` ignores it: under the large model every variable is large. An
+   empty `.text` is still written; `common` symbols stay `SHN_COMMON`.
+2. **Addresses outside PIC.** `movabs r, sym + addend`
+   (`R_X86_64_64`) for every symbol, preemptible or not.
+3. **Addresses under PIC.** The GOT's address first, `lea r, [rip -
+   7]` (the `lea`'s own address) then `movabs t, _GLOBAL_OFFSET_TABLE_
+   - lea` (`R_X86_64_GOTPC64`, addend the immediate's distance from the
+   `lea`, 9) and `lea r, [r + t]`, as `llc` computes it at a function's
+   entry. Then a dso-local symbol is `movabs t, sym@GOTOFF + addend`
+   (`R_X86_64_GOTOFF64`) and `lea r, [r + t]`; a preemptible one, the
+   runtime's functions and `_GLOBAL_OFFSET_TABLE_` itself are `movabs
+   t, sym@GOT` (`R_X86_64_GOT64`) and `mov r, [r + t]`, then the addend
+   added. `t` is the general scratch register other than `r` (`r10`,
+   `r11`), saved around the sequence with `push`/`pop` (nothing lives
+   below `rsp`: hod has no red zone), and the flags are kept. hod
+   computes the GOT's address at every reference where `llc` keeps it
+   in a register for the function, so its objects have more
+   `R_X86_64_GOTPC64`; `R_X86_64_PLTOFF64`, `R_X86_64_GOTPCREL64` and
+   `R_X86_64_GOTPLT64` are never written, as `llc` writes none at `-O0`.
+4. **Calls.** A direct call or tail call is the callee's address in
+   `r11` (2 or 3), then `call r11` or `jmp r11` (`r11` carries no
+   argument; `x64:nest` is refused). The field naming the callee is a
+   callee's (`Reloc::branch`), so a call of an `available_externally`
+   `alwaysinline` function goes to its local copy (§9.7.2) as `call
+   rel32` does. The stack protector's `__stack_chk_fail`, the runtime's
+   functions (§7.3: `memcpy`, `__udivti3`, ...) and the noop coroutine
+   frame (`coro.noop`) are reached the same way.
+5. **What does not change.** Thread-local accesses are §5.6.11's
+   sequences (`TLSGD`, `TLSLD`, `GOTTPOFF`, `TPOFF32`, `DTPOFF32`, the
+   call of `__tls_get_addr@PLT`), as `llc` 19 and 22 write them under
+   the large model: initial exec and the dynamic models need the GOT
+   within 2 GiB of the code, local exec does not. Jump tables, block
+   addresses and constants are in the function's own data islands
+   (§5.6.6) with internal fixups, so they move with the code; `llc`'s
+   jump tables (`.rodata`) and constant pools (`.rodata.cst<n>`) have no
+   counterpart. DWARF is unchanged (its addresses were already 64-bit).
+6. **Unwind tables.** `.eh_frame`'s pointers are 8 bytes and
+   PC-relative (`spec/eh.md` §2.1, `X86_64_LARGE`: FDE `pcrel|sdata8`,
+   personality `indirect|pcrel|sdata8`, LSDA `pcrel|sdata8`,
+   `R_X86_64_PC64`), and the LSDA's type table takes the personality's
+   encoding (`LsdaOptions::large`). Outside PIC `llc` writes the
+   personality, the LSDA and the type table absolute; hod keeps the
+   PC-relative forms, as under the small model.
+7. **Refused by name.** The medium and kernel code models
+   (`module:code-model-medium`, `module:code-model-kernel`, `hod_ir`'s
+   classification): medium mixes 32-bit and 64-bit references by a
+   per-variable threshold and kernel is a different absolute model;
+   neither is a subset of the large model's sequences. A variable's own
+   `code_model` attribute is `global-code-model`. Inside the code
+   generator a model other than small and large is `x64:code-model`
+   (`a64:code-model` on AArch64).
+8. **AArch64.** Outside PIC, as `llc` 19 and 22 write it: a dso-local
+   symbol's address is `movz r, #:abs_g0_nc:sym; movk r,
+   #:abs_g1_nc:sym, lsl 16; movk #:abs_g2_nc:, lsl 32; movk #:abs_g3:,
+   lsl 48` (`R_AARCH64_MOVW_UABS_G0_NC`, `G1_NC`, `G2_NC`, `G3`, addend
+   0), then the addend added; a preemptible one is read from the GOT
+   with `adrp`+`ldr` as under the small model (so the GOT stays within
+   4 GiB of the code, as `llc`'s does); calls stay `bl`/`b`
+   (`R_AARCH64_CALL26`, `JUMP26`; the linker's veneers reach further);
+   the noop coroutine frame is the same `movz`/`movk`. Sections keep
+   their small-model names (AArch64 has no large sections). Thread-locals
+   of the local-exec model are unchanged; any other model is
+   `a64:code-model-large-tls`, as `llc` rejects it ("ELF TLS only
+   supported in small memory model or in local exec TLS model"). The
+   FDE's initial location and range are 8 bytes (`spec/eh.md` §2.1,
+   `AARCH64_LARGE`: `pcrel|sdata8`, `R_AARCH64_PREL64`); the personality
+   and LSDA pointers were 8 bytes already. Under PIC `llc` keeps
+   small-model code but writes 8-byte FDEs and rejects every thread-local
+   model but local exec, so it is neither hod's small PIC output nor
+   complete: hod refuses it, `module:code-model-large-pic` (the
+   classifier's row when the module's `PIC Level` is not 0, and the
+   target's name when only the relocation model says PIC).
+
+Evidence: `spec/landed/codegen/WP-209.md`;
+`hod_x64/tests/large_code_model.rs` (the program of
+`tests/data/large`, `llc`'s sections and relocation types, linked with
+the start files and in a layout with the code, the GOT and the data more
+than 4 GiB apart under GNU ld, lld and mold, plain and with `-g`);
+`hod_a64/tests/large_code_model.rs` (the same program outside PIC:
+`llc`'s relocation types in the code and the unwind tables, linked with
+the start files and with the code more than 4 GiB from `.data`, `.bss`
+and `.rodata`, under the same linkers, plain and with `-g`).
+
+#### 5.6.37 TLS descriptors (WP-213)
+
+`-enable-tlsdesc` (`hod::Options::tls_descriptors`,
+`hod_cg::Options::tls_descriptors`; what `clang -mtls-dialect=gnu2`
+gives `llc`; nothing of it is in the IR) changes the two dynamic models
+of §5.6.11 on x86-64 and nothing else: the model each variable gets is
+the same (`sym_access` does not read the option), initial and local
+exec are unchanged, and a module without a dynamic model (every module
+of an executable) is byte for byte the object without the option. On
+AArch64 the dynamic models are descriptors already (§5.5); the option is
+accepted and changes nothing there, as in `llc` 19 and 22 (the objects
+are identical with `-enable-tlsdesc`, `=false` and without it).
+
+The sequences are `llc`'s (19 and 22 write the same bytes), with an
+`R_X86_64_TLSDESC_CALL` at the call's first byte, addend 0:
+
+| model | sequence | relocations |
+|---|---|---|
+| general dynamic | `lea rax, [rip + x@tlsdesc]` (`48 8D 05` + field) · `call [rax]` (`FF 10`) · `add rax, fs:[0]` | `GOTPC32_TLSDESC` (`x`, -4), `TLSDESC_CALL` (`x`, 0) |
+| local dynamic | the same pair against `_TLS_MODULE_BASE_` · `add rax, fs:[0]` · `lea rax, [rax + x@dtpoff]` (`disp32`) | `GOTPC32_TLSDESC`, `TLSDESC_CALL` (`_TLS_MODULE_BASE_`), `DTPOFF32` (`x`, or its local alias §9.7) |
+
+- **`_TLS_MODULE_BASE_`** is `SymRef::TlsModuleBase`: the module's
+  symbol of that name if it declares one, else an undefined global
+  `STT_TLS` symbol, as `llc` writes it; the linker defines it at the
+  start of the module's TLS block.
+- **The pair is exactly `llc`'s**: the linkers relax a descriptor by
+  its bytes (`48 8D 05` into `48 C7 C0 imm32`, local exec, or `48 8B 05`,
+  initial exec; `FF 10` into the 2-byte `nop` `66 90`), so the result
+  register is `rax` and nothing comes between the two instructions.
+  `llc` loads `fs:[0]` into another register before the pair and adds it
+  after; hod adds it from memory after the pair, which the relaxed forms
+  leave as valid.
+- **What the call writes.** The descriptor's function returns the
+  variable's offset from the thread pointer in `rax` and preserves every
+  other register; it may write the flags (`llc`'s `TLS_desc` defines
+  `RAX` and `EFLAGS`, and keeps `rdi`, `rsi`, `rdx` live across it at
+  `-O0`; the x86-64 psABI "TLS Descriptors" and the original proposal,
+  Oliva and others, *Thread-Local Storage Descriptors for IA32 and
+  AMD64/EM64T*). glibc's slow resolver, `_dl_tlsdesc_dynamic`, keeps
+  the vector registers too since the fix of glibc bug 31372 (2024); the
+  programs here run on glibc 2.41. hod relies on the contract, as `llc`
+  and GCC do.
+- **One way in.** Both a thread-local operand (`common::sym_address`)
+  and `llvm.threadlocal.address` of a dynamic model are the operand form,
+  which writes `rd` and nothing else, the flags kept: `pushfq`; `push
+  rax` (or `lea rsp, [rsp - 8]` when `rd` is `rax`, so that `rsp` is
+  16-aligned at the call, as at any call; the CFA is `rbp`-based); the
+  sequence; `mov rd, rax`; `pop rax` (or `lea rsp, [rsp + 8]`);
+  `popfq`. Nothing is displaced: unlike `__tls_get_addr`, the call
+  keeps the registers. The call is a call site (§7.1,
+  `record_call_site`), as on AArch64. An offset from the variable is
+  added after it (`common::add_addend`).
+- **Refused**: as in §5.6.11. The large code model stays
+  `x64:code-model` with or without the option (`llc` 22 writes the
+  small-model descriptor pair under `-code-model=large`; WP-209 owns
+  that model).
+
+Evidence: `spec/landed/codegen/WP-213.md` (the census of every access
+shape under both dialects against `llc` 19 and 22, the linkers'
+relaxations, programs run under `qemu-x86_64`).
 
 ## 6. Control flow
 
@@ -5184,7 +5467,7 @@ one arm of `intrinsic::intrinsic`:
 | `coro.resume(p)` / `coro.destroy(p)` | `ldr x, [p, #0]` / `[p, #8]` into a temporary, then the core's call sequence through it with `p` as the one argument, `fastcc` (the C convention for one pointer on AArch64): `FnCx::call_through`. As an `invoke` too: the normal edge's `phi` stores, the jump and the landing-pad stub are the ones of `FnCx::call` |
 | `coro.done(p)` | the resume pointer is null: `ldr x, [p]`, `cmp x, #0`, `cset w, eq` |
 | `coro.promise(p, align, from)` | `p + alignTo(16, align)`, or `p - alignTo(16, align)` when `from` is true: `add`/`sub` of a constant |
-| `coro.noop()` | the address of the object's noop frame: `adrp` + `add :lo12:` (small code model; `a64:code-model` otherwise) |
+| `coro.noop()` | the address of the object's noop frame: `adrp` + `add :lo12:` (small code model), `movz`/`movk` (large, §5.6.36 point 8) |
 
 `align` must be a constant power of two of at most 2^30 and `from` a
 constant (`a64:coro-promise` otherwise): LLVM computes the offset in
@@ -5411,7 +5694,7 @@ pointer). `coro.done`: `cmp qword [p], 0` + `sete`. `coro.promise`:
 `lea r, [p ± max(16, align)]`; an alignment that is not a constant power
 of two of at most 2^30, or a direction that is not a constant, is
 `x64:coro-promise`. `coro.noop`: `lea r, [rip + frame]`
-(`R_X86_64_PC32`), small code model only (`x64:code-model` otherwise);
+(`R_X86_64_PC32`), under the large code model §5.6.36's address;
 the noop frame's function is one `ret` (`NOOP_CORO_FN`).
 
 *The machine frame.* `rbx` is the frame base. A function with the
@@ -5606,6 +5889,11 @@ picks the psABI relocation. `SymRef` is `Module(SymId)` or
 `Runtime(RuntimeFn)` (§7.3). Code never refers to another function's
 blocks (§1) or islands, to its own section, or to anything `hod_eh` and
 `hod_dwarf` generate; those references are made by their writers.
+A relocation's `branch` is set (`FnCx::branch_reloc`) when its field
+names the callee of a call or tail call although its kind is not a
+branch relocation, the large code model's `movabs` of the callee
+(§5.6.36): module emission sends it to a local copy as it sends a branch
+(§9.7.2).
 
 ### 9.3 Frame description and CFI
 
@@ -5613,8 +5901,13 @@ blocks (§1) or islands, to its own section, or to anything `hod_eh` and
 pointer, which is also the function's DWARF frame base (variable
 locations are offsets from it). `cfi` rows are DWARF call-frame
 instructions as data: `DefCfa { reg, offset }`, `DefCfaOffset`,
-`DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, each
-with the code offset from which it holds. The target emits the rows for
+`DefCfaRegister`, `Offset { reg, cfa_offset }`, `Restore { reg }`, and
+`RememberState`/`RestoreState` from an inline-assembly template only
+(`spec/eh.md` §4.3, `spec/asm.md` §15), each with the code offset from
+which it holds. `cfi_at` inserts a row after every row at its offset or
+before it, so a prologue's rows added at `end_function` go ahead of a
+template's rows later in the code; without template rows that is the
+end of the list, as before. The target emits the rows for
 its prologue and its exit sequences. The exit sequences are the last code
 of the function, so nothing after them needs the body's state back; each
 tail exit, coming after another exit sequence, starts with rows that
@@ -5623,7 +5916,8 @@ than relying on remembered state. So does the shared trap of §6.1, which
 the core places after the exit sequences and the body branches to: before
 it, the core restates the net effect of the rows emitted before the
 epilogue was bound (one CFA rule, then the last rule of each saved
-register). `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
+register), applying a template's `RememberState`/`RestoreState` as a
+stack of those rules. `CfiOp` and `CfiRow` are `hod_eh`'s `Op` and `Row`,
 re-exported, so the rows reach `.eh_frame` as they are. The rows are
 exact at every instruction boundary (asynchronous unwind tables), which
 is what debuggers and profilers need; `hod_eh` writes them into
@@ -5943,9 +6237,12 @@ code as a copy:
   function's (both refer to section symbols and offsets, not to the
   function's symbol);
 - `R_AARCH64_CALL26`/`JUMP26` (x86-64: `R_X86_64_PLT32`) relocations of
-  the object's code to the function go to the copy, resolved when every
-  chunk is placed; every other relocation (an address, data, an alias)
-  stays on the external symbol, which stays undefined.
+  the object's code to the function go to the copy, and so does the
+  field naming the callee of a call under x86-64's large code model
+  (`Reloc::branch`: `R_X86_64_64`, `GOTOFF64` or `GOT64`, §5.6.36),
+  resolved when every chunk is placed; every other relocation (an
+  address, data, an alias) stays on the external symbol, which stays
+  undefined.
 
 A function whose chunk is not given keeps `llc`'s layout exactly.
 

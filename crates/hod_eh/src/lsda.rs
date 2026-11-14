@@ -12,7 +12,7 @@ use hod_obj::elf::{SHF_ALLOC, SHT_PROGBITS};
 use hod_obj::{Object, SectionId, SectionKind, SymbolId};
 
 use crate::leb::{Sink, sleb, uleb};
-use crate::{Error, Lsda, for_arch, uleb_len};
+use crate::{Error, Lsda, uleb_len};
 
 /// "No landing pad" in [`CallSite::pad`]: a plain call or a runtime call.
 pub const NO_PAD: u32 = u32::MAX;
@@ -94,6 +94,10 @@ pub struct LsdaOptions {
     /// The writable section the type-info stubs are appended to (the
     /// object's `.data`); `None` makes a new `.data` when there are stubs.
     pub stubs: Option<SectionId>,
+    /// The large code model: x86-64's 8-byte type-info entries
+    /// ([`X86_64_LARGE`](crate::X86_64_LARGE), `spec/eh.md` §2.1, WP-209;
+    /// AArch64's are 8 bytes under either model).
+    pub large: bool,
 }
 
 /// What `llc` writes for the LSDA header (`spec/eh.md` §9.2).
@@ -460,7 +464,7 @@ pub fn write_lsdas(
     if funcs.is_empty() {
         return Ok(Vec::new());
     }
-    let target = for_arch(obj.arch());
+    let target = crate::target::for_model(obj.arch(), options.large);
     let pointer_size = usize::from(target.pointer_size);
     let mut by_order: Vec<u32> = (0..funcs.len() as u32).collect();
     if !by_order.is_sorted_by_key(|&i| funcs[i as usize].order) {

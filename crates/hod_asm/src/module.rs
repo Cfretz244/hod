@@ -234,7 +234,8 @@ impl Symbol {
     }
 }
 
-/// A `.symver name, alias` directive (x86-64 only, §14).
+/// A `.symver name, alias` directive (§14; AArch64 too since WP-212,
+/// §15).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Symver {
     /// The symbol of `name`, an index into [`ModuleCode::symbols`].
@@ -252,7 +253,7 @@ pub struct ModuleCode {
     pub sections: Vec<Section>,
     /// The symbols, in the order the text first names them.
     pub symbols: Vec<Symbol>,
-    /// The `.symver` directives, in order (x86-64 only).
+    /// The `.symver` directives, in order.
     pub symvers: Vec<Symver>,
 }
 
@@ -751,7 +752,7 @@ impl State<'_> {
         Ok(())
     }
 
-    /// `.symver name, alias` (x86-64, §14): `alias` is `base@V`,
+    /// `.symver name, alias` (§14, both targets): `alias` is `base@V`,
     /// `base@@V` or `base@@@V`, each part a plain name.
     fn symver(&mut self, rest: &str) -> R<()> {
         let parts = split_commas(rest);
@@ -776,7 +777,7 @@ impl State<'_> {
     fn directive(&mut self, name: &str, rest: &str) -> R<()> {
         let x64 = self.isa == Isa::X64;
         match name {
-            ".symver" if x64 => return self.symver(rest),
+            ".symver" => return self.symver(rest),
             ".word" | ".value" if x64 => return self.values(rest, 2),
             ".align" if x64 => return self.align(rest, false),
             ".hword" | ".xword" if x64 => return Err(reason::directive(name)),
@@ -1385,7 +1386,12 @@ mod tests {
     #[test]
     fn refusals() {
         let r = |t: &str| asm(t).err().map(|r| r.0);
-        assert_eq!(r(".symver a, a@V1"), Some("asm:directive/symver"));
+        // WP-212: `.symver` is read on AArch64 too.
+        assert_eq!(
+            asm(".symver a, a@V1").unwrap().symvers,
+            [Symver { sym: 0, alias: "a@V1".to_owned() }]
+        );
+        assert_eq!(r(".symver a, a@@@@V1"), Some(op_reason::SYNTAX));
         assert_eq!(r(".section .init_array"), Some(other::SECTION));
         assert_eq!(r(".section .text,\"axG\""), Some(other::SECTION));
         assert_eq!(r(".data\n nop"), Some(other::SECTION));

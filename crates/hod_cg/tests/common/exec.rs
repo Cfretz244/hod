@@ -461,6 +461,7 @@ impl<'m> Machine<'m> {
                     }
                     // The test target never refers to it (WP-105).
                     SymRef::NoopCoroFrame => return Err("the noop coroutine frame".to_owned()),
+                    SymRef::TlsModuleBase => return Err("_TLS_MODULE_BASE_".to_owned()),
                 };
                 let at = start + reloc.offset as usize;
                 let field = code.get_mut(at..at + 8).ok_or("a relocation outside the code")?;

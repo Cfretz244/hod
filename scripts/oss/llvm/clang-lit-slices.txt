@@ -1,0 +1,12 @@
+tools/clang/test/CodeGen
+tools/clang/test/CodeGenCXX
+tools/clang/test/SemaCXX
+tools/clang/test/Sema
+tools/clang/test/CXX
+tools/clang/test/Driver
+tools/clang/test/Preprocessor
+tools/clang/test/Parser
+tools/clang/test/Lexer
+tools/clang/test/SemaTemplate
+tools/clang/test/AST
+tools/clang/test/C

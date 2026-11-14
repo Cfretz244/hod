@@ -907,6 +907,8 @@ exclusive `low_pc` forms), and pin the bytes of one entry.
 | 112 | `variable` (of abstract, location list): likewise | 2 | 11524 | WP-162 |
 | 113 | `subprogram` (member declaration, explicit, qualified, §6.24): `linkage_name` (0), `name`, decl (1), `type` (2), `virtuality` and `vtable_elem_location` (3), `declaration`, `external` (4), `reference` (5), `rvalue_reference` (6), `accessibility` (7), `explicit`, `deleted` (8), `containing_type` (3), children optional | 1024 | 11526 | WP-189 |
 | 114 | `subprogram` (member declaration, any, §6.27): `linkage_name` (0), `name`, decl (1), `calling_convention` (2), `type` (3), `virtuality` and `vtable_elem_location` (4), `declaration`, `artificial` (5), `external` (6), `noreturn` (7), `accessibility` (8), `explicit` (9), `containing_type` (4), children optional | 2048 | 12550 | WP-206 |
+| 115 | `variable` (static member, declaration, wide value, §6.28): 54's slots with `const_value` always a `block1`: `name`, `type`, decl (0), `external`, `declaration`, `artificial` (1), `accessibility` (2), `const_value`, `alignment` (3) | 16 | 14598 | WP-210 |
+| 116 | `member` (static, wide value, §6.28): 115's slots | 16 | 14614 | WP-210 |
 
 Families 2 to 45 that WP-058 owns are used for the common shape of each
 kind (they keep the codes the reserved shapes promised); the "any"
@@ -922,7 +924,7 @@ WP-057 uses its reserved families 0 (`formal_parameter`), 1 (local
 `low_pc`/`high_pc` or `ranges` as `DW_FORM_sec_offset`) and 39 (`label`),
 and appends 69 to 71 for the other shapes.
 
-`CODE_END` is 12550 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062; 11526 after WP-162, whose families 107 to 112 follow WP-163's 106; 12550 after WP-189's 113). Since the core families come last, their codes take
+`CODE_END` is 14630 (754 after WP-053, 8733 after WP-058, 9279 after WP-057, 9851 after WP-085, 10631 after WP-059, 10647 after WP-087, 10655 after WP-094, 10719 after WP-098, 10731 after WP-062; 11526 after WP-162, whose families 107 to 112 follow WP-163's 106; 12550 after WP-189's 113; 14598 after WP-206's 114; 14630 after WP-210's 115 and 116). Since the core families come last, their codes take
 two ULEB bytes where `llc`'s take one (the cost is in §7.2; open question
 7).
 
@@ -1032,7 +1034,9 @@ lldb `<no location, value may have been optimized out>`, under both. A
 retained label without a record is not written (no producer emits one
 at `-O0`); a function with an abstract instance and retained nodes is
 refused (`debug:retained-nodes`, §6.9), except a function only inlined
-whose retained nodes are its own imports (§6.25).
+whose retained nodes are its own imports (§6.25), variables or labels,
+and a function also placed out of line whose retained nodes are
+variables (§6.29).
 
 **Lexical blocks** (`scope_ranges`). `llc`'s `LexicalScopes` over the
 function's transitions: for each transition with a location, the scopes
@@ -1529,7 +1533,7 @@ declaration's),
 | `debug:inlined-member` | an abstract instance of a member function whose declaration is WP-059's (not among its class's elements, or an out-of-line definition outside a class: `debug:specification` and kin, renamed) |
 | `debug:inlined-discriminator` | a call located in a `DILexicalBlockFile` with a discriminator (`llc` writes `DW_AT_GNU_discriminator`) |
 | `debug:inlined-foreign-unit` | code inlined from a subprogram of another unit |
-| `debug:retained-nodes` | an inlined subprogram with `retainedNodes` (`llc` makes abstract entities no record names), except imports scoped in a subprogram that is only inlined (WP-195, §6.25) |
+| `debug:retained-nodes` | an inlined subprogram with `retainedNodes` that hod does not write: an import in a block of it, or a retained import or label of a function also placed out of line (imports scoped in a subprogram only inlined since WP-195, §6.25; variables and labels since WP-210, §6.29) |
 | `debug:inlined-local-type` | a type local to a function with an abstract instance, or a variable a type names (a VLA bound) in one |
 | `debug:local-static` | a static scoped in a block, or in a subprogram that is not a definition of this unit, or whose early DIE no function filled by `seal()`, or read without the module (`UnitPlan::new`) |
 
@@ -2942,11 +2946,10 @@ subprogram, after its other children. hod records each abstract
 instance with retained nodes when it makes it (`Inline::imports`) and
 writes its imports in `seal_imports`, before those of the function
 being added, in the order the abstract instances were made. Still
-refused: a retained variable or label of an inlined subprogram (`llc`
-makes abstract entities no record names), an import scoped in a block
-of it, and the retained nodes of a function that is also placed out of
-line (one DIE serves both, and `llc` writes the imports under the
-concrete one).
+refused: an import scoped in a block of it, and retained imports of a
+function that is also placed out of line (one DIE serves both, and
+`llc` writes the imports under the concrete one). A retained variable
+or label is written since WP-210 (§6.29).
 
 **The detail of every `debug:` refusal.** `hod_dwarf::Error::detail`
 gives the node's kind, tag and number as before (§6.24), then its
@@ -2984,8 +2987,8 @@ a function's static takes (`static_parent`: `check_inlined`, then
 `create_abstract`), so the unit is the same. `llc` 19 writes an empty
 `subprogram` without attributes instead; hod follows 22. Still refused:
 a type local to a block, or to a subprogram that is not a definition of
-this unit, and every case `check_inlined` refuses (retained variables,
-another unit's subprogram).
+this unit, and every case `check_inlined` refuses (retained nodes it
+does not write, §6.29; another unit's subprogram).
 
 ### 6.27 Member function declarations of every flag (implemented, WP-206)
 
@@ -3048,6 +3051,68 @@ virtual member without a vtable index (`virtualIndex: 4294967295`,
 which clang writes only for the Microsoft ABI) or whose containing type
 has no DIE; a calling convention above 255; a C prototype or Fortran's
 flags on a member.
+
+### 6.28 A static member's value wider than 64 bits (implemented, WP-210)
+
+libc++'s `numeric_limits<__int128>` (and of `unsigned __int128`) has
+static data members whose constant is an `i128`
+(`__libcpp_numeric_limits<__int128>::__min`, reached by every
+translation unit that names `numeric_limits` with `-g`); a
+`static constexpr long double` member's is an `fp128` (AArch64) or an
+`x86_fp80` (x86-64). They were `debug:die-unsupported` ("a static
+member's value wider than 64 bits"). `llc` 19 and 22 write such a
+value with `addIntAsBlock`: `DW_AT_const_value` as a `DW_FORM_block1`
+of the value's low `width / 8` bytes, least significant first, signed
+or not (16 bytes for `i128` and `fp128`, 10 for `x86_fp80`, whose
+`bitcastToAPInt` is 80 bits wide). hod writes the same, in families 115
+(`DW_TAG_variable`, DWARF 5) and 116 (`DW_TAG_member`), which are 54
+and 55 with that one form; version 4 writes 115 as `DW_TAG_member`
+(§6.20; compared with `llc`'s version 4 output, `dwarf4.rs`
+`checked_later`). A value of at most 64 bits keeps 40, 54 and 55.
+Test: `crates/hod/tests/debug_libcxx_wp210.rs` (`i128` signed and
+unsigned, `long double`, an aligned member; DWARF 5 with both tags and
+DWARF 4; both targets; tree equal to `llc` 22's).
+
+### 6.29 An inlined subprogram's retained variables (implemented, WP-210)
+
+kiln at `-O2 -g` (libc++'s `.sh.cpp` tests that build with `-O2`, among
+them `std/containers/associative/map/PR28469_undefined_behavior_segfault.sh.cpp`)
+lists a function's parameters and locals in its subprogram's
+`retainedNodes`, as clang does for optimized code. A subprogram with
+any was `debug:retained-nodes` once inlined (§6.25). `llc` 22's
+`endFunctionImpl`, after the function's records made their abstract
+entities (`ensureAbstractEntityIsCreatedIfScoped`), goes over the
+abstract subprogram scopes in the order they were made and, for each
+retained variable or label of each, makes its scope's abstract scope
+(`getOrCreateAbstractScope`, a block's included) and, when the node has
+no abstract entity yet, makes one (`createAbstractEntity`). A
+parameter is placed by its number (`DwarfFile::addScopeVariable`'s
+`Args`), a variable or label after those the records made (`Locals`, in
+order). hod does the same before writing the function's abstract
+instances (`inline.rs` `retained_entities`): the retained ones get keys
+above every record row (`RETAINED_KEY`). A block that gets a variable
+this way is written under the abstract instance; one with only a label
+is not (as before).
+
+A function that also has its own code in the module (its abstract
+instance is the origin of its concrete DIE) writes its retained
+variables that have no record (WP-111) as `DW_AT_abstract_origin`
+alone, no location: families 111 and 112 with no list (mask 0), as
+`llc`'s `constructVariableDIE` of a concrete entity without a location
+whose abstract entity exists. Version 4 writes them unchanged
+(`dwarf4.rs` `checked_later`, mask 0 only). The abstract instance's
+imports are only the retained imports (`seal_imports`).
+
+Still `debug:retained-nodes`: an import scoped in a block of an inlined
+subprogram, and retained imports or labels of a function also placed out of
+line. A variable hod does not write (no type; an aligned parameter or
+unnamed variable, WP-087) also keeps the refusal. Test:
+`crates/hod/tests/debug_libcxx_wp210.rs` (parameter, local, a local in
+a block, a slot named by a record, a label; inlined only, and with the
+function's code before and after its caller; DWARF 5 and 4; both
+targets; tree equal to `llc` 22's). The libc++ module itself is then
+refused for `debug:dbg-value-expr` (a value record's expression,
+outside this package).
 
 ## 7. Speed and memory
 

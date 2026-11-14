@@ -499,11 +499,15 @@ pub fn zero_bytes(cx: &mut FnCx<'_, A64>, at: &mut Cursor, bytes: u32) {
 /// within the sequence for a thread-local symbol or an addend beyond 24
 /// bits).
 ///
+/// Under the large code model, [`far_address`] (§5.6.36).
+///
 /// # Errors
-/// `Unsupported("a64:code-model")` for a code model other than small.
+/// [`CODE_MODEL`] for a code model other than small and large, and for
+/// the large one under PIC; [`CODE_MODEL_TLS`] for a thread-local symbol
+/// not of the local-exec model under the large one.
 pub fn sym_address(cx: &mut FnCx<'_, A64>, rd: Reg, sym: SymId, addend: i64) -> CgResult<()> {
-    if cx.options.code_model(cx.module) != CodeModel::Small {
-        return unsupported(CODE_MODEL);
+    if large(cx)? {
+        return far_address(cx, rd, sym, addend);
     }
     let target = SymRef::Module(sym);
     match hod_cg::sym_access(cx.module, cx.options, sym) {
@@ -527,6 +531,81 @@ pub fn sym_address(cx: &mut FnCx<'_, A64>, rd: Reg, sym: SymId, addend: i64) -> 
         Access::Tls(model) => crate::tls::address(cx, rd, sym, model, addend)?,
     }
     Ok(())
+}
+
+/// Whether the function is compiled for the large code model (§5.6.36):
+/// outside PIC only, as `llc` keeps small-model code under PIC.
+///
+/// # Errors
+/// [`CODE_MODEL`] for a code model other than small and large;
+/// [`hod_cg::MODULE_CODE_MODEL_LARGE_PIC`] for the large one under PIC,
+/// whose `llc` code is not small PIC's (its unwind tables are 8-byte, and
+/// it rejects thread-locals other than local exec), as the classifier
+/// names a module that says so in its flags.
+pub fn large(cx: &FnCx<'_, A64>) -> CgResult<bool> {
+    match cx.options.code_model(cx.module) {
+        CodeModel::Small => Ok(false),
+        CodeModel::Large if !cx.options.reloc_model.is_pic() => Ok(true),
+        CodeModel::Large => unsupported(hod_cg::MODULE_CODE_MODEL_LARGE_PIC),
+        _ => unsupported(CODE_MODEL),
+    }
+}
+
+/// The address of `sym` plus `addend` in `rd` under the large code model
+/// outside PIC (§5.6.36), as `llc` 19 and 22 write it: for a direct
+/// symbol `movz rd, #:abs_g0_nc:sym; movk #:abs_g1_nc:; movk
+/// #:abs_g2_nc:; movk #:abs_g3:` (`R_AARCH64_MOVW_UABS_G0_NC` to `G3`),
+/// the addend added in code; through the GOT and for a local-exec
+/// thread-local symbol, the small model's sequences (`adrp`'s ±4 GiB to
+/// the GOT, as `llc`'s). Writes `rd` only.
+///
+/// # Errors
+/// [`CODE_MODEL_TLS`] for a thread-local symbol of another model, which
+/// `llc` rejects under the large model ("ELF TLS only supported in small
+/// memory model or in local exec TLS model").
+pub fn far_address(cx: &mut FnCx<'_, A64>, rd: Reg, sym: SymId, addend: i64) -> CgResult<()> {
+    let target = SymRef::Module(sym);
+    match hod_cg::sym_access(cx.module, cx.options, sym) {
+        Access::Direct => {
+            movw_address(cx, rd, target);
+            add_addend(cx, rd, addend);
+        }
+        Access::Got => {
+            let at = cx.offset();
+            put(cx, mc::adrp(rd.zr(), 0));
+            cx.reloc(at, RelocKind::A64(A64Reloc::AdrGotPage), target, 0);
+            put(cx, mc::ldr_off(Load::X, rd.zr(), rd.sp(), 0));
+            cx.reloc(at + 4, RelocKind::A64(A64Reloc::Ld64GotLo12Nc), target, 0);
+            add_addend(cx, rd, addend);
+        }
+        Access::Tls(model @ hod_cg::TlsAccess::LocalExec) => {
+            crate::tls::address(cx, rd, sym, model, addend)?;
+        }
+        Access::Tls(_) => return unsupported(CODE_MODEL_TLS),
+    }
+    Ok(())
+}
+
+/// `movz rd, #:abs_g0_nc:target` and the three `movk`s of the large code
+/// model's absolute address (`R_AARCH64_MOVW_UABS_G0_NC`, `G1_NC`,
+/// `G2_NC`, `G3`, addend 0), `llc`'s order.
+pub fn movw_address(cx: &mut FnCx<'_, A64>, rd: Reg, target: SymRef) {
+    let kinds = [
+        A64Reloc::MovwUabsG0Nc,
+        A64Reloc::MovwUabsG1Nc,
+        A64Reloc::MovwUabsG2Nc,
+        A64Reloc::MovwUabsG3,
+    ];
+    for (i, kind) in kinds.into_iter().enumerate() {
+        let at = cx.offset();
+        let shift = 16 * i as u32;
+        if i == 0 {
+            put(cx, mc::movz(Size::X, rd.zr(), 0, shift));
+        } else {
+            put(cx, mc::movk(Size::X, rd.zr(), 0, shift));
+        }
+        cx.reloc(at, RelocKind::A64(kind), target, 0);
+    }
 }
 
 /// The largest offset folded into a direct symbol reference, exclusive:
@@ -570,8 +649,12 @@ pub fn add_addend(cx: &mut FnCx<'_, A64>, rd: Reg, value: i64) {
     put(cx, mc::ldr_post(Load::X, t.zr(), SP, 16));
 }
 
-/// A code model other than small (`spec/codegen.md` §5.5).
+/// A code model other than small and large, or the large one under PIC
+/// (`spec/codegen.md` §5.5, §5.6.36).
 pub const CODE_MODEL: &str = "a64:code-model";
+/// A thread-local symbol of a model other than local exec under the large
+/// code model, which `llc` rejects (§5.6.36).
+pub const CODE_MODEL_TLS: &str = "a64:code-model-large-tls";
 /// A `blockaddress` constant: WP-037.
 pub const BLOCKADDRESS: &str = "a64:blockaddress";
 /// A constant of class `Gpr` or `Fpr` this target does not materialize

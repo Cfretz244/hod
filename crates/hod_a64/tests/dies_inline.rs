@@ -255,9 +255,9 @@ fn refusals_are_named() {
             "debug:retained-nodes",
             hand_with(&[(
                 "unit: !0, retainedNodes: !4)\n!31",
-                "unit: !0, retainedNodes: !36)\n!36 = !{!33}\n!31",
+                "unit: !0, retainedNodes: !36)\n!36 = !{!37}\n!37 = !DIImportedEntity(tag: DW_TAG_imported_declaration, scope: !35, entity: !6, file: !7, line: 3)\n!31",
             )]),
-            "an inlined subprogram with retained nodes",
+            "an inlined subprogram with an import in a block",
         ),
         (
             "debug:inlined-foreign-unit",

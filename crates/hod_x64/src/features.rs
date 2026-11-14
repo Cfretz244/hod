@@ -473,6 +473,67 @@ const CPUS_WITHOUT_AVX512: &[&str] = &[
     "znver3",
 ];
 
+/// WP-208: the CPUs `llc` 19 and 22 both give AVX-512, with whether each
+/// has `avx512vl` and `avx512bw` (measured: a `<16 x float>` argument in
+/// `zmm0` under `"min-legal-vector-width"="512"`; under `"0"` with a
+/// tuning that prefers 256 bits, `ymm0` and `ymm1` with VL; a
+/// `<64 x i1>` in `zmm0` with BW). `diamondrapids` and `novalake`, which
+/// 19 does not know, are not here: AVX-512 is assumed for them.
+const AVX512_CPUS: &[(&str, bool, bool)] = &[
+    ("cannonlake", true, true),
+    ("cascadelake", true, true),
+    ("cooperlake", true, true),
+    ("emeraldrapids", true, true),
+    ("graniterapids", true, true),
+    ("graniterapids-d", true, true),
+    ("icelake-client", true, true),
+    ("icelake-server", true, true),
+    ("knl", false, false),
+    ("knm", false, false),
+    ("rocketlake", true, true),
+    ("sapphirerapids", true, true),
+    ("skx", true, true),
+    ("skylake-avx512", true, true),
+    ("tigerlake", true, true),
+    ("x86-64-v4", true, true),
+    ("znver4", true, true),
+    ("znver5", true, true),
+];
+
+/// WP-208: the tuning CPUs (`tune-cpu`, else `target-cpu`) whose tuning
+/// prefers 256-bit vectors in `llc` 19 and 22 (`prefer-256-bit`,
+/// measured: a `<16 x float>` in `ymm0` and `ymm1` under `+avx512f`,
+/// `+avx512vl` and `"min-legal-vector-width"="0"`).
+const TUNE_256: &[&str] = &[
+    "cannonlake",
+    "cascadelake",
+    "cooperlake",
+    "emeraldrapids",
+    "graniterapids",
+    "graniterapids-d",
+    "icelake-client",
+    "icelake-server",
+    "rocketlake",
+    "sapphirerapids",
+    "skx",
+    "skylake-avx512",
+    "tigerlake",
+    "x86-64-v4",
+];
+
+/// WP-208: whether `cpu`, as the tuning CPU, is one `llc` 19 and 22 give
+/// no 256-bit preference (measured as [`TUNE_256`]): no CPU, `generic`,
+/// and every 64-bit CPU both know but those of [`TUNE_256`]. `None` for
+/// a CPU hod has not measured.
+fn tune_prefers_256(cpu: &str) -> Option<bool> {
+    if TUNE_256.contains(&cpu) {
+        return Some(true);
+    }
+    let measured = CPUS_WITHOUT_AVX.contains(&cpu)
+        || (CPUS_WITH_AVX.contains(&cpu) && !matches!(cpu, "diamondrapids" | "novalake"));
+    measured.then_some(false)
+}
+
 /// What a function compiled with `target-cpu` `cpu` and `target-features`
 /// `features` (either absent) may assume, as `llc` reads them: the CPU's
 /// features, then each item in order, `+name` turning on `name` and what
@@ -480,7 +541,20 @@ const CPUS_WITHOUT_AVX512: &[&str] = &[
 /// (`spec/codegen.md` §5.6.9). The caller's features decide every
 /// signature it meets, its own and each call's, a direct call to a
 /// function with other features included (`spec/abi-x64.md` §1.3).
+/// Without `tune-cpu` and `min-legal-vector-width` ([`of_function_with`]).
 pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
+    of_function_with(cpu, None, features, None)
+}
+
+/// [`of_function`] with the function's `tune-cpu` and
+/// `min-legal-vector-width` (WP-208, `spec/abi-x64.md` §1.3): with
+/// AVX-512 they decide whether 512-bit vectors are legal (`zmm`).
+pub fn of_function_with(
+    cpu: Option<&str>,
+    tune: Option<&str>,
+    features: Option<&str>,
+    min_legal_width: Option<&str>,
+) -> FnFeatures {
     let cpu = cpu.unwrap_or("");
     // WP-203: whether AVX is known (a CPU `llc` 22 gives AVX, or a feature
     // that implies it in `llc` 19 and 22) rather than assumed.
@@ -490,6 +564,13 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
     } else {
         (true, !CPUS_WITHOUT_AVX512.contains(&cpu))
     };
+    // WP-208: what decides AVX-512's conventions: whether the CPU is one
+    // hod measured, its `avx512vl` and `avx512bw`, and the 256- and
+    // 128-bit preferences the items set.
+    let table = AVX512_CPUS.iter().find(|row| row.0 == cpu);
+    let mut avx512_known = !avx512 || table.is_some();
+    let (mut vl, mut bw) = table.map_or((false, false), |row| (row.1, row.2));
+    let (mut prefer_256, mut prefer_128) = (None, false);
     let mut no_x87 = false;
     let mut tuned = !CPUS_WITHOUT_VZEROUPPER.contains(&cpu);
     for item in features.unwrap_or("").split(',') {
@@ -502,13 +583,29 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
         // says it may: an over-approximation only refuses.
         let is_avx512 =
             name.starts_with("avx512") || name.starts_with("avx10") || name == "amx-avx512";
+        let bytes = name.as_bytes();
+        if on && Avx512::Vl.implied_by(bytes) || !on && Avx512::Vl.disabled_by(bytes) {
+            vl = on;
+        }
+        if on && Avx512::Bw.implied_by(bytes) || !on && Avx512::Bw.disabled_by(bytes) {
+            bw = on;
+        }
         match (on, name) {
             (_, "x87") => no_x87 = !on,
             (_, "vzeroupper") => tuned = on,
-            // What implies AVX-512, and AVX-512 itself.
+            (_, "prefer-256-bit") => prefer_256 = Some(on),
+            (_, "prefer-128-bit") => prefer_128 = on,
+            // `llc` 19 reads `-evex512` (and fails on a 512-bit argument),
+            // 22 ignores it.
+            (false, "evex512") => avx512_known = false,
+            // What implies AVX-512, and AVX-512 itself. An AVX10 name or
+            // `amx-avx512` leaves its conventions unknown.
             (true, _) if is_avx512 => {
                 (avx, avx512) = (true, true);
                 known |= !AVX_ASSUMED.contains(&name);
+                if !name.starts_with("avx512") {
+                    avx512_known = false;
+                }
             }
             // What implies AVX (`llc` 19 and 22 place a `<8 x float>` in
             // `ymm0` under each, WP-201).
@@ -533,8 +630,34 @@ pub fn of_function(cpu: Option<&str>, features: Option<&str>) -> FnFeatures {
             _ => {}
         }
     }
+    // `llc`'s `useAVX512Regs`: 512-bit vectors are legal unless the
+    // function has VL, prefers narrower vectors (`prefer-128-bit`, else
+    // `prefer-256-bit`, else the tuning CPU's preference) and needs no
+    // vector wider than 256 bits (`min-legal-vector-width`, unbounded
+    // when absent).
+    let tune = tune.unwrap_or(cpu);
+    let narrow =
+        if prefer_128 { Some(true) } else { prefer_256.or_else(|| tune_prefers_256(tune)) };
+    let min_legal = match min_legal_width {
+        None => Some(u32::MAX),
+        Some(text) => text.parse::<u32>().ok(),
+    };
+    let zmm = match (vl, narrow, min_legal) {
+        (false, _, _) | (_, Some(false), _) => Some(true),
+        (_, _, Some(width)) if width > 256 => Some(true),
+        (true, Some(true), Some(_)) => Some(false),
+        _ => None,
+    };
+    let avx512_known = avx512 && avx512_known && zmm.is_some();
     FnFeatures {
-        abi: abi::Features { avx, avx512, assumed: avx && !known },
+        abi: abi::Features {
+            avx,
+            avx512,
+            assumed: avx && !known,
+            avx512_known,
+            zmm: avx512_known && zmm == Some(true),
+            bw: avx512_known && bw,
+        },
         no_x87,
         vzeroupper: avx && known && tuned,
     }
@@ -606,9 +729,118 @@ pub fn uses_x86_fp80(module: &hod_ir::Module, body: &hod_ir::Body) -> bool {
         })
 }
 
+/// An AVX-512 family an intrinsic needs (WP-208, `spec/codegen.md`
+/// §5.6.35): the feature of clang's header function, with
+/// [`Avx512::Vl`] too for a 128- or 256-bit form.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Avx512 {
+    /// `avx512f`.
+    F,
+    /// `avx512vl`.
+    Vl,
+    /// `avx512bw`.
+    Bw,
+    /// `avx512dq`.
+    Dq,
+    /// `avx512vbmi2`.
+    Vbmi2,
+}
+
+/// The items that turned off turn off `avx512f`: it and what it implies.
+const AVX512F_NEEDS: &[&[u8]] = &[
+    b"avx512f", b"avx2", b"avx", b"fma", b"f16c", b"sse4.2", b"sse4.1", b"ssse3", b"sse3", b"sse2",
+    b"sse",
+];
+
+impl Avx512 {
+    /// Whether item `name` (without its sign), turned on, turns this
+    /// family on: its own feature and those that imply it in `llc` 19
+    /// and 22. AVX10 is not counted (clang writes the AVX-512 features
+    /// it implies), so an AVX10 name alone refuses.
+    pub fn implied_by(self, name: &[u8]) -> bool {
+        match self {
+            Avx512::F => name.starts_with(b"avx512"),
+            Avx512::Vl => matches!(name, b"avx512vl" | b"avx512fp16"),
+            Avx512::Bw => matches!(
+                name,
+                b"avx512bw"
+                    | b"avx512vbmi"
+                    | b"avx512vbmi2"
+                    | b"avx512bitalg"
+                    | b"avx512bf16"
+                    | b"avx512fp16"
+            ),
+            Avx512::Dq => matches!(name, b"avx512dq" | b"avx512fp16"),
+            Avx512::Vbmi2 => name == b"avx512vbmi2",
+        }
+    }
+
+    /// Whether item `name`, turned off, turns this family off: its own
+    /// feature, or one it needs.
+    pub fn disabled_by(self, name: &[u8]) -> bool {
+        let own = match self {
+            Avx512::F => b"avx512f".as_slice(),
+            Avx512::Vl => b"avx512vl",
+            Avx512::Bw => b"avx512bw",
+            Avx512::Dq => b"avx512dq",
+            Avx512::Vbmi2 => b"avx512vbmi2",
+        };
+        name == own
+            || (self == Avx512::Vbmi2 && name == b"avx512bw")
+            || AVX512F_NEEDS.contains(&name)
+    }
+
+    /// Whether `features` (a `target-features` string) enable this
+    /// family: the last item that turns it on or off decides; without one
+    /// it is off (a `target-cpu` alone does not count, as for WP-202's).
+    pub fn enabled(self, features: &[u8]) -> bool {
+        let mut on = false;
+        for item in features.split(|&b| b == b',') {
+            match item.split_first() {
+                Some((b'+', name)) if self.implied_by(name) => on = true,
+                Some((b'-', name)) if self.disabled_by(name) => on = false,
+                _ => {}
+            }
+        }
+        on
+    }
+}
+
+/// Whether `features` turn `evex512` off (the last `evex512` item is
+/// `-evex512`): the 512-bit forms are then not available (§5.6.35).
+pub fn evex512_off(features: &[u8]) -> bool {
+    features.split(|&b| b == b',').rfind(|item| item.get(1..) == Some(b"evex512"))
+        == Some(b"-evex512")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn avx512_families() {
+        let on = |f: Avx512, s: &str| f.enabled(s.as_bytes());
+        assert!(!on(Avx512::F, ""));
+        assert!(on(Avx512::F, "+avx2,+avx512f"));
+        assert!(on(Avx512::F, "+avx512bw"));
+        assert!(!on(Avx512::F, "+avx512f,-avx2"));
+        assert!(on(Avx512::F, "-avx512f,+avx512dq"));
+        assert!(!on(Avx512::Vl, "+avx512f"));
+        assert!(on(Avx512::Vl, "+avx512vl"));
+        assert!(!on(Avx512::Vl, "+avx512vl,-avx512f"));
+        assert!(on(Avx512::Bw, "+avx512vbmi"));
+        assert!(!on(Avx512::Bw, "+avx512bw,-avx512bw"));
+        assert!(!on(Avx512::Bw, "+avx512dq"));
+        assert!(on(Avx512::Dq, "+avx512fp16"));
+        assert!(!on(Avx512::Vbmi2, "+avx512bw"));
+        assert!(!on(Avx512::Vbmi2, "+avx512vbmi2,-avx512bw"));
+        assert!(on(Avx512::Vbmi2, "+avx512vbmi2"));
+        // AVX10 alone is not counted.
+        assert!(!on(Avx512::F, "+avx10.1-512"));
+        assert!(!evex512_off(b"+avx512f"));
+        assert!(evex512_off(b"+avx512f,-evex512"));
+        assert!(!evex512_off(b"-evex512,+evex512"));
+    }
 
     fn reason(features: &str) -> Option<&'static str> {
         check(features).err().map(|refused| refused.reason)
@@ -744,5 +976,46 @@ mod tests {
             assert!(!AVAILABLE[..i].contains(name), "{name}");
             assert!(!tuning(name) && mitigation(name).is_none(), "{name}");
         }
+    }
+
+    /// WP-208 (`spec/abi-x64.md` §1.3): when 512-bit vectors are legal
+    /// (`llc`'s `useAVX512Regs`), and when AVX-512's conventions are left
+    /// open.
+    #[test]
+    fn zmm_follows_llc() {
+        let f = |cpu: &str, tune: Option<&str>, features: &str, width: Option<&str>| {
+            let abi = of_function_with(Some(cpu), tune, Some(features), width).abi;
+            (abi.avx512, abi.avx512_known, abi.zmm, abi.bw)
+        };
+        // Without VL, always; with VL, unless the tuning prefers 256 bits
+        // and no wider vector is needed.
+        assert_eq!(f("x86-64", None, "+avx512f", Some("0")), (true, true, true, false));
+        assert_eq!(f("skylake-avx512", None, "", Some("0")), (true, true, false, true));
+        assert_eq!(f("skylake-avx512", None, "", None), (true, true, true, true));
+        assert_eq!(f("skylake-avx512", None, "", Some("512")), (true, true, true, true));
+        assert_eq!(f("skylake-avx512", None, "", Some("256")), (true, true, false, true));
+        assert_eq!(f("skylake-avx512", Some("generic"), "", Some("0")), (true, true, true, true));
+        assert_eq!(
+            f("skylake-avx512", None, "-prefer-256-bit", Some("0")),
+            (true, true, true, true)
+        );
+        assert_eq!(f("znver4", None, "", Some("0")), (true, true, true, true));
+        assert_eq!(f("knl", None, "", Some("0")), (true, true, true, false));
+        let vl = "+avx512f,+avx512vl";
+        assert_eq!(f("x86-64", None, vl, Some("0")), (true, true, true, false));
+        let narrow = "+avx512f,+avx512vl,+prefer-256-bit";
+        assert_eq!(f("x86-64", None, narrow, Some("0")), (true, true, false, false));
+        let narrow = "+avx512f,+avx512vl,+prefer-128-bit,-prefer-256-bit";
+        assert_eq!(f("x86-64", None, narrow, Some("0")), (true, true, false, false));
+        assert_eq!(f("skylake-avx512", None, "-avx512bw", Some("0")), (true, true, false, false));
+        assert!(!f("skylake-avx512", None, "-avx512f", Some("0")).0);
+        // Left open: `-evex512` (19 reads it, 22 does not), an AVX10 name,
+        // a CPU hod has not measured, a width it cannot read.
+        assert!(!f("x86-64", None, "+avx512f,-evex512", None).1);
+        assert!(!f("x86-64", None, "+avx10.1-512", None).1);
+        assert!(!f("diamondrapids", None, "", None).1);
+        assert!(!f("skylake-avx512", None, "", Some("wide")).1);
+        // Without AVX-512, nothing of this.
+        assert_eq!(f("haswell", None, "", Some("0")), (false, false, false, false));
     }
 }

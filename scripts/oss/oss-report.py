@@ -4,10 +4,15 @@
 
   oss-report.py [--target T] collect <project>   copy the modules hod refused in the
                                     project's hod and strict trees into
-                                    <findings>/<project>/<reason>/ (one
-                                    per reason per project, WP-200), each
-                                    with its command line and a one-line
-                                    description
+                                    <findings>/<project>/<reason>/ (at most
+                                    $HOD_OSS_KEEP, default one, per reason
+                                    per project), each with its command
+                                    line and a one-line description
+  oss-report.py rerun <project> <flavour> <mode> <test> [--times N]
+                                    run one ctest test of a kept tree N
+                                    times (default 2) under the row's
+                                    memory cap, appending the count of
+                                    passes to the tree's reruns.jsonl
   oss-report.py status [--out F]    docs/status/oss.md from every report
                                     (stdout without --out)
   oss-report.py census [--out F]    the census page (the status rows and
@@ -26,6 +31,7 @@ import glob
 import json
 import os
 import shutil
+import stat
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,7 +41,7 @@ import projects  # noqa: E402
 
 FLAVOURS = ("O0", "O0g")
 MODES = ("llc", "hod", "strict")
-KEEP = 1
+KEEP = int(os.environ.get("HOD_OSS_KEEP") or 1)
 
 
 def roots():
@@ -80,6 +86,17 @@ def load_reports(oss):
         log = os.path.join(os.path.dirname(path), "test.log")
         if r.get("test_rc") is not None and os.path.exists(log):
             r["test_status"] = projects.test_results(log)[2]
+        # Reruns of single tests (`rerun`): {test: {"runs": n, "passed": k}}.
+        r["reruns"] = {}
+        rr = os.path.join(os.path.dirname(path), "reruns.jsonl")
+        if os.path.exists(rr):
+            with open(rr, encoding="utf-8") as f:
+                for line in f:
+                    e = json.loads(line)
+                    a = r["reruns"].setdefault(e["test"], {"runs": 0, "passed": 0, "env": set()})
+                    a["env"].add(e.get("arena") or "unset")
+                    a["runs"] += 1
+                    a["passed"] += 1 if e["passed"] else 0
         reps[(r["project"], r["flavour"], r["mode"])] = r
     return reps
 
@@ -119,10 +136,21 @@ def diff_tests(ctl, r):
     return worse, better
 
 
-def status_rows(reps):
+def hod_cell(*rs):
+    """The hod binaries of the hod and strict builds (a frozen copy's name
+    carries its commit: `hod-<sha>`)."""
+    names = sorted({os.path.basename(r.get("hod_path") or "") for r in rs if r} - {""})
+    return ", ".join(f"`{n}`" for n in names) or "-"
+
+
+def status_rows(reps, notes=None):
+    """The table; a test worse than the control's that passed every
+    recorded rerun (and at least two) is not counted worse: the cell says
+    `same (rerun)` with a numbered note, appended to `notes`."""
+    notes = [] if notes is None else notes
     out = [
-        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| project | flavour | TUs | objects | built by hod | fell back | not offered | hybrid build | strict build | tests llc | tests hod | tests strict | against the control | hod |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for p in order(reps):
         for fl in FLAVOURS:
@@ -135,18 +163,33 @@ def status_rows(reps):
             fell = be.get("hod-declined", 0) + be.get("hod-failed", 0)
             no = be.get("llvm", 0)
             diffs = []
+            reran = []
             for name, r in (("hod", h), ("strict", s)):
                 worse, better = diff_tests(l, r)
+                worse, better = worse or [], better or []
+                rr = (r or {}).get("reruns") or {}
+                for t in [t for t in worse if t in rr]:
+                    e = rr[t]
+                    if e["runs"] >= 2 and e["passed"] == e["runs"]:
+                        worse.remove(t)
+                        notes.append(f"{p} {fl} {name}: `{t}` failed in the build's test run and passed {e['passed']} of {e['runs']} reruns under the same memory cap"
+                                     f" (`MALLOC_ARENA_MAX` {', '.join(sorted(e['env']))}).")
+                        reran.append(len(notes))
+                    else:
+                        notes.append(f"{p} {fl} {name}: `{t}` passed {e['passed']} of {e['runs']} reruns.")
+                        worse[worse.index(t)] = f"{t} (note {len(notes)})"
                 if worse:
                     diffs.append(f"{name}: {len(worse)} worse ({', '.join(worse[:3])}{', ...' if len(worse) > 3 else ''})")
                 if better:
                     diffs.append(f"{name}: {len(better)} better")
             if l and (h or s) and not diffs:
-                diffs.append("same")
+                diffs.append("same (rerun, " + ", ".join(f"note {n}" for n in reran) + ")" if reran else "same")
+            elif reran:
+                diffs.append(", ".join(f"note {n}" for n in reran))
             out.append(
                 f"| {p} | {fl} | {ref['tus']['total']} | {c.get('objects', '-')} | {be.get('hod', '-') if c else '-'} | "
                 f"{fell if c else '-'} | {no if c else '-'} | {build_cell(h)} | {build_cell(s)} | "
-                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} |"
+                f"{test_cell(l)} | {test_cell(h)} | {test_cell(s)} | {'; '.join(diffs) or '-'} | {hod_cell(h, s)} |"
             )
     return out
 
@@ -177,7 +220,8 @@ def census_rows(reps, findings=None):
         fcell = ", ".join(f"`{f[:60]}`" for f, _ in fns) or "-"
         row = f"| `{name}` | {a['first']} | {a['modules']} | {', '.join(sorted(a['where']))} | {fcell} |"
         if findings:
-            d = sorted(glob.glob(os.path.join(findings, "*", safe(name))))
+            mine = {p for p, _, _ in reps}
+            d = sorted(x for x in glob.glob(os.path.join(findings, "*", safe(name))) if os.path.basename(os.path.dirname(x)) in mine)
             row += f" {', '.join(os.path.relpath(x, findings) for x in d) or '-'} |"
         out.append(row)
     return out
@@ -329,7 +373,10 @@ def cmd_collect(a):
 
 def page(reps, title, intro, findings=None):
     lines = [f"# {title}", "", *intro, ""]
-    lines += status_rows(reps)
+    notes = []
+    lines += status_rows(reps, notes)
+    if notes:
+        lines += ["", "Notes:", ""] + [f"{i}. {n}" for i, n in enumerate(notes, 1)]
     lines += ["", "## Refusal census (hybrid builds)", ""]
     lines += census_rows(reps, findings)
     lines += not_offered_rows(reps)
@@ -346,12 +393,54 @@ def write(text, out):
         sys.stdout.write(text)
 
 
+def cmd_rerun(a):
+    """Run one test of a kept tree `a.times` times under the row's cap."""
+    import resource
+    import subprocess
+    import time
+
+    oss, _ = roots()
+    tree = os.path.join(trees(oss), a.project, f"{a.flavour}-{a.mode}")
+    if not os.path.exists(os.path.join(tree, "CTestTestfile.cmake")):
+        sys.exit(f"oss-report: {tree} is not a kept build tree")
+    row = projects.load()[a.project]
+    cap = int(os.environ.get("KILN_OSS_VMEM_KB") or row["vmem_kb"]) * 1024
+    tmp = os.path.join(tree, "test-tmp")
+    os.makedirs(tmp, exist_ok=True)
+    env = dict(os.environ, TMPDIR=tmp, TEST_TMPDIR=tmp)
+    env.setdefault("MALLOC_ARENA_MAX", "4")  # as oss-build.sh's test run
+    fifo = os.environ.get("HOD_OSS_JOBSERVER_FIFO") or "/run/hod/lanes.fifo"
+    if stat.S_ISFIFO(os.stat(fifo).st_mode if os.path.exists(fifo) else 0):  # the real-project pool
+        env["MAKEFLAGS"] = f"--jobserver-auth=fifo:{fifo}"
+
+    def limit():
+        resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+
+    for i in range(a.times):
+        p = subprocess.run(["ctest", "-R", f"^{a.test}$", "--output-on-failure"], cwd=tree, env=env,
+                           preexec_fn=limit, capture_output=True, text=True)
+        log = os.path.join(tree, f"rerun-{a.test}-{int(time.time())}-{i}.log")
+        with open(log, "w", encoding="utf-8") as f:
+            f.write(p.stdout + p.stderr)
+        per = projects.test_results(log)[2]
+        ok = per.get(a.test) == "Passed"
+        with open(os.path.join(tree, "reruns.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"test": a.test, "passed": ok, "rc": p.returncode, "log": os.path.basename(log),
+                                "arena": env.get("MALLOC_ARENA_MAX"),
+                                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
+        print(f"oss-report: {a.project} {a.flavour} {a.mode} {a.test}: run {i + 1}: {'passed' if ok else 'failed'}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--target", choices=sorted(PREFIX), default="aarch64")
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect")
     c.add_argument("project")
+    r = sub.add_parser("rerun")
+    for n in ("project", "flavour", "mode", "test"):
+        r.add_argument(n)
+    r.add_argument("--times", type=int, default=2)
     for n in ("status", "census"):
         s = sub.add_parser(n)
         s.add_argument("--out")
@@ -360,6 +449,8 @@ def main():
     TARGET = a.target
     if a.cmd == "collect":
         return cmd_collect(a)
+    if a.cmd == "rerun":
+        return cmd_rerun(a)
     oss, findings = roots()
     nfind = target_findings(findings)
     reps = load_reports(oss)

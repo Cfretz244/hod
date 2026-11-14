@@ -378,6 +378,9 @@ const NO_RELOCATION: &str = "no ELF relocation subtracts a symbol's address; `ll
 const NO_FORM: &str = "a constant expression with no normal form (§4.2)";
 const ELF_COMDAT: &str = "ELF has `any` and `nodeduplicate` only; `llc` refuses it too";
 const GC: &str = "garbage-collection statepoints are refused by design";
+/// WP-209.
+const CODE_MODEL_OTHER: &str =
+    "not built: the large model does not cover it (`spec/codegen.md` §5.6.36)";
 
 const ON: SupportCell = SupportCell::SUPPORTED;
 
@@ -417,16 +420,36 @@ const fn a64(name: &'static str, by: &'static str, note: &'static str) -> Suppor
 
 // ---- the groups, in the order of `docs/status/support.md` ----
 
-const MODULE: [SupportRow; 24] = [
+const MODULE: [SupportRow; 25] = [
     both("module:pic", ON, "`PIC Level` is not 0"),
     both("module:pie", ON, "`PIE Level` is not 0"),
     // `CodeModel` order.
     a64("module:code-model-tiny", LATER, ""),
     both("module:code-model-small", ON, "the default of both targets: nothing changes"),
-    a64("module:code-model-kernel", LATER, ""),
-    a64("module:code-model-medium", LATER, ""),
-    a64("module:code-model-large", LATER, ""),
-    a64("module:large-data-threshold", LATER, ""),
+    // WP-209: the kernel and medium models are judged and left out
+    // (`spec/codegen.md` §5.6.36); the large one is built.
+    row("module:code-model-kernel", todo(LATER), todo(LATER), CODE_MODEL_OTHER),
+    row("module:code-model-medium", todo(LATER), todo(LATER), CODE_MODEL_OTHER),
+    row(
+        "module:code-model-large",
+        ON,
+        ON,
+        "x86-64: every reference 64-bit, `.ltext`/`.ldata`/`.lrodata`/`.lbss`; AArch64: \
+         `movz`/`movk` addresses outside PIC, 8-byte unwind tables (WP-209)",
+    ),
+    // WP-209: `llc`'s AArch64 large-model PIC is neither small PIC's code
+    // nor complete (it rejects thread-locals other than local exec).
+    row(
+        "module:code-model-large-pic",
+        todo(LATER),
+        ON,
+        "the large model with `PIC Level` not 0: AArch64's is refused by name (`spec/codegen.md` §5.6.36)",
+    ),
+    both(
+        "module:large-data-threshold",
+        ON,
+        "ignored, as `llc` ignores it (it reads the threshold from its command line only; WP-209)",
+    ),
     both("module:uwtable", ON, "the module's default unwind-table kind is not `none` (WP-049)"),
     both(
         "module:frame-pointer",
@@ -3465,8 +3488,14 @@ const INTRINSIC_A64: &[SupportRow] = &[
 /// the list, then WP-190's system and state ones. Above SSE2 (and for
 /// WP-190's above the baseline) the lowering refuses a function whose
 /// `target-features` do not enable the feature, by the intrinsic's name.
-/// Last, the generic masked memory intrinsics of WP-208, which the list
-/// keeps after the x86 ones.
+/// Then the generic masked memory intrinsics of WP-208, which the list
+/// keeps after the x86 ones, and last WP-208's AVX-512 F, VL, BW and DQ
+/// names (and the VBMI2 compresses under F's overloaded name; §5.6.35),
+/// each refused by its name unless the function's features enable its
+/// family (and `avx512vl` for a 128- or 256-bit form).
+/// The note of WP-208's AVX-512 rows.
+const AVX512: &str = "AVX-512 (WP-208)";
+
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
     row("intrinsic:llvm.x86.sse.comieq.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -3896,6 +3925,170 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.masked.store", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
     row("intrinsic:llvm.masked.expandload", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
     row("intrinsic:llvm.masked.compressstore", todo(LATER), on(MASKED), "lane by lane (WP-208)"),
+    row("intrinsic:llvm.x86.avx512.mask.getexp.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.rndscale.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.max.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.min.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.sf.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rcp14.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rsqrt14.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vfmaddsub.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.vcvtps2ph.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.compress", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtps2dq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2dq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2udq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.si.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psll.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pslli.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psllv.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psra.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrai.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrl.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrli.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrlv.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pternlog.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.d.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qb.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qb.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qb.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.db.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.db.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.db.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qb.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qb.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qb.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.getexp.pd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rcp14.pd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rcp14.sd", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rsqrt14.pd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rsqrt14.sd", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.pd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psra.q.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrai.q.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.q.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pternlog.q.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.q.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.getexp.pd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.df.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rcp14.pd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rsqrt14.pd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.pd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.getexp.ps.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.ps.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2udq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2udq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2udq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pternlog.d.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.d.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.di.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psra.q.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrai.q.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.q.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pternlog.q.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.q.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.getexp.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.rndscale.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.max.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.min.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.df.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rcp14.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.rsqrt14.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vfmaddsub.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtpd2ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.getexp.ps.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.ps.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qw.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qw.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qw.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qw.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtpd2dq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2dq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2udq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2udq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovs.qd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.pmovus.qd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pternlog.d.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.d.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.di.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psll.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pslli.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psllv.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psra.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrai.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrl.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrli.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrlv.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pternlog.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.q.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.dbpsadbw.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.hi.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psllv.w.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.w.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrlv.w.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.hi.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.dbpsadbw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.packssdw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.packusdw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pavg.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.hi.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pmul.hr.sw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pmulh.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pmulhu.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psll.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pslli.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psllv.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psra.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrai.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrl.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrli.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrlv.w.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.hi.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.packsswb.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.packuswb.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pavg.b.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.pshuf.b.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.dbpsadbw.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.hi.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psllv.w.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrav.w.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psrlv.w.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.hi.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.psad.bw.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.fpclass.ps.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.fpclass.pd.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtpd2qq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2qq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2uqq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2qq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2uqq.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtqq2ps.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtuqq2ps.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.fpclass.pd.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.fpclass.ps.128", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtpd2qq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2qq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2uqq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2qq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2uqq.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.fpclass.pd.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.fpclass.ps.256", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvtpd2qq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2qq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttpd2uqq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2qq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.mask.cvttps2uqq.512", never(X64_ONLY), on(X86_SSE), AVX512),
 ];
 
 /// The value classes of the masked memory intrinsics' signatures
@@ -4061,6 +4254,7 @@ pub(crate) mod at {
     pub(crate) const MODULE_PIE: usize = find("module:pie");
     /// Plus `CodeModel as usize`.
     pub(crate) const MODULE_CODE_MODEL: usize = find("module:code-model-tiny");
+    pub(crate) const MODULE_LARGE_PIC: usize = find("module:code-model-large-pic");
     pub(crate) const MODULE_LARGE_DATA: usize = find("module:large-data-threshold");
     pub(crate) const MODULE_UWTABLE: usize = find("module:uwtable");
     pub(crate) const MODULE_FRAME_POINTER: usize = find("module:frame-pointer");

@@ -19,3 +19,4 @@ mod table;
 mod ty;
 mod variadic;
 mod wide;
+mod zmm;

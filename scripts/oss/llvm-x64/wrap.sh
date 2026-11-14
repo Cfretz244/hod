@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # The compiler wrapper of the x86-64 cross build of LLVM (WP-180, from
 # WP-178's scripts/oss/llvm/wrap.sh), installed under four
 # names (symlinks to this file) that choose the flavour and the language:
@@ -26,8 +26,8 @@
 # llvm-hod, llvm-llc), HOD_OSS_KILN (required: the directory of kiln++
 # and kiln), HOD_OSS_KILN_SCRIPTS (required: kiln's scripts/oss),
 # HOD_OSS_PHASE (configure | build | test; recorded). KILN_HOD_STRICT
-# passes through.
-set -eu
+# passes through. HOD_OSS_STRICT=1: strict mode (below; WP-178's).
+set -eu -o pipefail
 : "${HOD_OSS_ROOT:?set HOD_OSS_ROOT}"
 : "${HOD_OSS_KILN:?set HOD_OSS_KILN to the directory of kiln++}"
 : "${HOD_OSS_KILN_SCRIPTS:?set HOD_OSS_KILN_SCRIPTS to kiln/scripts/oss}"
@@ -64,8 +64,35 @@ for a in "$@"; do
 done
 [ "$is_link" = 1 ] && export KILN_OSS_VMEM_KB="${HOD_OSS_LINK_VMEM_KB:-16000000}"
 case "$name" in
-  *-cxx) exec "$HOD_OSS_KILN_SCRIPTS/kiln-cxx" "--target=$target" "$@" ;;
-  *-cc) exec "$HOD_OSS_KILN_SCRIPTS/kiln-cc" "--target=$target" "$@" ;;
+  *-cxx) inner="$HOD_OSS_KILN_SCRIPTS/kiln-cxx" ;;
+  *-cc) inner="$HOD_OSS_KILN_SCRIPTS/kiln-cc" ;;
+  *) echo "wrap.sh: unknown language in $name" >&2; exit 2 ;;
 esac
-echo "wrap.sh: unknown language in $name" >&2
-exit 2
+# Strict (HOD_OSS_STRICT=1, hod tree, compiles; as WP-178's wrap.sh):
+# KILN_HOD_STRICT=1 makes only a hod *failure* an error; a decline (hod's
+# status 2) still falls back to llc silently, and a job kiln does not
+# offer to hod never meets it. So the job's own statistics line decides:
+# every front-end job of the invocation must say backend `hod`, else the
+# compile fails here (after kiln wrote its object, which is removed)
+# naming the backend and the reason. The lines are appended to the
+# shared statistics log.
+if [ "${HOD_OSS_STRICT:-0}" != 1 ] || [ "$flavour" != hod ] || [ "$is_link" = 1 ]; then
+  exec "$inner" "--target=$target" "$@"
+fi
+export KILN_HOD_STRICT=1
+shared="$KILN_STATS_LOG"
+mine="$(mktemp "$tree/logs/stats-XXXXXX")"
+export KILN_STATS_LOG="$mine"
+rc=0
+"$inner" "--target=$target" "$@" || rc=$?
+cat "$mine" >> "$shared"
+bad=$(python3 "$(dirname "$(readlink -f "$0")")/strict-check.py" "$mine")
+rm -f "$mine"
+if [ "$rc" = 0 ] && [ -n "$bad" ]; then
+  echo "wrap.sh: strict: not compiled by hod: $bad" >&2
+  for ((i = 1; i <= $#; i++)); do
+    if [ "${!i}" = -o ]; then j=$((i + 1)); rm -f "${!j}"; fi
+  done
+  exit 1
+fi
+exit $rc

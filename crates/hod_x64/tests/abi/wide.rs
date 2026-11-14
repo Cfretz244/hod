@@ -6,13 +6,11 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use hod_testutil::{Scratch, run};
 use hod_x64::abi::Features;
 
 use crate::grid::{pressures, random_case, run_cases, scalars, seq, vectors};
-use crate::ir;
 use crate::run::{Machine, Tools};
-use crate::sigs::{Attr, Blobs, Case, Plan, byval, p, pa, table};
+use crate::sigs::{Attr, Case, byval, p, pa, table};
 use crate::ty::{I1, I8, I16, I32, I64, Rng, Ty, arr, st, vec};
 
 /// The census (`tests/features/x64_census.tsv`).
@@ -20,13 +18,13 @@ const CENSUS: &str = include_str!("../features/x64_census.tsv");
 
 /// The `target-cpu` and `target-features` clang 22 (else 19) writes for
 /// `-march=<cpu>`.
-fn census(cpu: &str) -> Machine {
+pub fn census(cpu: &str) -> Machine {
     let flag = format!("-march={cpu}");
     let mut found = None;
     for line in CENSUS.lines().filter(|line| !line.starts_with('#')) {
         let fields: Vec<&str> = line.split('\t').collect();
         if fields.len() == 5 && fields[1] == flag {
-            found = Some(Machine { cpu: fields[2].to_string(), features: fields[4].to_string() });
+            found = Some(Machine::new(fields[2], fields[4]));
             if fields[0].contains("clang22") {
                 break;
             }
@@ -38,7 +36,7 @@ fn census(cpu: &str) -> Machine {
 /// The machines of the grid: `+avx` and `+avx2` on the baseline CPU, and
 /// four `-march` strings of the census (AVX alone, AVX2, AVX-512, AMD).
 pub fn machines() -> Vec<Machine> {
-    let plain = |features: &str| Machine { cpu: "x86-64".into(), features: features.into() };
+    let plain = |features: &str| Machine::new("x86-64", features);
     vec![
         plain("+avx"),
         plain("+avx2"),
@@ -204,11 +202,11 @@ fn wide_vector_grid() {
         if features.avx512 {
             // `qemu`'s TCG has no AVX-512: code compiled for this machine
             // stops on its first EVEX instruction. The evidence is that
-            // hod and `llc` place every accepted signature as under AVX
-            // alone, which the other machines run (§11).
-            let checked = same_as_avx(&label, &cases, &machine, &tools);
+            // hod places every accepted signature as each `llc` does for
+            // this machine (WP-208, `zmm::same_as_llc`).
+            let checked = crate::zmm::same_as_llc(&label, &cases, &machine, &tools);
             eprintln!(
-                "wide grid, {}: {} signatures, {checked} llc conventions equal to +avx; \
+                "wide grid, {}: {} signatures, {checked} llc conventions equal; \
                  refused: {refused:?}",
                 machine.cpu,
                 cases.len()
@@ -226,123 +224,4 @@ fn wide_vector_grid() {
         );
         report.check(&format!("wide grid {}", machine.cpu));
     }
-}
-
-/// `spec/abi-x64.md` §11, for a machine with AVX-512: hod assigns each of
-/// `cases` as under AVX alone, and every `llc` at `-O0` (`FastISel` and
-/// `SelectionDAG`) passes, receives and returns each the same way for
-/// `machine` as for `x86-64` with `+avx`: the same live-in registers,
-/// incoming stack objects and register operands of each call and return.
-/// Returns how many function conventions were compared.
-fn same_as_avx(label: &str, cases: &[Case], machine: &Machine, tools: &Tools) -> usize {
-    let avx = Features { avx: true, avx512: false, assumed: false };
-    let mut types = table();
-    for case in cases {
-        assert_eq!(
-            case.assign_with(&mut types, machine.abi()),
-            case.assign_with(&mut types, avx),
-            "{}: `{}`",
-            machine.cpu,
-            case.text()
-        );
-    }
-    let (mut blobs, mut rng) = (Blobs::default(), Rng(0x203));
-    let plans: Vec<Plan> = cases
-        .iter()
-        .map(|case| Plan::new_with(case, &mut types, &mut blobs, &mut rng, avx))
-        .collect();
-    // LLVM has no `va_arg` for this target: no variadic LLVM callee.
-    let runs = |index: usize, hod_calls: bool| !(hod_calls && plans[index].case.fixed.is_some());
-    let reference = Machine { cpu: "x86-64".into(), features: "+avx".into() };
-    let scratch = Scratch::new(label);
-    let mut compared = 0;
-    for (config, llc) in tools.llc.iter().filter(|(config, _)| config.opt == "-O0") {
-        let mut got = Vec::new();
-        for (name, attrs) in [("machine", machine.attributes()), ("avx", reference.attributes())] {
-            let source =
-                scratch.write(&format!("{name}.ll"), ir::module_with(&plans, &runs, Some(&attrs)));
-            let outcome = run(
-                llc,
-                [
-                    "-O0".as_ref(),
-                    if config.dag { "-fast-isel=0" } else { "-fast-isel=1" }.as_ref(),
-                    "-relocation-model=pic".as_ref(),
-                    "-stop-after=finalize-isel".as_ref(),
-                    "-o".as_ref(),
-                    "-".as_ref(),
-                    source.as_os_str(),
-                ],
-            );
-            assert!(outcome.success(), "llc {} {name}: {}", config.tag(), outcome.stderr_text());
-            got.push(conventions(&outcome.stdout_text()));
-        }
-        assert_eq!(got[0].len(), got[1].len(), "llc {}: the same functions", config.tag());
-        for (function, theirs) in &got[0] {
-            assert_eq!(
-                Some(theirs),
-                got[1].get(function),
-                "llc {} {}: `{function}` differs from +avx",
-                config.tag(),
-                machine.cpu
-            );
-            compared += 1;
-        }
-    }
-    compared
-}
-
-/// Each function's convention in `llc`'s MIR after instruction selection:
-/// its live-in registers, its fixed stack objects (offset and size), and
-/// the register operands of each call and return, without the stack
-/// pointer's and the shadow stack's.
-fn conventions(mir: &str) -> BTreeMap<String, Vec<String>> {
-    let mut out = BTreeMap::new();
-    for doc in mir.split("\n---\n") {
-        let Some(name) = doc.lines().find_map(|l| l.strip_prefix("name:")).map(str::trim) else {
-            continue;
-        };
-        let mut lines = Vec::new();
-        let mut section = "";
-        for line in doc.lines() {
-            if !line.starts_with(' ') {
-                section = line.split(':').next().unwrap_or("");
-                continue;
-            }
-            match section {
-                "liveins" | "fixedStack" => {
-                    for key in ["reg: '", "offset: ", "size: "] {
-                        if let Some(v) = line.split(key).nth(1) {
-                            lines.push(format!(
-                                "{section} {key}{}",
-                                v.split([',', '\'']).next().unwrap_or("")
-                            ));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            let inst = line.trim();
-            if !(inst.starts_with("CALL64")
-                || inst.starts_with("TCRETURN")
-                || inst.starts_with("RET"))
-            {
-                continue;
-            }
-            let kept: Vec<&str> = inst
-                .split(", ")
-                .filter(|op| {
-                    (op.starts_with("implicit ") || op.starts_with("implicit-def "))
-                        && !op.ends_with("$rsp")
-                        && !op.ends_with("$ssp")
-                })
-                .collect();
-            lines.push(format!(
-                "{} {}",
-                inst.split_whitespace().next().unwrap_or(""),
-                kept.join(" ")
-            ));
-        }
-        out.insert(name.to_owned(), lines);
-    }
-    out
 }

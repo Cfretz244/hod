@@ -108,21 +108,37 @@ the functions were divided into chunks.
 
 Everything target-specific is in one `CfiTarget` per architecture:
 
-| | AArch64 | x86-64 |
-|---|---|---|
-| code alignment factor | 1 | 1 |
-| data alignment factor | -4 | -8 |
-| return-address register | 30 (`x30`) | 16 (`rip`) |
-| initial instructions | `DW_CFA_def_cfa sp(31), 0` | `DW_CFA_def_cfa rsp(7), 8`; `DW_CFA_offset rip(16), -8` |
-| FDE pointer encoding (`R`) | `pcrel\|sdata4` (0x1b) | 0x1b |
-| personality encoding (`P`) | `indirect\|pcrel\|sdata8` (0x9c) | `indirect\|pcrel\|sdata4` (0x9b) |
-| LSDA encoding (`L`) | `pcrel\|sdata8` (0x1c) | `pcrel\|sdata4` (0x1b) |
-| initial-location relocation | `R_AARCH64_PREL32` | `R_X86_64_PC32` |
-| personality and LSDA relocation | `R_AARCH64_PREL64` | `R_X86_64_PC32` |
-| `.eh_frame` `sh_type` | `SHT_PROGBITS` | `SHT_X86_64_UNWIND` |
+| | AArch64 | x86-64 | x86-64, large code model |
+|---|---|---|---|
+| code alignment factor | 1 | 1 | 1 |
+| data alignment factor | -4 | -8 | -8 |
+| return-address register | 30 (`x30`) | 16 (`rip`) | 16 |
+| initial instructions | `DW_CFA_def_cfa sp(31), 0` | `DW_CFA_def_cfa rsp(7), 8`; `DW_CFA_offset rip(16), -8` | as x86-64 |
+| FDE pointer encoding (`R`) | `pcrel\|sdata4` (0x1b) | 0x1b | `pcrel\|sdata8` (0x1c) |
+| personality encoding (`P`) | `indirect\|pcrel\|sdata8` (0x9c) | `indirect\|pcrel\|sdata4` (0x9b) | 0x9c |
+| LSDA encoding (`L`) | `pcrel\|sdata8` (0x1c) | `pcrel\|sdata4` (0x1b) | 0x1c |
+| initial-location relocation | `R_AARCH64_PREL32` | `R_X86_64_PC32` | `R_X86_64_PC64` |
+| personality and LSDA relocation | `R_AARCH64_PREL64` | `R_X86_64_PC32` | `R_X86_64_PC64` |
+| `.eh_frame` `sh_type` | `SHT_PROGBITS` | `SHT_X86_64_UNWIND` | `SHT_X86_64_UNWIND` |
 
 These are `llc`'s choices for Linux PIC. AArch64 keeps the code alignment
 factor at 1 although instructions are 4 bytes, so an advance is in bytes.
+
+The third column (`X86_64_LARGE`, chosen by `for_model` for a module of
+the large code model, WP-209, `spec/codegen.md` §5.6.36) is `llc` 19's and
+22's under `-code-model=large` with PIC: every pointer 8 bytes and
+PC-relative, so the code, the LSDAs and the personality's slot may be
+anywhere in the address space. Outside PIC `llc` writes the personality,
+the LSDA and the type table absolute (`DW_EH_PE_absptr`, `R_X86_64_64`);
+hod writes the PC-relative forms in every relocation model, as it does
+under the small model (whose `llc` static encoding is `udata4`), and the
+unwinder reads either. The LSDA's type table takes `P`'s encoding (§9.2).
+
+AArch64 under the large code model (`AARCH64_LARGE`, outside PIC: hod
+refuses the model under PIC) is the first column with `R` `pcrel|sdata8`
+(0x1c) and the initial location and range relocated with
+`R_AARCH64_PREL64`, as `llc` 19 and 22 write it; its personality and
+LSDA pointers were 8 bytes already.
 
 ### 2.2 Layout
 
@@ -154,15 +170,15 @@ group holding the section (so the linker keeps one slot for the program).
 ### 3.1 Layout
 
 length (4), CIE pointer (4: the distance from this field back to the CIE's
-first byte), initial location (4, `R`: relocated, §3.2), address range (4,
-the function's `size`), augmentation data length (ULEB128: 0 under a `zR`
+first byte), initial location (`R`'s size: 4, or 8 under `sdata8`;
+relocated, §3.2), address range (the same size, the function's `size`), augmentation data length (ULEB128: 0 under a `zR`
 CIE, `pointer_size` under `zPLR`), the LSDA pointer under `zPLR` (§3.3),
 the instructions (§4), `DW_CFA_nop` padding (§3.4).
 
 ### 3.2 Initial location
 
-A PC-relative 32-bit relocation at the field against `start` with addend
-`start_addend`.
+A PC-relative relocation of the field's size (§2.1's initial-location
+relocation) at the field against `start` with addend `start_addend`.
 
 ### 3.3 LSDA pointer
 
@@ -223,17 +239,28 @@ for 0; `DW_CFA_advance_loc` (delta in the low 6 bits) below 0x40;
 | `Restore { reg }` | `DW_CFA_restore \| reg` below 64; `DW_CFA_restore_extended` ULEB `reg` |
 | `NegateRaState` | `DW_CFA_AARCH64_negate_ra_state` (0x2d), §4.5 |
 | `BKeyFrame` | nothing; as the FDE's first row it selects the `B` CIE, §4.5 |
+| `RememberState` | `DW_CFA_remember_state` (0x0a), §4.3 |
+| `RestoreState` | `DW_CFA_restore_state` (0x0b), §4.3 |
 
 (`daf` is the data alignment factor.)
 
 ### 4.3 Remembered state
 
-hod's rows have no `DW_CFA_remember_state`/`DW_CFA_restore_state`: a target
-states the body's rules again after an exit sequence that is not the last
-code (`spec/codegen.md` §9.3). `llc` uses the pair in that place, so for
-such a function `hod_eh`'s bytes differ from `llc`'s while the rules at
-every offset are the same. The difference is deliberate: it keeps the rows
-a flat list a target appends to and the encoder stateless.
+A target's own rows use no `RememberState`/`RestoreState`: it states the
+body's rules again after an exit sequence that is not the last code
+(`spec/codegen.md` §9.3). `llc` uses the pair in that place, so for such
+a function `hod_eh`'s bytes differ from `llc`'s while the rules at every
+offset are the same. The difference is deliberate: it keeps the encoder
+stateless.
+
+The pair reaches the rows only from inline assembly (WP-212,
+`spec/asm.md` §15): a template's `.cfi_remember_state` and
+`.cfi_restore_state` become rows at their offsets in the template, and
+the encoder writes them as they are, one byte each. A row is written in
+order like any other; the encoder keeps no stack and checks no pairing.
+Whoever restates the rules at an offset from the rows (the core before
+the shared trap, `spec/codegen.md` §9.3) applies them: `RememberState`
+pushes the rules so far, `RestoreState` pops them back.
 
 ### 4.4 LEB128
 
@@ -389,7 +416,7 @@ All offsets are from the LSDA's first byte, which is at a multiple of 4.
 | field | bytes |
 |---|---|
 | `@LPStart` encoding | `DW_EH_PE_omit` (0xff): landing pads are relative to the function's start (the FDE's initial location) |
-| `@TType` encoding | `DW_EH_PE_omit` when the function has no type ids and no filter; otherwise the target's personality encoding (§2.1): AArch64 `indirect\|pcrel\|sdata8` (0x9c), x86-64 `indirect\|pcrel\|sdata4` (0x9b) |
+| `@TType` encoding | `DW_EH_PE_omit` when the function has no type ids and no filter; otherwise the target's personality encoding (§2.1): AArch64 `indirect\|pcrel\|sdata8` (0x9c), x86-64 `indirect\|pcrel\|sdata4` (0x9b), x86-64 under the large code model 0x9c (`LsdaOptions::large`, WP-209) |
 | `@TType` base offset | only with a type table: ULEB128, the distance from the end of this field to the end of the type table (the "TType base") |
 | call-site encoding | `DW_EH_PE_uleb128` (0x01) |
 | call-site table length | ULEB128, in bytes |
@@ -485,9 +512,9 @@ any sharing the same way.
 Only with type ids or filters. After the action table, zero bytes to a
 multiple of 4; then the type table, the entry of type id `k` at
 `TTBase - k * pointer_size` (so the table is written last type id first),
-`pointer_size` 8 on AArch64 and 4 on x86-64; the TType base; the filter
-table; zero bytes to a multiple of 4 ending the LSDA (also without a type
-table).
+`pointer_size` 8 on AArch64 and under x86-64's large code model, 4 on
+x86-64 otherwise; the TType base; the filter table; zero bytes to a
+multiple of 4 ending the LSDA (also without a type table).
 
 - A catch-all (`None`) entry is zero, unrelocated.
 - Any other entry is indirect and PC-relative: the address of a stub

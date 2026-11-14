@@ -38,6 +38,7 @@ const PIC: Options = Options {
     stress: Stress { min_pool: false, far: false, displace: false, coro_frame: false },
     debug_compression: hod_obj::Compression::None,
     split_dwarf: hod_dwarf::SplitDwarf::Off,
+    tls_descriptors: false,
 };
 const CORO_FRAME: Options = Options {
     stress: Stress { min_pool: false, far: false, displace: false, coro_frame: true },

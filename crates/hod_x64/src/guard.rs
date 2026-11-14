@@ -180,5 +180,8 @@ pub fn fail(cx: &mut FnCx<'_, X64>) -> CgResult<()> {
     cx.bind(fail)?;
     cx.cfi(CfiOp::DefCfa { reg: DWARF_RBP, offset: INCOMING_BASE });
     let target = SymRef::Runtime(RuntimeFn::StackChkFail);
+    if crate::common::large(cx)? {
+        return crate::common::far_branch(cx, target, false); // §5.6.36
+    }
     put_reloc(cx, mc::call(0), X64Reloc::Plt32, target, 0)
 }
