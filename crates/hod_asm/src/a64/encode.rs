@@ -610,15 +610,23 @@ fn logical<'a>(m: &str, ops: &[Op<'a>]) -> R<Encoded<'a>> {
             return form();
         }
         let v = logical_imm(sz, v)?;
+        // `bic`, `orn`, `eon`, `bics` with an immediate are `and`, `orr`,
+        // `eor`, `ands` of the inverted immediate, as LLVM's assembler
+        // writes them (`spec/asm.md` §16).
+        let inv = match sz {
+            Size::X => !v,
+            Size::W => !v & 0xffff_ffff,
+        };
         let rn = zr(rn)?;
         return checked(match m {
             "and" => mc::try_and_imm(sz, sp(rd)?, rn, v),
             "orr" => mc::try_orr_imm(sz, sp(rd)?, rn, v),
             "eor" => mc::try_eor_imm(sz, sp(rd)?, rn, v),
             "ands" => mc::try_ands_imm(sz, zr(rd)?, rn, v),
-            // `bic`, `orn`, `eon`, `bics` with an immediate are aliases
-            // of the inverted immediate: not covered.
-            _ => return fail(operand::FORM),
+            "bic" => mc::try_and_imm(sz, sp(rd)?, rn, inv),
+            "orn" => mc::try_orr_imm(sz, sp(rd)?, rn, inv),
+            "eon" => mc::try_eor_imm(sz, sp(rd)?, rn, inv),
+            _ => mc::try_ands_imm(sz, zr(rd)?, rn, inv),
         });
     }
     let rm = zr_of(&rest[0], sz)?;
