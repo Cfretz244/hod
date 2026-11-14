@@ -144,6 +144,10 @@ again() {
 SRC="$OSS/src/$P_CHECKOUT"
 BUILD="$OSS/build/$PROJECT/$FLAVOUR-$MODE${INSTALL:+-dep}"
 mkdir -p "$OSS/src" "$BUILD"
+# Every build starts from an empty tree: a tree left by an earlier build
+# (kept, or cut off half-built) may hold objects of another compiler,
+# which make would not rebuild.
+find "$BUILD" -mindepth 1 -delete
 P_TEST="${P_TEST//@SRC@/$SRC}"
 export KILN_OSS_LOG="$BUILD/compile.jsonl"
 export KILN_OSS_VMEM_KB="${KILN_OSS_VMEM_KB:-$P_VMEM_KB}"
