@@ -3657,7 +3657,7 @@ other build system is an error naming the row.
   run in the mode. Every compile runs under the row's address-space cap
   (`vmem_kb`, `KILN_OSS_VMEM_KB`) and a 600 s limit (the wrapper's); the
   tests run under the same cap (or the row's `test_vmem_kb`, at most
-  16 GB, for a test that reserves address space it never touches),
+  100 GB, for a test that reserves address space it never touches),
   under the row's `test_timeout`, ctest
   with `CTEST_PARALLEL_LEVEL` 4 unless set, with `TMPDIR` and
   `TEST_TMPDIR` in the tree.

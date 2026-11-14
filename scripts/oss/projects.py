@@ -35,10 +35,9 @@ FLAVOURS = {"O0": "-O0 -g0", "O0g": "-O0 -g"}
 # cross-built and its tests run under qemu (WP-191).
 TARGETS = ("aarch64", "x86_64")
 VMEM_MAX_KB = 6000000
-# The test step's cap may go higher (a test that reserves address space
-# it never touches: mold reserves 8 GiB for its output), as the x86-64
-# lane's does.
-TEST_VMEM_MAX_KB = 16000000
+# The test step's cap may go higher, for a test that reserves address
+# space it never touches (mold reserves 8 GiB per arena, up to ten).
+TEST_VMEM_MAX_KB = 100000000
 CTEST_RE = re.compile(r"(\d+)% tests passed, (\d+) tests? failed out of (\d+)")
 # One ctest result line: `  3/12 Test  #3: name ....   Passed    0.01 sec`,
 # `***Failed`, `***Timeout`, `***Exception: SegFault`, `***Not Run`.
