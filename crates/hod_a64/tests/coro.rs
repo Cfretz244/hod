@@ -507,8 +507,9 @@ define ptr @co(ptr %mem) presplitcoroutine {
 }
 
 /// A promise alignment that is not a constant power of two of at most
-/// 2^30, or a direction that is not a constant; `coro.noop` outside the
-/// small code model.
+/// 2^30, or a direction that is not a constant; `coro.noop` under the
+/// large code model with PIC (`module:code-model-large-pic`), built
+/// without it.
 #[test]
 fn promises_without_a_meaningful_offset_are_refused() {
     let promise = |align: &str, from: &str| {
@@ -537,6 +538,8 @@ fn promises_without_a_meaningful_offset_are_refused() {
     );
     let (module, bodies) = parse(&noop);
     let large = Options { code_model: Some(hod_ir::CodeModel::Large), ..STATIC };
-    let refused = common::chunk(&module, &bodies, &large).map(|_| ());
-    assert_eq!(refused, Err(hod_cg::CgError::unsupported("a64:code-model")));
+    assert_eq!(common::chunk(&module, &bodies, &large).map(|_| ()), Ok(()));
+    let pic = Options { reloc_model: RelocModel::Pic, ..large };
+    let refused = common::chunk(&module, &bodies, &pic).map(|_| ());
+    assert_eq!(refused, Err(hod_cg::CgError::unsupported(hod_cg::MODULE_CODE_MODEL_LARGE_PIC)));
 }
