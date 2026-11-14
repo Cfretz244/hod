@@ -22,6 +22,8 @@ Host: aarch64.
 | spdlog | O0g | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | catch2 | O0 | 167 | 167 | 167 | 0 | 0 | ok | ok | 81/81 | 81/81 | 81/81 | same | `hod-7b127f48` |
 | catch2 | O0g | 167 | 167 | 167 | 0 | 0 | ok | ok | 81/81 | 81/81 | 81/81 | same | `hod-7b127f48` |
+| nlohmann_json | O0 | 93 | 108 | 108 | 0 | 0 | ok | ok | 97/97 | 97/97 | 97/97 | same | `hod-7b127f48` |
+| nlohmann_json | O0g | 93 | 108 | 108 | 0 | 0 | ok | ok | 97/97 | 97/97 | 97/97 | same | `hod-7b127f48` |
 | yaml_cpp | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | yaml_cpp | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same | `hod-77f1f69` |
 | glog | O0 | 23 | 47 | 45 | 0 | 0 | ok | ok | 22/24 | 22/24 | 22/24 | same | `hod-77f1f69` |
