@@ -172,9 +172,8 @@ fn grid() -> Vec<Callee> {
                 rng.below(9)
             };
             let params = (0..count).map(|_| rng.below(SHAPES.len())).collect();
-            let varargs = is_variadic.then(|| {
-                (0..1 + rng.below(6)).map(|_| variadic[rng.below(variadic.len())]).collect()
-            });
+            let varargs = is_variadic
+                .then(|| (0..=rng.below(6)).map(|_| variadic[rng.below(variadic.len())]).collect());
             Callee { ret, params, varargs, indirect: k % 3 == 2 }
         })
         .collect()
@@ -416,8 +415,8 @@ fn kiln_hod_clang_avx_vectors_mix() {
         builders.push(("kiln-llc", Builder::KilnLlc(kiln, llc22)));
     }
     let callees = grid();
-    let callee_src = scratch.write("callee.cpp", callee_unit(&callees));
-    let caller_src = scratch.write("caller.cpp", caller_unit(&callees));
+    let callees_cpp = scratch.write("callee.cpp", callee_unit(&callees));
+    let run_cpp = scratch.write("caller.cpp", caller_unit(&callees));
     let main = toolchain.compile_c(&scratch, "main", MAIN_C, &["-fPIE"]);
     let mut runs = 0;
     for (index, machine) in MACHINES.iter().enumerate() {
@@ -425,11 +424,10 @@ fn kiln_hod_clang_avx_vectors_mix() {
             .iter()
             .map(|(name, builder)| {
                 let tag = format!("m{index}-{name}");
-                let callee =
-                    builder.build(&scratch, &callee_src, machine, &format!("{tag}-callee"));
-                let caller =
-                    builder.build(&scratch, &caller_src, machine, &format!("{tag}-caller"));
-                (*name, callee, caller)
+                let callees_o =
+                    builder.build(&scratch, &callees_cpp, machine, &format!("{tag}-callee"));
+                let run_o = builder.build(&scratch, &run_cpp, machine, &format!("{tag}-caller"));
+                (*name, callees_o, run_o)
             })
             .collect();
         let mut expected: Option<String> = None;
@@ -470,14 +468,14 @@ fn kiln_hod_clang_avx_vectors_mix() {
         // The grid sees the convention: callees built without AVX (256-bit
         // vectors in memory) called by the AVX caller print otherwise.
         let baseline = Builder::Clang(installed(22, "clang++").expect("clang 22"));
-        let callee = baseline.build(&scratch, &callee_src, "-msse2", &format!("m{index}-sse2"));
-        let caller = &objects[0].2;
+        let sse2 = baseline.build(&scratch, &callees_cpp, "-msse2", &format!("m{index}-sse2"));
+        let avx_run = &objects[0].2;
         let linker = &toolchain.linkers[0];
         let exe = scratch.join(format!("m{index}-sse2"));
         let ran = toolchain.link_and_run(
             linker,
             &["-pie"],
-            &[callee.as_path(), caller.as_path(), main.as_path()],
+            &[sse2.as_path(), avx_run.as_path(), main.as_path()],
             &exe,
         );
         assert_ne!(
