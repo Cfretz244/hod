@@ -1564,6 +1564,15 @@ const INTRINSICS: &[(&str, &str)] = &[
     ("llvm.x86.avx512.mask.cvttpd2uqq.512", "<8 x i64> (<8 x double>, <8 x i64>, i8, i32)"),
     ("llvm.x86.avx512.mask.cvttps2qq.512", "<8 x i64> (<8 x float>, <8 x i64>, i8, i32)"),
     ("llvm.x86.avx512.mask.cvttps2uqq.512", "<8 x i64> (<8 x float>, <8 x i64>, i8, i32)"),
+    ("llvm.x86.avx512.permvar.qi.128", "<16 x i8> (<16 x i8>, <16 x i8>)"),
+    ("llvm.x86.avx512.permvar.qi.256", "<32 x i8> (<32 x i8>, <32 x i8>)"),
+    ("llvm.x86.avx512.permvar.qi.512", "<64 x i8> (<64 x i8>, <64 x i8>)"),
+    ("llvm.x86.avx512.vpermi2var.qi.128", "<16 x i8> (<16 x i8>, <16 x i8>, <16 x i8>)"),
+    ("llvm.x86.avx512.vpermi2var.qi.256", "<32 x i8> (<32 x i8>, <32 x i8>, <32 x i8>)"),
+    ("llvm.x86.avx512.vpermi2var.qi.512", "<64 x i8> (<64 x i8>, <64 x i8>, <64 x i8>)"),
+    ("llvm.x86.avx512.pmultishift.qb.128", "<16 x i8> (<16 x i8>, <16 x i8>)"),
+    ("llvm.x86.avx512.pmultishift.qb.256", "<32 x i8> (<32 x i8>, <32 x i8>)"),
+    ("llvm.x86.avx512.pmultishift.qb.512", "<64 x i8> (<64 x i8>, <64 x i8>)"),
 ];
 
 /// Names on the list that LLVM 22 upgrades to other IR on reading (so

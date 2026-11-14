@@ -1345,8 +1345,10 @@ enum Fam {
     /// `avx512vbmi2`: the compresses of bytes and words, which share F's
     /// overloaded name.
     VBMI2,
+    /// `avx512vbmi` (WP-220).
+    VBMI,
 }
-use Fam::{BW, DQ, F, VBMI2};
+use Fam::{BW, DQ, F, VBMI, VBMI2};
 
 /// The census's F/VL, BW and DQ names (design 0007 §5.1): the family,
 /// the role of each operand, the declaration. Roles: `v` a vector, `p`
@@ -1655,6 +1657,16 @@ const NAMES: &[(Fam, &str, &str)] = &[
         "vpm",
         "<64 x i8> @llvm.x86.avx512.mask.compress.v64i8(<64 x i8>, <64 x i8>, <64 x i1>)",
     ),
+    // WP-220.
+    (VBMI, "vv", "<16 x i8> @llvm.x86.avx512.permvar.qi.128(<16 x i8>, <16 x i8>)"),
+    (VBMI, "vv", "<32 x i8> @llvm.x86.avx512.permvar.qi.256(<32 x i8>, <32 x i8>)"),
+    (VBMI, "vv", "<64 x i8> @llvm.x86.avx512.permvar.qi.512(<64 x i8>, <64 x i8>)"),
+    (VBMI, "vvv", "<16 x i8> @llvm.x86.avx512.vpermi2var.qi.128(<16 x i8>, <16 x i8>, <16 x i8>)"),
+    (VBMI, "vvv", "<32 x i8> @llvm.x86.avx512.vpermi2var.qi.256(<32 x i8>, <32 x i8>, <32 x i8>)"),
+    (VBMI, "vvv", "<64 x i8> @llvm.x86.avx512.vpermi2var.qi.512(<64 x i8>, <64 x i8>, <64 x i8>)"),
+    (VBMI, "vv", "<16 x i8> @llvm.x86.avx512.pmultishift.qb.128(<16 x i8>, <16 x i8>)"),
+    (VBMI, "vv", "<32 x i8> @llvm.x86.avx512.pmultishift.qb.256(<32 x i8>, <32 x i8>)"),
+    (VBMI, "vv", "<64 x i8> @llvm.x86.avx512.pmultishift.qb.512(<64 x i8>, <64 x i8>)"),
 ];
 
 /// A declaration's result type, name and parameter types.
@@ -1798,9 +1810,9 @@ fn cases_of(row: usize) -> Vec<Case> {
 
 /// The features every AVX-512 test function has (as clang 22 writes them
 /// for `-mavx512f -mavx512vl -mavx512bw -mavx512dq -mavx512vbmi2`,
-/// without `evex512`).
+/// without `evex512`; WP-220's families after them).
 const AVX512_FEATURES: &str =
-    "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c";
+    "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c,+avx512vbmi";
 
 /// The module of `cases`: `void <prefix>tK(ptr %out, ptr %a, ptr %b, ptr
 /// %c, i64 %m)` each, with `features`.
@@ -2306,6 +2318,7 @@ fn avx512_refusals_and_rows() {
         BW => "+avx2,+avx,+avx512f,+avx512vl,+avx512dq,+fma,+f16c",
         DQ => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512vbmi2,+fma,+f16c",
         VBMI2 => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+fma,+f16c",
+        VBMI => "+avx2,+avx,+avx512f,+avx512vl,+avx512bw,+avx512dq,+avx512vbmi2,+fma,+f16c",
     };
     let (no_vl, no_512) =
         (format!("{AVX512_FEATURES},-avx512vl"), format!("{AVX512_FEATURES},-evex512"));
@@ -2370,7 +2383,7 @@ fn avx512_driver(cases: &[Case]) -> String {
     c.push_str("};\nstatic const fn l[] = {");
     (0..cases.len()).for_each(|k| write!(c, "l_t{k},").unwrap());
     // Per function: the bytes of the result, and the features it needs
-    // (bits: 1 F, 2 VL, 4 BW, 8 DQ, 16 VBMI2).
+    // (bits: 1 F, 2 VL, 4 BW, 8 DQ, 16 VBMI2, 32 VBMI).
     c.push_str("};\nstatic const int info[][2] = {");
     for case in cases {
         let (fam, _, text) = NAMES[case.row];
@@ -2385,6 +2398,7 @@ fn avx512_driver(cases: &[Case]) -> String {
             BW => 4,
             DQ => 8,
             VBMI2 => 4 | 16,
+            VBMI => 4 | 32,
         };
         write!(c, "{{{},{need}}},", bytes_of(&ret)).unwrap();
     }
@@ -2415,6 +2429,7 @@ fn avx512_driver(cases: &[Case]) -> String {
            if (__builtin_cpu_supports(\"avx512bw\")) have |= 4;\n  \
            if (__builtin_cpu_supports(\"avx512dq\")) have |= 8;\n  \
            if (__builtin_cpu_supports(\"avx512vbmi2\")) have |= 16;\n  \
+           if (__builtin_cpu_supports(\"avx512vbmi\")) have |= 32;\n  \
            long compared = 0, skipped = 0, wrong = 0;\n  \
            for (unsigned f = 0; f < sizeof h / sizeof *h; f++) {\n    \
              if ((info[f][1] & have) != info[f][1]) { skipped++; continue; }\n    \

@@ -3493,8 +3493,12 @@ const INTRINSIC_A64: &[SupportRow] = &[
 /// names (and the VBMI2 compresses under F's overloaded name; §5.6.35),
 /// each refused by its name unless the function's features enable its
 /// family (and `avx512vl` for a 128- or 256-bit form).
+/// After them WP-220's: VBMI, the EVEX forms of GFNI, VAES and
+/// VPCLMULQDQ with their 256-bit VEX forms, BF16 and FP16.
 /// The note of WP-208's AVX-512 rows.
 const AVX512: &str = "AVX-512 (WP-208)";
+/// The note of WP-220's.
+const AVX512_2: &str = "AVX-512 (WP-220)";
 
 const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.sse.cmp.ss", never(X64_ONLY), on(X86_SSE), "SSE"),
@@ -4089,6 +4093,15 @@ const INTRINSIC_X86: &[SupportRow] = &[
     row("intrinsic:llvm.x86.avx512.mask.cvttpd2uqq.512", never(X64_ONLY), on(X86_SSE), AVX512),
     row("intrinsic:llvm.x86.avx512.mask.cvttps2qq.512", never(X64_ONLY), on(X86_SSE), AVX512),
     row("intrinsic:llvm.x86.avx512.mask.cvttps2uqq.512", never(X64_ONLY), on(X86_SSE), AVX512),
+    row("intrinsic:llvm.x86.avx512.permvar.qi.128", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.permvar.qi.256", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.permvar.qi.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.qi.128", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.qi.256", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.vpermi2var.qi.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.pmultishift.qb.128", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.pmultishift.qb.256", never(X64_ONLY), on(X86_SSE), AVX512_2),
+    row("intrinsic:llvm.x86.avx512.pmultishift.qb.512", never(X64_ONLY), on(X86_SSE), AVX512_2),
 ];
 
 /// The value classes of the masked memory intrinsics' signatures

@@ -42,8 +42,8 @@ input to the fallback when one is configured (`spec/cli.md`).
 | `landingpad` | 3 | 3 | 0 | 0 | 3 | 0 | 0 |
 | `operand` | 11 | 8 | 3 | 0 | 8 | 3 | 0 |
 | `const-expr` | 19 | 0 | 0 | 19 | 0 | 0 | 19 |
-| `intrinsic` | 901 | 361 | 11 | 529 | 661 | 10 | 230 |
-| total | 1227 | 582 | 59 | 586 | 885 | 61 | 281 |
+| `intrinsic` | 910 | 361 | 11 | 538 | 670 | 10 | 230 |
+| total | 1236 | 582 | 59 | 595 | 894 | 61 | 281 |
 
 ## `module`
 
@@ -1432,6 +1432,15 @@ Intrinsics (§5.5).
 | `intrinsic:llvm.x86.avx512.mask.cvttpd2uqq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-208) |
 | `intrinsic:llvm.x86.avx512.mask.cvttps2qq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-208) |
 | `intrinsic:llvm.x86.avx512.mask.cvttps2uqq.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-208) |
+| `intrinsic:llvm.x86.avx512.permvar.qi.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.permvar.qi.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.permvar.qi.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.vpermi2var.qi.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.vpermi2var.qi.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.vpermi2var.qi.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.pmultishift.qb.128` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.pmultishift.qb.256` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
+| `intrinsic:llvm.x86.avx512.pmultishift.qb.512` | rejected | supported (int, ptr, vector) | an x86 property. AVX-512 (WP-220) |
 
 ## Structural rules
 

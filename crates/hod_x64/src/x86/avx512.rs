@@ -2,7 +2,9 @@
 //! `docs/design/0007-avx512.md`): the `llvm.x86.avx512.*` names clang 19
 //! and 22 emit at `-O0` for the F, VL, BW and DQ functions of the
 //! AVX-512 headers that are not plain IR (the census of design 0007
-//! §5.1), and the VBMI2 compresses that share F's overloaded name.
+//! §5.1), and the VBMI2 compresses that share F's overloaded name; since
+//! WP-220 also the VBMI, BF16 and FP16 names and the EVEX (512-bit) forms
+//! of GFNI, VAES and VPCLMULQDQ.
 //!
 //! **Owner: WP-208.** Tests: `tests/x86_avx512.rs`. Spec: §5.6.35.
 //!
@@ -101,7 +103,7 @@ type Row = (&'static str, Avx512, &'static str, Op);
 
 #[allow(clippy::too_many_lines, reason = "one arm per name")]
 fn row(which: Intrinsic<'_>) -> Option<Row> {
-    use Avx512::{Bw, Dq, F};
+    use Avx512::{Bw, Dq, F, Vbmi};
     use Intrinsic as I;
     Some(match which {
         I::X86Avx512MaskGetexpPs512 => {
@@ -671,6 +673,52 @@ fn row(which: Intrinsic<'_>) -> Option<Row> {
         I::X86Avx512MaskCvttps2uqq512 => {
             ("intrinsic:llvm.x86.avx512.mask.cvttps2uqq.512", Dq, "vpms", Op::E2(E2::Cvttps2uqq))
         }
+        // VBMI (WP-220).
+        I::X86Avx512PermvarQi128 => {
+            ("intrinsic:llvm.x86.avx512.permvar.qi.128", Vbmi, "vv", Op::E3(E3::Permb, Form::Swap))
+        }
+        I::X86Avx512PermvarQi256 => {
+            ("intrinsic:llvm.x86.avx512.permvar.qi.256", Vbmi, "vv", Op::E3(E3::Permb, Form::Swap))
+        }
+        I::X86Avx512PermvarQi512 => {
+            ("intrinsic:llvm.x86.avx512.permvar.qi.512", Vbmi, "vv", Op::E3(E3::Permb, Form::Swap))
+        }
+        I::X86Avx512Vpermi2varQi128 => (
+            "intrinsic:llvm.x86.avx512.vpermi2var.qi.128",
+            Vbmi,
+            "vvv",
+            Op::E3(E3::Permt2b, PERMT2),
+        ),
+        I::X86Avx512Vpermi2varQi256 => (
+            "intrinsic:llvm.x86.avx512.vpermi2var.qi.256",
+            Vbmi,
+            "vvv",
+            Op::E3(E3::Permt2b, PERMT2),
+        ),
+        I::X86Avx512Vpermi2varQi512 => (
+            "intrinsic:llvm.x86.avx512.vpermi2var.qi.512",
+            Vbmi,
+            "vvv",
+            Op::E3(E3::Permt2b, PERMT2),
+        ),
+        I::X86Avx512PmultishiftQb128 => (
+            "intrinsic:llvm.x86.avx512.pmultishift.qb.128",
+            Vbmi,
+            "vv",
+            Op::E3(E3::Pmultishiftqb, Form::Plain),
+        ),
+        I::X86Avx512PmultishiftQb256 => (
+            "intrinsic:llvm.x86.avx512.pmultishift.qb.256",
+            Vbmi,
+            "vv",
+            Op::E3(E3::Pmultishiftqb, Form::Plain),
+        ),
+        I::X86Avx512PmultishiftQb512 => (
+            "intrinsic:llvm.x86.avx512.pmultishift.qb.512",
+            Vbmi,
+            "vv",
+            Op::E3(E3::Pmultishiftqb, Form::Plain),
+        ),
         _ => return None,
     })
 }

@@ -744,6 +744,18 @@ pub enum Avx512 {
     Dq,
     /// `avx512vbmi2`.
     Vbmi2,
+    /// `avx512vbmi` (WP-220).
+    Vbmi,
+    /// `avx512bf16`.
+    Bf16,
+    /// `avx512fp16`.
+    Fp16,
+    /// `gfni` with `avx512f`: the EVEX forms of GFNI.
+    Gfni,
+    /// `vaes` with `avx512f`.
+    Vaes,
+    /// `vpclmulqdq` with `avx512f`.
+    Vpclmulqdq,
 }
 
 /// The items that turned off turn off `avx512f`: it and what it implies.
@@ -772,6 +784,12 @@ impl Avx512 {
             ),
             Avx512::Dq => matches!(name, b"avx512dq" | b"avx512fp16"),
             Avx512::Vbmi2 => name == b"avx512vbmi2",
+            Avx512::Vbmi => name == b"avx512vbmi",
+            Avx512::Bf16 => name == b"avx512bf16",
+            Avx512::Fp16 => name == b"avx512fp16",
+            Avx512::Gfni => name == b"gfni",
+            Avx512::Vaes => name == b"vaes",
+            Avx512::Vpclmulqdq => name == b"vpclmulqdq",
         }
     }
 
@@ -784,15 +802,38 @@ impl Avx512 {
             Avx512::Bw => b"avx512bw",
             Avx512::Dq => b"avx512dq",
             Avx512::Vbmi2 => b"avx512vbmi2",
+            Avx512::Vbmi => b"avx512vbmi",
+            Avx512::Bf16 => b"avx512bf16",
+            Avx512::Fp16 => b"avx512fp16",
+            Avx512::Gfni => b"gfni",
+            Avx512::Vaes => b"vaes",
+            Avx512::Vpclmulqdq => b"vpclmulqdq",
         };
+        // What else each needs, by LLVM's implications: BW under VBMI,
+        // VBMI2 and BF16; BW, DQ and VL under FP16. GFNI needs SSE2, VAES
+        // AES and AVX2, VPCLMULQDQ PCLMUL and AVX; they need `avx512f`
+        // besides, which [`Avx512::enabled`] asks of F.
+        let sse = AVX512F_NEEDS[5..].contains(&name);
         name == own
-            || (self == Avx512::Vbmi2 && name == b"avx512bw")
-            || AVX512F_NEEDS.contains(&name)
+            || match self {
+                Avx512::Vbmi | Avx512::Vbmi2 | Avx512::Bf16 => {
+                    name == b"avx512bw" || AVX512F_NEEDS.contains(&name)
+                }
+                Avx512::Fp16 => {
+                    matches!(name, b"avx512bw" | b"avx512dq" | b"avx512vl")
+                        || AVX512F_NEEDS.contains(&name)
+                }
+                Avx512::Gfni => matches!(name, b"sse2" | b"sse"),
+                Avx512::Vaes => matches!(name, b"aes" | b"avx2" | b"avx") || sse,
+                Avx512::Vpclmulqdq => matches!(name, b"pclmul" | b"avx") || sse,
+                _ => AVX512F_NEEDS.contains(&name),
+            }
     }
 
     /// Whether `features` (a `target-features` string) enable this
     /// family: the last item that turns it on or off decides; without one
     /// it is off (a `target-cpu` alone does not count, as for WP-202's).
+    /// GFNI, VAES and VPCLMULQDQ need [`Avx512::F`] enabled too.
     pub fn enabled(self, features: &[u8]) -> bool {
         let mut on = false;
         for item in features.split(|&b| b == b',') {
@@ -802,7 +843,8 @@ impl Avx512 {
                 _ => {}
             }
         }
-        on
+        on && (!matches!(self, Avx512::Gfni | Avx512::Vaes | Avx512::Vpclmulqdq)
+            || Avx512::F.enabled(features))
     }
 }
 
@@ -835,6 +877,23 @@ mod tests {
         assert!(!on(Avx512::Vbmi2, "+avx512bw"));
         assert!(!on(Avx512::Vbmi2, "+avx512vbmi2,-avx512bw"));
         assert!(on(Avx512::Vbmi2, "+avx512vbmi2"));
+        assert!(on(Avx512::Vbmi, "+avx512vbmi"));
+        assert!(!on(Avx512::Vbmi, "+avx512vbmi2"));
+        assert!(!on(Avx512::Vbmi, "+avx512vbmi,-avx512bw"));
+        assert!(on(Avx512::Bf16, "+avx512bf16"));
+        assert!(!on(Avx512::Bf16, "+avx512bf16,-avx2"));
+        assert!(on(Avx512::Fp16, "+avx512fp16"));
+        assert!(!on(Avx512::Fp16, "+avx512fp16,-avx512dq"));
+        assert!(!on(Avx512::Fp16, "+avx512fp16,-avx512vl"));
+        assert!(!on(Avx512::Gfni, "+gfni"));
+        assert!(!on(Avx512::Gfni, "+avx512f"));
+        assert!(on(Avx512::Gfni, "+gfni,+avx512f"));
+        assert!(on(Avx512::Gfni, "+gfni,-avx2,+avx512f"));
+        assert!(!on(Avx512::Gfni, "+gfni,+avx512f,-sse2"));
+        assert!(on(Avx512::Vaes, "+avx512f,+vaes"));
+        assert!(!on(Avx512::Vaes, "+avx512f,+vaes,-aes"));
+        assert!(on(Avx512::Vpclmulqdq, "+avx512f,+vpclmulqdq"));
+        assert!(!on(Avx512::Vpclmulqdq, "+vpclmulqdq,+avx512f,-pclmul"));
         // AVX10 alone is not counted.
         assert!(!on(Avx512::F, "+avx10.1-512"));
         assert!(!evex512_off(b"+avx512f"));

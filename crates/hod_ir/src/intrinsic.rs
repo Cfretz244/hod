@@ -1005,6 +1005,16 @@ intrinsics! {
     X86Avx512MaskCvttpd2uqq512 = "llvm.x86.avx512.mask.cvttpd2uqq.512" [],
     X86Avx512MaskCvttps2qq512 = "llvm.x86.avx512.mask.cvttps2qq.512" [],
     X86Avx512MaskCvttps2uqq512 = "llvm.x86.avx512.mask.cvttps2uqq.512" [],
+    // AVX-512 VBMI (WP-220).
+    X86Avx512PermvarQi128 = "llvm.x86.avx512.permvar.qi.128" [],
+    X86Avx512PermvarQi256 = "llvm.x86.avx512.permvar.qi.256" [],
+    X86Avx512PermvarQi512 = "llvm.x86.avx512.permvar.qi.512" [],
+    X86Avx512Vpermi2varQi128 = "llvm.x86.avx512.vpermi2var.qi.128" [],
+    X86Avx512Vpermi2varQi256 = "llvm.x86.avx512.vpermi2var.qi.256" [],
+    X86Avx512Vpermi2varQi512 = "llvm.x86.avx512.vpermi2var.qi.512" [],
+    X86Avx512PmultishiftQb128 = "llvm.x86.avx512.pmultishift.qb.128" [],
+    X86Avx512PmultishiftQb256 = "llvm.x86.avx512.pmultishift.qb.256" [],
+    X86Avx512PmultishiftQb512 = "llvm.x86.avx512.pmultishift.qb.512" [],
 }
 
 /// The most overload types an intrinsic on the list has.
