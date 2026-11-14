@@ -15,13 +15,13 @@ Host: aarch64.
 | re2 | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same |
 | re2 | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 20/20 | 20/20 | 20/20 | same |
 | protobuf | O0 | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 4/4 | 4/4 | same |
-| protobuf | O0g | 653 | 653 | 520 | 133 | 0 | ok | - | 4/4 | 4/4 | - | same |
+| protobuf | O0g | 653 | 653 | 653 | 0 | 0 | ok | ok | 4/4 | 3/4 | 4/4 | hod: 1 worse (full-test) |
 | spdlog | O0 | 140 | 140 | 140 | 0 | 0 | ok | ok | 1/1 | 1/1 | 0/1 | strict: 1 worse (spdlog-utests) |
 | spdlog | O0g | 140 | 140 | 140 | 0 | 0 | ok | ok | 0/1 | 1/1 | 1/1 | hod: 1 better; strict: 1 better |
 | yaml_cpp | O0 | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same |
 | yaml_cpp | O0g | 51 | 51 | 51 | 0 | 0 | ok | ok | 1/1 | 1/1 | 1/1 | same |
 | glog | O0 | 23 | 47 | 45 | 0 | 0 | ok | ok | 22/24 | 22/24 | 23/24 | strict: 1 better |
-| glog | O0g | 23 | 47 | 44 | 1 | 0 | ok | - | 23/24 | 22/24 | - | hod: 1 worse (logging) |
+| glog | O0g | 23 | 47 | 44 | 1 | 0 | ok | - | 23/24 | 23/24 | - | same |
 | leveldb | O0 | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same |
 | leveldb | O0g | 121 | 121 | 121 | 0 | 0 | ok | ok | 30/30 | 30/30 | 30/30 | same |
 | cli11 | O0 | 65 | 65 | 65 | 0 | 0 | ok | ok | 86/86 | 86/86 | 86/86 | same |
@@ -35,6 +35,4 @@ Host: aarch64.
 
 | refusal | first | census | builds | functions (most frequent) |
 |---|---|---|---|---|
-| `debug:variable-twice` | 100 | 100 | protobuf O0g | - |
-| `debug:local-static` | 33 | 33 | protobuf O0g | - |
 | `debug:die-unsupported` | 1 | 1 | glog O0g | - |
