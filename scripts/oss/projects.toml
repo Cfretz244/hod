@@ -358,7 +358,32 @@ url = "https://github.com/google/flatbuffers"
 tag = "v25.12.19"
 build = "cmake"
 cxx_std = 17
-configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF"]
+configure = ["-DFLATBUFFERS_BUILD_TESTS=ON", "-DFLATBUFFERS_BUILD_CPP17=ON", "-DFLATBUFFERS_BUILD_FLATC=ON", "-DFLATBUFFERS_BUILD_FLATLIB=ON", "-DFLATBUFFERS_BUILD_GRPCTEST=OFF", "-DFLATBUFFERS_STRICT_MODE=OFF"]
+# flattests and flattests_cpp17 as the project registers them (build dir),
+# and the three sample programs, which read schemas and data relative to
+# the source dir; one ctest run, under the cross build's emulator if any.
+test = "mkdir -p whole && emu=$(sed -n 's/^CMAKE_CROSSCOMPILING_EMULATOR:[A-Z]*=//p' CMakeCache.txt | tr ';' ' ') && { for t in flattests flattests_cpp17; do echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY $PWD)\"; done; for t in flatsamplebinary flatsampletext flatsamplebfbs; do echo \"add_test($t $emu $PWD/$t)\"; echo \"set_tests_properties($t PROPERTIES WORKING_DIRECTORY @SRC@)\"; done; } > whole/CTestTestfile.cmake && cd whole && ctest --output-on-failure"
+c_compiler = "clang-19"
+notes = "WP-211. The flatc schema compiler and the flatbuffers library, built by kiln; flatc generates the tests' C++ during the build; the test step runs flattests, flattests_cpp17 and the three sample programs (flatsamplebinary, flatsampletext, flatsamplebfbs) as one ctest run."
+
+[mold]
+url = "https://github.com/rui314/mold"
+tag = "v2.42.1"
+build = "cmake"
+cxx_std = 20
+c = "kiln"
+configure = ["-DBUILD_TESTING=ON", "-DMOLD_ENABLE_QEMU_TESTS=ON", "-DMOLD_USE_SYSTEM_TBB=OFF", "-DMOLD_USE_SYSTEM_MIMALLOC=OFF"]
+test = "ctest --output-on-failure"
+test_timeout = 7200
+notes = "WP-211. The linker (v2.42.1, the last C++ release: v3 is Rust) with its vendored TBB, mimalloc, zlib, zstd and BLAKE3, all through kiln (C through kiln-cc); the test suite is ~550 shell scripts linking small gcc-compiled programs with the built mold, natively (aarch64-*) and, with qemu-x86_64 and x86_64-linux-gnu-gcc present, for x86-64 (x86_64-*, run under qemu)."
+
+[capnproto]
+url = "https://github.com/capnproto/capnproto"
+tag = "v1.5.0"
+build = "cmake"
+source_subdir = "c++"
+cxx_std = 20
+configure = ["-DBUILD_TESTING=ON", "-DWITH_OPENSSL=OFF", "-DWITH_ZLIB=OFF"]
 test = "ctest --output-on-failure"
 c_compiler = "clang-19"
-notes = "WP-211. The flatc schema compiler and the flatbuffers library, built by kiln; flatc generates the tests' C++ during the build; ctest runs flattests (and the sample programs)."
+notes = "WP-211. KJ (async I/O, fibers when the C library has them) and Cap'n Proto (the capnp compiler, which generates the tests' C++ during the build, serialization, RPC). ctest runs kj-tests, kj-heavy-tests, capnp-tests, capnp-heavy-tests and capnp-evolution-tests, each a program of many KJ_TEST cases. No OpenSSL or zlib (not on the machine): the TLS and gzip parts are left out."
