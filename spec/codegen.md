@@ -3034,7 +3034,9 @@ on AArch64): a shared object (PIC without `PIE Level`) gets general
 dynamic for a preemptible variable and local dynamic for a `dso_local`
 one; an executable, PIE or not, initial exec and local exec; a model
 the variable asks for wins when it is more specific. x86-64 lowers
-local dynamic as itself (`llc` uses no TLS descriptors here). Every
+local dynamic as itself (`llc` uses no TLS descriptors here unless
+`-enable-tlsdesc` asks for them: §5.6.37, where the two dynamic models
+are written otherwise and the rest of this section holds). Every
 sequence is `llc -relocation-model=pic`'s, with its relocations and
 without an addend in them; an offset from the variable is added in code
 afterwards (`common::add_addend`), as on AArch64:
@@ -4705,6 +4707,67 @@ than 4 GiB apart under GNU ld, lld and mold, plain and with `-g`);
 `llc`'s relocation types in the code and the unwind tables, linked with
 the start files and with the code more than 4 GiB from `.data`, `.bss`
 and `.rodata`, under the same linkers, plain and with `-g`).
+
+#### 5.6.37 TLS descriptors (WP-213)
+
+`-enable-tlsdesc` (`hod::Options::tls_descriptors`,
+`hod_cg::Options::tls_descriptors`; what `clang -mtls-dialect=gnu2`
+gives `llc`; nothing of it is in the IR) changes the two dynamic models
+of §5.6.11 on x86-64 and nothing else: the model each variable gets is
+the same (`sym_access` does not read the option), initial and local
+exec are unchanged, and a module without a dynamic model (every module
+of an executable) is byte for byte the object without the option. On
+AArch64 the dynamic models are descriptors already (§5.5); the option is
+accepted and changes nothing there, as in `llc` 19 and 22 (the objects
+are identical with `-enable-tlsdesc`, `=false` and without it).
+
+The sequences are `llc`'s (19 and 22 write the same bytes), with an
+`R_X86_64_TLSDESC_CALL` at the call's first byte, addend 0:
+
+| model | sequence | relocations |
+|---|---|---|
+| general dynamic | `lea rax, [rip + x@tlsdesc]` (`48 8D 05` + field) · `call [rax]` (`FF 10`) · `add rax, fs:[0]` | `GOTPC32_TLSDESC` (`x`, -4), `TLSDESC_CALL` (`x`, 0) |
+| local dynamic | the same pair against `_TLS_MODULE_BASE_` · `add rax, fs:[0]` · `lea rax, [rax + x@dtpoff]` (`disp32`) | `GOTPC32_TLSDESC`, `TLSDESC_CALL` (`_TLS_MODULE_BASE_`), `DTPOFF32` (`x`, or its local alias §9.7) |
+
+- **`_TLS_MODULE_BASE_`** is `SymRef::TlsModuleBase`: the module's
+  symbol of that name if it declares one, else an undefined global
+  `STT_TLS` symbol, as `llc` writes it; the linker defines it at the
+  start of the module's TLS block.
+- **The pair is exactly `llc`'s**: the linkers relax a descriptor by
+  its bytes (`48 8D 05` into `48 C7 C0 imm32`, local exec, or `48 8B 05`,
+  initial exec; `FF 10` into the 2-byte `nop` `66 90`), so the result
+  register is `rax` and nothing comes between the two instructions.
+  `llc` loads `fs:[0]` into another register before the pair and adds it
+  after; hod adds it from memory after the pair, which the relaxed forms
+  leave as valid.
+- **What the call writes.** The descriptor's function returns the
+  variable's offset from the thread pointer in `rax` and preserves every
+  other register; it may write the flags (`llc`'s `TLS_desc` defines
+  `RAX` and `EFLAGS`, and keeps `rdi`, `rsi`, `rdx` live across it at
+  `-O0`; the x86-64 psABI "TLS Descriptors" and the original proposal,
+  Oliva and others, *Thread-Local Storage Descriptors for IA32 and
+  AMD64/EM64T*). glibc's slow resolver, `_dl_tlsdesc_dynamic`, keeps
+  the vector registers too since the fix of glibc bug 31372 (2024); the
+  programs here run on glibc 2.41. hod relies on the contract, as `llc`
+  and GCC do.
+- **One way in.** Both a thread-local operand (`common::sym_address`)
+  and `llvm.threadlocal.address` of a dynamic model are the operand form,
+  which writes `rd` and nothing else, the flags kept: `pushfq`; `push
+  rax` (or `lea rsp, [rsp - 8]` when `rd` is `rax`, so that `rsp` is
+  16-aligned at the call, as at any call; the CFA is `rbp`-based); the
+  sequence; `mov rd, rax`; `pop rax` (or `lea rsp, [rsp + 8]`);
+  `popfq`. Nothing is displaced: unlike `__tls_get_addr`, the call
+  keeps the registers. The call is a call site (§7.1,
+  `record_call_site`), as on AArch64. An offset from the variable is
+  added after it (`common::add_addend`).
+- **Refused**: as in §5.6.11. The large code model stays
+  `x64:code-model` with or without the option (`llc` 22 writes the
+  small-model descriptor pair under `-code-model=large`; WP-209 owns
+  that model).
+
+Evidence: `spec/landed/codegen/WP-213.md` (the census of every access
+shape under both dialects against `llc` 19 and 22, the linkers'
+relaxations, programs run under `qemu-x86_64`).
 
 ## 6. Control flow
 
