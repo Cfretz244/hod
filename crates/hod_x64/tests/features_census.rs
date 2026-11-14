@@ -482,19 +482,29 @@ fn conventions(mir: &str) -> BTreeMap<String, Vec<String>> {
 
 /// What hod does with probe `s` in a function whose features are
 /// `abi`: compiles it (`true`) or refuses it.
-fn hod_compiles(s: usize, abi: (bool, bool)) -> bool {
-    let attrs = match abi {
-        (false, false) => None,
-        (true, false) => Some("+avx"),
-        _ => Some("+avx512f"),
-    };
+fn hod_compiles(s: usize, cpu: &str, features: Option<&str>) -> bool {
     let text =
-        header() + &declarations() + &probes(0, &[s]) + &attributes(0, "x86-64", attrs) + PIE_FLAGS;
+        header() + &declarations() + &probes(0, &[s]) + &attributes(0, cpu, features) + PIE_FLAGS;
     let (module, bodies) = parse(&text);
     match hod_x64::compile_to_object(&module, &bodies, &pic(Stress::default())) {
         Ok(_) => true,
         Err(hod_x64::ModuleError::Function { error: CgError::Unsupported { .. }, .. }) => false,
         Err(other) => panic!("probe {s}: {other:?}"),
+    }
+}
+
+/// The reference configurations (on `x86-64`) whose conventions hod
+/// follows: plain AVX, AVX-512 without BW and with it (WP-208: the
+/// probes have no `min-legal-vector-width`, so 512-bit vectors are legal
+/// wherever AVX-512's conventions are known).
+const REFERENCES: [&str; 3] = ["+avx", "+avx512f", "+avx512bw"];
+
+/// The index in [`REFERENCES`] of what hod makes of `abi`.
+fn reference_of(abi: hod_x64::abi::Features) -> usize {
+    match (abi.avx512, abi.bw) {
+        (false, _) => 0,
+        (true, false) => 1,
+        (true, true) => 2,
     }
 }
 
@@ -521,9 +531,10 @@ fn configurations(names: &BTreeSet<String>) -> Vec<(String, Option<String>)> {
 /// accepts, every signature `llc` 19 or 22 passes, returns or calls
 /// differently from a function without features is one hod refuses under
 /// the function's AVX and AVX-512 (`x64:wide-vector-abi`), or one `llc`
-/// passes exactly as under plain `+avx` (or `+avx512f`) on `x86-64`: the
-/// convention hod's `ymm` assignment follows, which the wide grid checks
-/// against `llc` (`abi::wide_vector_grid`). A configuration
+/// passes exactly as under plain `+avx`, `+avx512f` or (WP-208) with BW
+/// `+avx512bw` on `x86-64`: the convention hod's assignment follows,
+/// which the wide and zmm grids check against `llc`
+/// (`abi::wide_vector_grid`, `abi::zmm_grid`). A configuration
 /// `llc` cannot compile (a CPU it does not know, `-x87` with an
 /// `x86_fp80`) or hod refuses by the feature needs no evidence.
 #[test]
@@ -534,7 +545,7 @@ fn feature_conventions_agree_with_llc() {
         names.extend(llc_features(major).unwrap_or_default());
     }
     let configs = configurations(&names);
-    let mut verdicts: BTreeMap<(usize, (bool, bool)), bool> = BTreeMap::new();
+    let mut verdicts: BTreeMap<(usize, String), bool> = BTreeMap::new();
     for major in [19, 22] {
         let (Some(cpus), Some(llc)) = (llc_cpus(major), llc_of(major)) else { continue };
         let usable: Vec<_> = configs
@@ -552,14 +563,12 @@ fn feature_conventions_agree_with_llc() {
             let text = probe_module(&[("x86-64".into(), None)]);
             mir_conventions(&scratch, &llc, major, "base", &text)
         };
-        // The conventions hod follows when it compiles a probe: `p0_*`
-        // under AVX, `p1_*` under AVX-512.
+        // The conventions hod follows when it compiles a probe: `p<i>_*`
+        // under `REFERENCES[i]`.
         let reference = {
-            let text = probe_module(&[
-                ("x86-64".into(), Some("+avx".into())),
-                ("x86-64".into(), Some("+avx512f".into())),
-            ]);
-            mir_conventions(&scratch, &llc, major, "reference", &text)
+            let refs: Vec<(String, Option<String>)> =
+                REFERENCES.iter().map(|f| ("x86-64".into(), Some((*f).into()))).collect();
+            mir_conventions(&scratch, &llc, major, "reference", &probe_module(&refs))
         };
         let (mut checked, mut differing, mut preserve_all, mut followed) = (0, 0, 0, 0);
         for (chunk_no, chunk) in usable.chunks(64).enumerate() {
@@ -567,7 +576,6 @@ fn feature_conventions_agree_with_llc() {
             let got = mir_conventions(&scratch, &llc, major, &format!("c{chunk_no}"), &text);
             for (k, (cpu, f)) in chunk.iter().enumerate() {
                 let abi = features::of_function(Some(cpu), f.as_deref()).abi;
-                let abi = (abi.avx, abi.avx512);
                 let mut sigs: Vec<String> = (0..SIGS.len()).map(|s| s.to_string()).collect();
                 sigs.push("va".into());
                 for s in &sigs {
@@ -581,23 +589,24 @@ fn feature_conventions_agree_with_llc() {
                         // `preserve_allcc`'s mask keeps all of `ymm0`..`ymm15`
                         // under AVX, which `llc`'s own callee does not honour
                         // (`preserve_all_under_avx_is_llc_s`).
-                        assert!(abi.0, "{cpu} {f:?}: preserve_allcc without AVX");
+                        assert!(abi.avx, "{cpu} {f:?}: preserve_allcc without AVX");
                         preserve_all += 1;
                         continue;
                     }
                     assert!(n != usize::MAX, "llc {major} {cpu} {f:?}: the variadic call");
-                    let compiles =
-                        *verdicts.entry((n, abi)).or_insert_with(|| hod_compiles(n, abi));
+                    let compiles = *verdicts
+                        .entry((n, format!("{abi:?}")))
+                        .or_insert_with(|| hod_compiles(n, cpu, f.as_deref()));
                     if !compiles {
                         continue;
                     }
                     assert!(
-                        abi.0,
+                        abi.avx,
                         "llc {major} {cpu} {f:?}: {} differs and hod compiles it without AVX\n\
                          llc: {theirs:?}\nwithout features: {base:?}",
                         SIGS[n].1
                     );
-                    let own = &reference[&format!("p{}_{s}", usize::from(abi.1))];
+                    let own = &reference[&format!("p{}_{s}", reference_of(abi))];
                     assert!(
                         theirs == own,
                         "llc {major} {cpu} {f:?}: {} differs and hod compiles it with {abi:?}\n\

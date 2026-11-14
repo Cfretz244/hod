@@ -55,6 +55,7 @@ pub const MAX_PIECES: u32 = 1 << 16;
 /// The target features that change the convention (§1.3). Every other
 /// feature leaves it as it is.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[allow(clippy::struct_excessive_bools, reason = "independent facts read from the features (§1.3)")]
 pub struct Features {
     /// `+avx` (or anything implying it): vectors wider than 128 bits
     /// travel in `ymm` registers.
@@ -66,6 +67,19 @@ pub struct Features {
     /// or 22 may read without AVX. A vector AVX would put in `ymm` is
     /// refused (§1.3).
     pub assumed: bool,
+    /// WP-208: `avx512` is on and its conventions are known: the CPU is
+    /// one hod measured, no item leaves them open (an AVX10 name,
+    /// `-evex512`), and whether 512-bit vectors are legal is decided.
+    /// With `avx512` and without this, a vector wider than 32 bytes and a
+    /// vector of `i1` are refused (§1.3).
+    pub avx512_known: bool,
+    /// WP-208: 512-bit vectors are legal (`llc`'s `useAVX512Regs`): they
+    /// travel in `zmm` registers. Only with `avx512_known`.
+    pub zmm: bool,
+    /// WP-208: `avx512bw`: a `<64 x i1>` travels as 64 byte lanes (one
+    /// `zmm`, or two `ymm` without `zmm`), not byte by byte. Only with
+    /// `avx512_known`.
+    pub bw: bool,
 }
 
 /// Every name [`assign`] reports, in the order of §10. [`RET_X87_PART`]
@@ -101,8 +115,9 @@ const ADDRSPACE: &str = "abi:addrspace";
 const VECTOR_ELEMENT: &str = "abi:vector-element";
 /// A vector of `i1` that LLVM passes element by element (§4.3).
 pub const MASK_VECTOR: &str = "x64:mask-vector";
-/// A vector wider than 128 bits under AVX, or of `i1` under AVX-512
-/// (§1.3).
+/// A vector wider than 128 bits under an AVX that is only assumed, or
+/// wider than 256 bits or of `i1` under an AVX-512 whose conventions are
+/// not known (§1.3).
 pub const WIDE_VECTOR_ABI: &str = "x64:wide-vector-abi";
 /// A return value a part of which LLVM returns in `st0`/`st1` although it
 /// is not an `x86_fp80` (§5.1): `assign` places it ([`x87_float_part`]),
@@ -214,6 +229,10 @@ pub enum Class {
     /// `xmm0`..`xmm7` as any vector piece does (the register's `PReg` is
     /// that `xmm`'s), and is always on the stack in a variadic signature.
     Wide,
+    /// WP-208: a vector of 33 to 64 bytes in a `zmm` (the function's
+    /// 512-bit vectors are legal, §1.3); a 64-byte slot aligned to 64.
+    /// Otherwise as [`Class::Wide`].
+    Zmm,
     /// `x86_fp80`: always a 16-byte slot aligned to 16 as an argument,
     /// `st0`/`st1` as a return value.
     X87,
@@ -221,7 +240,10 @@ pub enum Class {
 
 impl Class {
     fn is_xmm(self) -> bool {
-        matches!(self, Class::Half | Class::Float | Class::Quad | Class::Vector | Class::Wide)
+        matches!(
+            self,
+            Class::Half | Class::Float | Class::Quad | Class::Vector | Class::Wide | Class::Zmm
+        )
     }
 
     /// The size, and the alignment, of the piece's stack slot.
@@ -230,6 +252,7 @@ impl Class {
             Class::Gpr | Class::Half | Class::Float => 8,
             Class::Quad | Class::Vector | Class::X87 => 16,
             Class::Wide => 32,
+            Class::Zmm => 64,
         }
     }
 }
@@ -343,18 +366,26 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32, features: Features) ->
     if features.avx {
         // §1.3 (WP-203): with AVX a vector LLVM makes a legal 256-bit one
         // (a power of two of 32 bytes or more, or widened to 32 bytes in
-        // one step) travels in `ymm` pieces of 32 bytes. With AVX-512
-        // anything wider would be one `zmm` or two `ymm` depending on
-        // the function's preferred vector width: refused. So is every such
-        // vector when AVX is only assumed (a CPU or feature `llc` 19 or 22
-        // may read without AVX).
+        // one step) travels in `ymm` pieces of 32 bytes. WP-208: when the
+        // function's 512-bit vectors are legal, one widened to 64 bytes
+        // in one step is one `zmm`, and a power of two of 64 bytes or
+        // more `zmm` pieces of 64 bytes. With an AVX-512 whose conventions
+        // hod does not know, anything wider than 32 bytes is refused; so
+        // is every such vector when AVX is only assumed (a CPU or feature
+        // `llc` 19 or 22 may read without AVX).
         let wide = if len.is_power_of_two() { Some(total) } else { widened.filter(|&w| w >= 32) };
         if let Some(wide) = wide {
-            if features.assumed || (features.avx512 && wide > 32) {
+            if features.assumed || (features.avx512 && !features.avx512_known && wide > 32) {
                 return no(WIDE_VECTOR_ABI);
             }
             if wide == 32 {
                 return Ok(Leaf::one(Class::Wide, total));
+            }
+            if features.zmm && wide == 64 {
+                return Ok(Leaf::one(Class::Zmm, total));
+            }
+            if features.zmm && len.is_power_of_two() {
+                return Ok(Leaf::each(Class::Zmm, total / 64, 64));
             }
             if len.is_power_of_two() {
                 return Ok(Leaf::each(Class::Wide, total / 32, 32));
@@ -371,19 +402,48 @@ fn vector_leaf(types: &TypeTable, elem: TypeId, len: u32, features: Features) ->
 }
 
 /// §4.3: `<len x i1>`: one element as an `i1`; 2, 4, 8 or 16 promoted to
-/// the lanes of one `xmm` (`v2i64`, `v4i32`, `v8i16`, `v16i8`).
+/// the lanes of one `xmm` (`v2i64`, `v4i32`, `v8i16`, `v16i8`). WP-208,
+/// with AVX-512 (`llc`'s `getRegisterTypeForCallingConv`): 32 elements
+/// are the byte lanes of one `ymm` (`v32i8`); 64 with `avx512bw` those of
+/// one `zmm`, or of two `ymm` when 512-bit vectors are not legal; any
+/// other length up to 64 (64 without `avx512bw`) one byte per element,
+/// each a general piece. Beyond 64 elements hod's mask has no value
+/// (`mask.rs`): refused.
 fn mask_leaf(len: u32, features: Features) -> Abi<Leaf> {
+    let bytes = |len: u32| LaneLeaf { bits: 1, lane: 1, len: len as u8, each: false };
+    // Every piece of a mask's leaf is at the leaf's offset (stride 0):
+    // the side of a lane move in memory is the mask's image, whose bits
+    // the piece's `first` element on select (`vcall.rs`).
+    let pieces = |class: Class, count: u32, size: u32, lanes: LaneLeaf| Leaf {
+        lanes: Some(lanes),
+        stride: 0,
+        ..Leaf::each(class, count, size)
+    };
     if features.avx512 {
-        return no(WIDE_VECTOR_ABI);
+        if !features.avx512_known {
+            return no(WIDE_VECTOR_ABI);
+        }
+        return Ok(match len {
+            1 => Leaf::one(Class::Gpr, 1),
+            2 | 4 | 8 | 16 => xmm_mask(len),
+            32 => pieces(Class::Wide, 1, 32, bytes(32)),
+            64 if features.bw && features.zmm => pieces(Class::Zmm, 1, 64, bytes(64)),
+            64 if features.bw => pieces(Class::Wide, 2, 32, bytes(64)),
+            3..=64 => pieces(Class::Gpr, len, 1, LaneLeaf { each: true, ..bytes(len) }),
+            _ => return no(MASK_VECTOR),
+        });
     }
     Ok(match len {
         1 => Leaf::one(Class::Gpr, 1),
-        2 | 4 | 8 | 16 => {
-            let lanes = LaneLeaf { bits: 1, lane: (16 / len) as u8, len: len as u8, each: false };
-            Leaf { lanes: Some(lanes), ..Leaf::one(Class::Vector, 16) }
-        }
+        2 | 4 | 8 | 16 => xmm_mask(len),
         _ => return no(MASK_VECTOR),
     })
+}
+
+/// A mask of 2, 4, 8 or 16 elements as the lanes of one `xmm` (§4.3).
+fn xmm_mask(len: u32) -> Leaf {
+    let lanes = LaneLeaf { bits: 1, lane: (16 / len) as u8, len: len as u8, each: false };
+    Leaf { lanes: Some(lanes), ..Leaf::one(Class::Vector, 16) }
 }
 
 /// The allocation state of §3.1: the next general register, the next
@@ -440,7 +500,7 @@ impl State {
                 self.gpr += 1;
                 return PieceLoc::Reg(ARG_GPRS[usize::from(self.gpr) - 1]);
             }
-            Class::Wide if self.variadic => {}
+            Class::Wide | Class::Zmm if self.variadic => {}
             _ if class.is_xmm() && self.xmm < ARG_XMMS => {
                 self.xmm += 1;
                 return PieceLoc::Reg(xmm_reg(self.xmm - 1));
@@ -538,7 +598,7 @@ impl RetState {
             // Beyond the vector registers, the x87 stack (§5.1).
             Class::Float => self.xmm(self.float_xmm).or_else(|| self.x87()),
             Class::Quad => self.xmm(2),
-            Class::Vector | Class::Wide => self.xmm(4),
+            Class::Vector | Class::Wide | Class::Zmm => self.xmm(4),
             Class::X87 => self.x87(),
         }
     }
@@ -690,20 +750,28 @@ pub fn byval_align(types: &TypeTable, pointee: TypeId, attrs: ParamAttrs) -> u64
 }
 
 /// WP-203: whether `ty`, any type, has a leaf that travels in `ymm`
-/// pieces under `features` ([`Class::Wide`], §1.3).
+/// pieces under `features` ([`Class::Wide`], §1.3), or (WP-208) in
+/// `zmm` pieces ([`Class::Zmm`]).
 pub fn has_wide_leaf(types: &TypeTable, ty: TypeId, features: Features) -> bool {
+    wide_slot(types, ty, features) != 0
+}
+
+/// WP-208: the largest stack slot of a leaf of `ty` that travels in a
+/// `ymm` (32) or a `zmm` (64) under `features`; 0 when none does.
+pub fn wide_slot(types: &TypeTable, ty: TypeId, features: Features) -> u64 {
     if !features.avx {
-        return false;
+        return 0;
     }
     match types.kind(ty) {
         TypeKind::Struct { fields, .. } => {
-            fields.iter().any(|&f| has_wide_leaf(types, f, features))
+            fields.iter().map(|&f| wide_slot(types, f, features)).max().unwrap_or(0)
         }
-        TypeKind::Array { elem, len } => len != 0 && has_wide_leaf(types, elem, features),
-        TypeKind::Vector { .. } => {
-            classify(types, ty, features).is_ok_and(|leaf| leaf.class == Class::Wide)
-        }
-        _ => false,
+        TypeKind::Array { elem, len } if len != 0 => wide_slot(types, elem, features),
+        TypeKind::Vector { .. } => match classify(types, ty, features).map(|leaf| leaf.class) {
+            Ok(class @ (Class::Wide | Class::Zmm)) => class.slot(),
+            _ => 0,
+        },
+        _ => 0,
     }
 }
 

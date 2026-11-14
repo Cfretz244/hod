@@ -91,13 +91,16 @@ in `06-ptrattrs.ll`).
 
 ### 1.3 Target features
 
-`assign` takes a `Features { avx, avx512, assumed }`. Without `avx`, the
-rules below are complete. With `avx` (or anything that implies it), LLVM
-passes and returns a vector wider than 128 bits in `ymm` registers (and
-with `avx512`, 512 bits in one `zmm` or two `ymm`, and `<N x i1>` in a
-mask register). **WP-203:** hod places the `ymm` ones as `llc` does
-(class `Wide`, §3.2, §4.3, §5.1, §9.1) and refuses the rest as
-`x64:wide-vector-abi`:
+`assign` takes a `Features { avx, avx512, assumed, avx512_known, zmm,
+bw }`. Without `avx`, the rules below are complete. With `avx` (or
+anything that implies it), LLVM passes and returns a vector wider than
+128 bits in `ymm` registers (and with `avx512`, 512 bits in one `zmm` or
+two `ymm`, and `<N x i1>` as lanes of a vector register or byte by
+byte). **WP-203:** hod places the `ymm` ones as `llc` does (class
+`Wide`, §3.2, §4.3, §5.1, §9.1). **WP-208:** with AVX-512 whose
+conventions are known (`avx512_known`) it places the rest as `llc` does
+too (class `Zmm`, the mask rows of §4.3), and refuses as
+`x64:wide-vector-abi` only what is left open:
 
 - with `avx`: a vector LLVM makes a legal 256-bit vector (a power of two
   of 32 bytes, or one widened to exactly 32 bytes: `<6 x float>`,
@@ -106,10 +109,12 @@ mask register). **WP-203:** hod places the `ymm` ones as `llc` does
   `<64 x i8>`) is one `ymm` piece per 32 bytes; one widened beyond 32
   bytes (`<12 x float>`, `<9 x float>`) travels element by element, as
   without AVX;
-- with `avx512` besides: a vector of more than 32 bytes is refused (one
-  `zmm` or two `ymm` by the function's preferred vector width and
-  `min-legal-vector-width`, and hod has no EVEX encoder), and so is a
-  vector of `i1`, whatever its length;
+- with `avx512` besides, when its conventions are known: a vector of
+  more than 32 bytes is one `zmm` or two `ymm` (per 64 bytes) as 512-bit
+  vectors are legal or not (`zmm`, below), and a vector of `i1` follows
+  §4.3's AVX-512 rows (`bw` decides `<64 x i1>`);
+- with `avx512` whose conventions are not known: a vector of more than
+  32 bytes is refused, and so is a vector of `i1`, whatever its length;
 - with `assumed` (AVX is not known, only possible: a CPU hod does not
   know, `+avx10.1-256`, `+avx10.2-256`, `+amx-avx512`): every vector the
   first rule puts in `ymm` is refused;
@@ -119,14 +124,37 @@ mask register). **WP-203:** hod places the `ymm` ones as `llc` does
 
 A 128-bit or narrower vector travels as §4.3 says whatever the features.
 
+**When 512-bit vectors are legal (WP-208).** `llc`'s `useAVX512Regs`,
+measured with `llc` 19 and 22: with AVX-512, they are (`zmm`) unless
+the function has `avx512vl`, prefers vectors narrower than 512 bits and
+needs none wider than 256 (`"min-legal-vector-width"` at most 256; an
+absent attribute is unbounded). The preference is `+prefer-128-bit`,
+else the last `+prefer-256-bit`/`-prefer-256-bit`, else the tuning CPU's
+(`"tune-cpu"`, else `"target-cpu"`): the CPUs of `TUNE_256`
+(`skylake-avx512`, `cascadelake`, `icelake-*`, `sapphirerapids`,
+`x86-64-v4`, ...) prefer 256 bits, every other CPU hod measured does
+not. `avx512vl` and `avx512bw` come from the CPU (`AVX512_CPUS`,
+measured) and the items in order, as `Avx512::Vl`/`Bw` imply and
+disable them. The conventions are *known* (`avx512_known`) when the
+CPU is in `AVX512_CPUS` or has no AVX-512 of its own, no item is an
+AVX10 name, `+amx-avx512` or `-evex512` (`llc` 19 then refuses a 512-bit
+argument, 22 ignores it), and `"min-legal-vector-width"` is a number.
+clang writes `"min-legal-vector-width"` on every function: the widest
+vector its source uses, 0 for none; kiln does too. So under
+`-march=skylake-avx512` a function taking `__m512` passes it in one
+`zmm`, and a function taking a `<16 x float>` that the source never
+spelt passes it in two `ymm`.
+
 *Evidence:* `errors::every_name` (the refusals with the features);
 `abi::wide_vector_grid` (§11.1: 1,119 signatures with `ymm` pieces under
 `+avx`, `+avx2`, `sandybridge`, `haswell` and `znver3`, run against `llc`
 19 and 22 in both directions, zero disagreements; under `skylake-avx512`
-635 accepted signatures assigned as under `+avx` and passed by `llc` as
-under `+avx`, since the emulator has no AVX-512 to run them);
+every accepted signature placed as `llc` places it, read from its MIR,
+since the emulator has no AVX-512 to run them);
 `wide_vector_abi` (the C++ clang writes, and IR shapes, mixed with `llc`
-and run).
+and run). WP-208: `features::tests::zmm_follows_llc`; `abi::zmm_grid`,
+`abi::clang_signatures_agree_with_their_llc`,
+`abi::conventions_tell_zmm_from_two_ymm` (§11.1).
 
 **Whose features decide (WP-140).** The *compiled function's*: every
 signature a function's code touches (its own, and that of every call and
@@ -287,6 +315,10 @@ stack slot. Its class (§4) is **general**, **vector** (`half`, `float`,
   16 for an `fp128` or vector piece.
 - **x87.** Always the stack: a 16-byte slot aligned to 16, of which the
   first 10 bytes are the value.
+- **Zmm (WP-208, §1.3).** 33 to 64 bytes of a vector (or the byte
+  lanes of a `<64 x i1>`) under AVX-512 with 512-bit vectors legal: as a
+  wide piece, in `zmm[V]`, and on the stack a 64-byte slot aligned to
+  64; always the stack in a variadic signature.
 - **Wide (WP-203, §1.3).** Up to 32 bytes of a vector under AVX. If
   V < 8, the piece goes to `ymm[V]` (the `xmm[V]` register's full
   width) and V increases by 1: wide and vector pieces share the eight
@@ -460,7 +492,37 @@ With `avx`/`avx512`, §1.3 applies before this table. **WP-203:** with
 | N a power of two, N·E > 32 | N·E/32 wide pieces of 32 bytes (`<16 x float>`: two `ymm`; `<32 x float>`: four); refused under `avx512` |
 | N not a power of two, `next_pow2(N)`·E = 32 | one wide piece of N·E bytes (`<6 x float>`, `<3 x double>`, `<5 x i32>`, `<7 x i32>`, `<3 x i64>`, `<3 x ptr>`, `<24 x i8>`, `<10 x i16>`, `<9 x half>`): the bytes past N·E in the register are unspecified |
 | N not a power of two, `next_pow2(N)`·E > 32 | N pieces, one per element, as without AVX (`<12 x float>`, `<9 x float>`, `<5 x i64>`); as a result, memory (§5.2) when they do not fit the return registers |
-| vectors of `i1` | as without AVX; refused under `avx512` |
+| vectors of `i1` | as without AVX; refused under `avx512` whose conventions are not known |
+
+**WP-208.** Under `avx512` with known conventions (§1.3), when 512-bit
+vectors are legal (`zmm`) the rows change again:
+
+| vector, under `avx512` and `zmm` | pieces |
+|---|---|
+| N a power of two, N·E = 64 | one `zmm` piece of 64 bytes (`<16 x float>`, `<8 x double>`, `<64 x i8>`, `<32 x half>`, `<8 x ptr>`) |
+| N a power of two, N·E > 64 | N·E/64 `zmm` pieces of 64 bytes (`<32 x float>`: two `zmm`) |
+| N not a power of two, `next_pow2(N)`·E = 64 | one `zmm` piece of N·E bytes (`<12 x float>`, `<6 x double>`, `<10 x i32>`, `<48 x i8>`): the bytes past N·E unspecified |
+| N not a power of two, `next_pow2(N)`·E > 64 | N pieces, one per element (`<17 x float>`) |
+
+Without `zmm` the AVX rows stand (two `ymm` for `<16 x float>`; a
+vector widened to 64 bytes element by element). The vectors of `i1`,
+under `avx512` with known conventions, `zmm` or not (`llc`'s
+`getRegisterTypeForCallingConv`):
+
+| N | pieces |
+|---|---|
+| 1 | one general piece of 1 byte |
+| 2, 4, 8, 16 | the `xmm` lanes of the table above |
+| 32 | one `Lanes { bits: 1, lane: 1, first: 0, len: 32 }` part in a `ymm` (or a 32-byte slot aligned to 32) |
+| 64, with `bw` and `zmm` | one `Lanes { lane: 1, len: 64 }` part in a `zmm` (or a 64-byte slot aligned to 64) |
+| 64, with `bw`, without `zmm` | two `Lanes { lane: 1, len: 64 }` parts in `ymm`, `first` 0 and 32 |
+| any other N up to 64 | N general parts of 1 byte, `Lanes { lane: 1, first: i, len: N }`: element `i` is the low bit of a byte in a general register or an 8-byte stack slot (as N `i8` arguments); as a result, `al`, `dl`, `cl` for N ≤ 3 (`<3 x i1>`), memory beyond |
+| more than 64 | `x64:mask-vector` (hod's mask value has 64 bits) |
+
+The pieces of one mask are all at the mask's offset (`stride` 0), so a
+side of a lane move in memory is the mask's image (`vcall.rs`).
+
+*Evidence (WP-208):* `abi::zmm_grid` (§11.1); `vcall::` unit tests.
 
 
 *Evidence:* `table::vectors`; the grid's `vectors()` (every element
@@ -512,6 +574,7 @@ The return value's type is broken into leaves and pieces as in §4 (an
 | `fp128` | `xmm0`, `xmm1` |
 | vector | `xmm0`, `xmm1`, `xmm2`, `xmm3` |
 | wide (WP-203) | `ymm0`, `ymm1`, `ymm2`, `ymm3` (the same four registers as the vector row) |
+| `zmm` (WP-208) | `zmm0`, `zmm1`, `zmm2`, `zmm3` (the same four registers again) |
 | x87 (`x86_fp80`) | `st0`, `st1` |
 
 "First free" is over the registers already taken by earlier pieces of
@@ -549,6 +612,12 @@ Under `avx` (WP-203): `<8 x float>`, `<6 x float>` `ymm0`;
 `xmm0`, `ymm1`; `<16 x float>` `ymm0`, `ymm1`; `{ <8 x float>, <16 x float> }`
 `ymm0`..`ymm2`; `<32 x float>` `ymm0`..`ymm3`; `<64 x float>`, `<12 x float>`
 memory.
+
+Under `avx512` with `zmm` (WP-208): `<16 x float>`, `<12 x float>`
+`zmm0`; `{ <16 x float>, <4 x float> }` `zmm0`, `xmm1`; `<64 x float>`
+`zmm0`..`zmm3`; `<128 x float>` memory. Masks (§4.3): `<32 x i1>`
+`ymm0`; `<64 x i1>` `zmm0` (with `bw`); `<3 x i1>` `al`, `dl`, `cl`;
+`<5 x i1>` memory.
 
 `ret_attrs` may hold only `zeroext` or `signext` (§7), and only on an
 integer; a memory attribute there is `abi:invalid-signature`, `nest`
@@ -893,7 +962,15 @@ the encoder unchanged.
 `vmovaps`, so its 32-byte slot must be 32-aligned at the call. When a
 call (not `musttail`) has a wide piece on the stack, hod aligns the
 stack-argument area to 32 with the sequence it uses for a `byval`
-aligned above 16 (`spec/codegen.md` §5.6.18), with `a = 32`. A
+aligned above 16 (`spec/codegen.md` §5.6.18), with `a = 32`; WP-208:
+with `a = 64` when a `zmm` piece is on the stack.
+
+**`zmm` pieces (WP-208).** A `zmm` piece moves as a wide one, with
+`vmovdqu64` (EVEX.512) and a 64-byte area below `rsp` for one shorter
+than 64 bytes (`vector::load_wide`, `store_wide`). A mask's lanes are
+built and read in a slot of the register's size (`vcall.rs`); a mask
+byte by byte moves each element's bit to or from its general register
+or stack slot. A
 `musttail` call writes its caller's incoming area, which the caller's
 own caller aligned.
 
@@ -922,6 +999,11 @@ own caller aligned.
 5. Any other instruction whose result or operand type has a vector of
    32 bytes or more (not of `i1`) as a leaf makes the state dirty.
 
+WP-208: a `zmm` piece is a wide piece here (rules 2 to 4: more than 16
+bytes in a register), and so are a mask's `ymm` and `zmm` lanes; a
+mask's lanes on the stack of a call make the state dirty as a vector of
+32 bytes there does (rule 3).
+
 Where hod's code differs from `llc`'s, by rule:
 
 - hod has one shared `ret`; it gets the `vzeroupper` when any `ret` of
@@ -943,7 +1025,9 @@ upper halves are dead at a call and a return under this convention.
 
 *Evidence:* `vzeroupper::vzeroupper_where_llc_writes_it` (15 functions,
 one per shape of the rule, under nine machines, against `llc` 19 and 22
-with `FastISel` and `SelectionDAG`).
+with `FastISel` and `SelectionDAG`); WP-208:
+`vzeroupper::vzeroupper_with_zmm_where_llc_writes_it` (six functions with
+`zmm` pieces and masks under five AVX-512 machines).
 
 ## 9. Variadic functions
 
@@ -963,7 +1047,9 @@ count, and so does hod).
 
 **WP-203.** Under AVX a wide piece of a variadic signature, named or
 not, goes to the stack (a 32-byte slot aligned to 32, §3.2) and is not
-counted in `al`. clang passes an unnamed `__m256` as `byval` aligned to
+counted in `al`. **WP-208:** so does a `zmm` piece (a 64-byte slot
+aligned to 64; the call aligns its argument area to 64, §8.7), and a
+mask's `ymm` or `zmm` lanes. clang passes an unnamed `__m256` as `byval` aligned to
 32, which is §6.2's. The register save area keeps 16 bytes per `xmm`
 (§9.3), as `llc` does with AVX; a `va_arg` of a wide vector reads the
 overflow area, which clang's IR does itself and hod compiles as loads.
@@ -1067,8 +1153,12 @@ natively.
 | `grid::random_grid` | seeded random signatures (400; 8 000 under `HOD_ABI_GRID=full`) |
 | `data::data_signatures_against_llc` | every function of `tests/abi/data/*.ll` |
 | `variadic::variadic_against_c` | variable arguments against C walkers (§9) |
-| `wide::wide_vector_grid` | WP-203: wide vectors of every element type and length class (§4.3), aggregates of them, more than eight, mixed with every class, `byval`/`sret`, variadic; each machine of §1.3's evidence; the AVX-512 one by convention equality (`llc -stop-after=finalize-isel`) with `+avx`, since `qemu`'s TCG has no AVX-512. Runs under `qemu-x86_64 -cpu max`; the harness aligns each blob slot over 16 bytes to 64, as `llc` stores a wide value with its type's alignment |
+| `wide::wide_vector_grid` | WP-203: wide vectors of every element type and length class (§4.3), aggregates of them, more than eight, mixed with every class, `byval`/`sret`, variadic; each machine of §1.3's evidence; the AVX-512 one by convention equality with `llc` (`zmm::same_as_llc`), since `qemu`'s TCG has no AVX-512. Runs under `qemu-x86_64 -cpu max`; the harness aligns each blob slot over 16 bytes to 64, as `llc` stores a wide value with its type's alignment |
 | `vzeroupper::vzeroupper_where_llc_writes_it` | WP-203: where `vzeroupper` goes, against `llc` 19 and 22 (§8.7) |
+| `zmm::zmm_grid` | WP-208: 512-bit vectors, vectors widened to 64 bytes, masks of every length up to 64 (and beyond, refused), aggregates of one, under every pressure, as returns, `sret`/`byval`, variadic; on eighteen AVX-512 machines (VL or not, BW or not, `prefer-256-bit` either way, `tune-cpu`, `min-legal-vector-width` 0, 256, 512 or absent, census CPUs). Nothing runs here: for every case, hod's convention of a definition receiving it and of a call making it (registers by width, stack slots, `al`) equals what `llc` 19 and 22 at `-O0` (`FastISel` and `SelectionDAG`) give it, read from their MIR after instruction selection (`llc_conventions`: live-ins, `RET` operands, fixed stack objects, call operands, stores to the argument area, a `byval` copy's stores or block copy through `rsp` plus an offset among them; an `x87` result, still a virtual register there, is `st0`). Two exceptions, as the grid has the first: LLVM 19 is not compared on a signature that keeps a general value whole with something on the stack (§4.2); and LLVM 19's `FastISel` does not get a signature with a `<32 x bfloat>`, which it mishandles where `bf16` is legal: dropped from a call (`znver4`: no `zmm0`, the next `xmm` argument takes `xmm0`), or compiled until memory runs out (`sapphirerapids`); its `SelectionDAG` and LLVM 22 pass it in `zmm0`, as hod does. With `HOD_X64_AVX512_RUNNER` (a command running an x86-64 program on an AVX-512 CPU) the grid also runs, both directions |
+| `zmm::conventions_tell_zmm_from_two_ymm` | WP-208: the comparison bites: hod's assignment for one machine against `llc`'s for the other differs |
+| `zmm::clang_signatures_agree_with_their_llc` | WP-208: C++ with `__m512`, classes of one, `bool` vectors, a class whose base is narrower than itself, more than eight vectors, a variadic `va_arg` of `__m512`, as clang 19 and 22 write it under seven `-march`/`-m` sets: hod compiles each module (plain and stressed), and its convention of every definition and call under the function's own attributes equals the one the `llc` of the same LLVM gives (a variadic definition's named arguments among the registers `va_start` takes). No element of a `bool` vector is assigned: clang 22 writes an `insertelement` of an `i32` into `<N x i1>` for that, which its own `llc` rejects |
+| `vzeroupper::vzeroupper_with_zmm_where_llc_writes_it` | WP-208: §8.7 with `zmm` pieces and masks |
 | `wide_vector_abi::{clang_wide_vectors_mix, ir_wide_vectors_mix}` | WP-203: clang 19/22's `__m256` aggregates, more than eight, variadic and indirect calls, and IR shapes (pairs, widened, split, `sret`/`byval` aligned to 32, `musttail`, `invoke`), each unit built by `llc`, hod and hod under every stress mode, mixed both ways, linked by each linker, run under `qemu-x86_64 -cpu max` |
 
 Each runs against the six configurations of §1.1.
