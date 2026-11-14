@@ -77,7 +77,8 @@ def load_reports(oss):
             with open(rr, encoding="utf-8") as f:
                 for line in f:
                     e = json.loads(line)
-                    a = r["reruns"].setdefault(e["test"], {"runs": 0, "passed": 0})
+                    a = r["reruns"].setdefault(e["test"], {"runs": 0, "passed": 0, "env": set()})
+                    a["env"].add(e.get("arena") or "unset")
                     a["runs"] += 1
                     a["passed"] += 1 if e["passed"] else 0
         reps[(r["project"], r["flavour"], r["mode"])] = r
@@ -155,7 +156,8 @@ def status_rows(reps, notes=None):
                     e = rr[t]
                     if e["runs"] >= 2 and e["passed"] == e["runs"]:
                         worse.remove(t)
-                        notes.append(f"{p} {fl} {name}: `{t}` failed in the build's test run and passed {e['passed']} of {e['runs']} reruns under the same memory cap.")
+                        notes.append(f"{p} {fl} {name}: `{t}` failed in the build's test run and passed {e['passed']} of {e['runs']} reruns under the same memory cap"
+                                     f" (`MALLOC_ARENA_MAX` {', '.join(sorted(e['env']))}).")
                         reran.append(len(notes))
                     else:
                         notes.append(f"{p} {fl} {name}: `{t}` passed {e['passed']} of {e['runs']} reruns.")
@@ -352,6 +354,7 @@ def cmd_rerun(a):
         ok = per.get(a.test) == "Passed"
         with open(os.path.join(tree, "reruns.jsonl"), "a", encoding="utf-8") as f:
             f.write(json.dumps({"test": a.test, "passed": ok, "rc": p.returncode, "log": os.path.basename(log),
+                                "arena": env.get("MALLOC_ARENA_MAX"),
                                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}) + "\n")
         print(f"oss-report: {a.project} {a.flavour} {a.mode} {a.test}: run {i + 1}: {'passed' if ok else 'failed'}")
 
